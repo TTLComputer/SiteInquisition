@@ -65,6 +65,8 @@ export interface Signature {
   id: string;
   name: string;
   category: TechCategory;
+  /** The provider behind a family of signatures (all the AWS services), so lists can group them. */
+  vendor?: string;
   matchers: Matcher[];
   /** Technologies this one implies (Next.js implies React and Node.js). */
   implies?: string[];
@@ -85,7 +87,7 @@ const body = (match: string, weight?: number): Matcher => ({ in: 'body', match, 
 const server = (match: string, weight = 0.95) => h('server', match, weight);
 const poweredBy = (match: string, weight = 0.95) => h('x-powered-by', match, weight);
 
-export const SIGNATURES: Signature[] = [
+const LIST: Signature[] = [
   // ---------- AWS ----------
   { id: 'aws', name: 'AWS', category: 'cloud', matchers: [h('x-amzn-requestid', undefined, 0.7), h('x-amz-request-id', undefined, 0.6), h('x-amzn-trace-id', undefined, 0.6), h('x-amzn-errortype', undefined, 0.8), rh('authorization', '^AWS4-HMAC-SHA256', 0.95)] },
   {
@@ -385,6 +387,18 @@ export const SIGNATURES: Signature[] = [
   { id: 'actioncable', name: 'Action Cable', category: 'protocol', implies: ['rails'], matchers: [rh('sec-websocket-protocol', 'actioncable-', 0.95)] },
   { id: 'sse', name: 'Server-Sent Events', category: 'protocol', matchers: [h('content-type', '^text/event-stream', 0.95)] },
 ];
+
+const VENDORS: Array<[RegExp, string]> = [
+  [/^aws(-|$)/, 'Amazon Web Services'],
+  [/^(gcp|gcs)(-|$)|^firebase/, 'Google Cloud'],
+  [/^azure(-|$)|^entra-id$/, 'Microsoft Azure'],
+  [/^cloudflare(-|$)/, 'Cloudflare'],
+];
+
+export const SIGNATURES: Signature[] = LIST.map((s) => {
+  const v = VENDORS.find(([re]) => re.test(s.id))?.[1];
+  return v ? { ...s, vendor: v } : s;
+});
 
 /** Generic names that usually carry a CSRF token, for frameworks with no signature. */
 export const GENERIC_CSRF_NAME = /(^|[-_])(csrf|xsrf)([-_]|$)|csrf|xsrf|anti-?forgery|verification-?token|authenticity[-_]?token|^_token$|nonce/i;

@@ -62,6 +62,7 @@ export function validateSignature(input: unknown): Signature {
   if (typeof s.id !== 'string' || !/^[a-z0-9][a-z0-9.-]*$/.test(s.id)) throw new Error(`signature id "${String(s.id)}" must be lower case letters, digits, . and -`);
   if (typeof s.name !== 'string' || !s.name.trim()) throw new Error(`signature "${s.id}" needs a name`);
   if (!CATEGORIES.includes(s.category)) throw new Error(`signature "${s.id}": category must be one of ${CATEGORIES.join(', ')}`);
+  if (s.vendor !== undefined && (typeof s.vendor !== 'string' || !s.vendor.trim())) throw new Error(`signature "${s.id}": vendor must be a non-empty string`);
   if (!Array.isArray(s.matchers)) throw new Error(`signature "${s.id}" needs a matchers list`);
   for (const m of s.matchers) {
     if (!MATCH_IN.includes(m?.in)) throw new Error(`signature "${s.id}": matcher "in" must be one of ${MATCH_IN.join(', ')}`);

@@ -82,6 +82,17 @@ describe.skipIf(!ready)('technologies in the renderer', () => {
     await page.getByRole('tab', { name: 'Technologies' }).click();
     await expect.poll(() => page.locator('.settings-block').first().textContent()).toContain('Next.js');
     expect(await page.locator('.settings-block').nth(1).textContent()).toContain('{{var:csrf.127.0.0.1}}');
+    const groups = await page.getByTestId('sig-group').locator('summary b').allTextContents();
+    expect(groups.slice(0, 4)).toEqual(['Amazon Web Services', 'Google Cloud', 'Microsoft Azure', 'Cloudflare']);
+    expect(groups).toContain('Server frameworks');
+    const aws = page.getByTestId('sig-group').first();
+    await aws.locator('summary').click();
+    expect((await aws.locator('label').allTextContents())[0]).toMatch(/^AWS/);
+    // Groups list in order, so the first "Turn all off" is the AWS one.
+    await page.getByRole('button', { name: 'Turn all off', exact: true }).first().click();
+    await expect.poll(() => [...h.core.tools.tech.disabled()].sort()).toEqual(h.core.tools.tech.builtIn().filter((s) => s.vendor === 'Amazon Web Services').map((s) => s.id).sort());
+    await page.getByRole('button', { name: 'Turn all on', exact: true }).click();
+    await expect.poll(() => h.core.tools.tech.disabled().length).toBe(0);
     await shot('tech-settings');
   });
 });

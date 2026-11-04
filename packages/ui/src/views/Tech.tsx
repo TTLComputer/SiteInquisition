@@ -5,6 +5,46 @@ import { useApp } from '../state';
 const STATUS_LABEL: Record<EffectiveTech['status'], string> = { detected: 'detected', possible: 'possible', pinned: 'pinned by you', implied: 'implied' };
 const STATUS_CLASS: Record<EffectiveTech['status'], string> = { detected: 'badge ok', possible: 'badge', pinned: 'badge ok', implied: 'badge' };
 
+// Providers first, then everything else by kind.
+const VENDOR_ORDER = ['Amazon Web Services', 'Google Cloud', 'Microsoft Azure', 'Cloudflare'];
+const CATEGORY_GROUP: Record<string, string> = {
+  cdn: 'CDNs and edge',
+  security: 'Bot protection and WAFs',
+  hosting: 'Hosting platforms',
+  cloud: 'Other cloud',
+  server: 'Web servers and proxies',
+  language: 'Languages and runtimes',
+  framework: 'Server frameworks',
+  frontend: 'Front-end frameworks',
+  cms: 'CMS',
+  auth: 'Identity and auth',
+  protocol: 'Protocols',
+};
+const CATEGORY_ORDER = Object.keys(CATEGORY_GROUP);
+
+const LEADS = new Set(['aws', 'gcp', 'azure', 'cloudflare']);
+
+export const groupOf = (s: Signature) => s.vendor ?? CATEGORY_GROUP[s.category] ?? s.category;
+
+/** Signatures in labelled groups: providers in a fixed order, then categories, then any other vendors a user added. */
+export function groupSignatures(list: Signature[]): Array<{ group: string; sigs: Signature[] }> {
+  const map = new Map<string, Signature[]>();
+  for (const s of list) map.set(groupOf(s), [...(map.get(groupOf(s)) ?? []), s]);
+  const rank = (g: string) => {
+    const v = VENDOR_ORDER.indexOf(g);
+    if (v !== -1) return v;
+    const c = CATEGORY_ORDER.findIndex((k) => CATEGORY_GROUP[k] === g);
+    return c !== -1 ? VENDOR_ORDER.length + c : 100;
+  };
+  return [...map.entries()]
+    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(([group, sigs]) => ({
+      group,
+      // The umbrella entry (plain "AWS") first, then by name.
+      sigs: [...sigs].sort((a, b) => Number(LEADS.has(b.id)) - Number(LEADS.has(a.id)) || a.name.localeCompare(b.name)),
+    }));
+}
+
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 const short = (v: string, n = 28) => (v.length > n ? `${v.slice(0, n)}…` : v);
 
@@ -141,10 +181,14 @@ export function TechPanel({ ex }: { ex: ExchangeDetail }) {
           </label>
           <select id="pin-tech" className="input" value={pinId} onChange={(e) => setPinId(e.target.value)}>
             <option value="">Choose a technology</option>
-            {sigs.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
+            {groupSignatures(sigs).map((g) => (
+              <optgroup key={g.group} label={g.group}>
+                {g.sigs.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
           <input className="input mono" aria-label="Host or host glob" title="This host, or a glob like *.example.com" value={pinHost} onChange={(e) => setPinHost(e.target.value)} />
@@ -311,7 +355,7 @@ export function TechSettings() {
   }, [load, notify]);
 
   const names = useMemo(() => new Map(builtIn.map((s) => [s.id, s.name])), [builtIn]);
-  const shown = builtIn.filter((s) => !filter || `${s.name} ${s.id} ${s.category}`.toLowerCase().includes(filter.toLowerCase()));
+  const shown = builtIn.filter((s) => !filter || `${s.name} ${s.id} ${s.category} ${groupOf(s)}`.toLowerCase().includes(filter.toLowerCase()));
   const run = (p: Promise<unknown>, msg: string) => p.then(() => (notify(msg), load()), (e: Error) => notify(e.message));
 
   const saveCustom = () => {
@@ -397,18 +441,45 @@ export function TechSettings() {
           <input className="input" placeholder="Filter" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter signatures" />
           <span className="faint">Turn one off if it keeps guessing wrong in this project.</span>
         </div>
-        <div className="tech-sig-grid">
-          {shown.map((s) => (
-            <label key={s.id} className="check" title={s.id}>
-              <input
-                type="checkbox"
-                checked={!disabled.includes(s.id)}
-                onChange={(e) => void run(client.setTechDisabled(e.target.checked ? disabled.filter((x) => x !== s.id) : [...disabled, s.id]).then(() => client.techRescan()), e.target.checked ? `${s.name} on` : `${s.name} off`)}
-              />
-              {s.name} <span className="faint">{s.category}</span>
-            </label>
-          ))}
-        </div>
+        {groupSignatures(shown).map((g) => {
+          const on = g.sigs.filter((x) => !disabled.includes(x.id)).length;
+          const ids = g.sigs.map((x) => x.id);
+          return (
+            <details key={g.group} className="tech-group" open={!!filter} data-testid="sig-group">
+              <summary>
+                <b>{g.group}</b>
+                <span className="faint">
+                  {on} of {g.sigs.length} on
+                </span>
+                <span style={{ flex: 1 }} />
+                <button
+                  className="btn small"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    const allOn = on === g.sigs.length;
+                    const next = allOn ? [...new Set([...disabled, ...ids])] : disabled.filter((x) => !ids.includes(x));
+                    void run(client.setTechDisabled(next).then(() => client.techRescan()), `${g.group}: ${allOn ? 'all off' : 'all on'}`);
+                  }}
+                >
+                  {on === g.sigs.length ? 'Turn all off' : 'Turn all on'}
+                </button>
+              </summary>
+              <div className="tech-sig-grid">
+                {g.sigs.map((s) => (
+                  <label key={s.id} className="check" title={s.id}>
+                    <input
+                      type="checkbox"
+                      checked={!disabled.includes(s.id)}
+                      onChange={(e) => void run(client.setTechDisabled(e.target.checked ? disabled.filter((x) => x !== s.id) : [...disabled, s.id]).then(() => client.techRescan()), e.target.checked ? `${s.name} on` : `${s.name} off`)}
+                    />
+                    {s.name}
+                    {s.vendor && <span className="faint">{s.category}</span>}
+                  </label>
+                ))}
+              </div>
+            </details>
+          );
+        })}
       </div>
 
       <div className="settings-block">

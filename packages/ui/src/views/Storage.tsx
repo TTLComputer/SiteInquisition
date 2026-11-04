@@ -55,12 +55,12 @@ export function StorageSettings({ Row }: { Row: (p: { label: string; children: R
           <span>Encrypted: {p.disk.detail}</span>
         ) : (
           <span className="warn-text">
-            {p.disk.state === 'not-encrypted' ? 'Not encrypted' : 'Could not tell'} ({p.disk.detail}). Captured traffic holds cookies, tokens and passwords in plain form. Keep projects on an encrypted disk (LUKS full-disk encryption, or an encrypted home folder) if this computer could be lost or shared.
+            {p.disk.state === 'not-encrypted' ? 'Not encrypted' : 'Could not tell'} ({p.disk.detail}). Captured traffic holds cookies, tokens and passwords in plain form. Keep projects on an encrypted disk (BitLocker on Windows; LUKS full-disk encryption or an encrypted home folder on Linux) if this computer could be lost or shared.
           </span>
         )}
       </Row>
       <Row label="Saved credentials">
-        {!p ? '...' : p.secrets === 'keyring' ? `Identities are encrypted with a key kept in ${p.keyring}` : <span className="warn-text">No OS keyring found, so identities are stored as plain text in the project. Install libsecret-tools (secret-tool) and a keyring such as GNOME Keyring or KWallet.</span>}
+        {!p ? '...' : p.secrets === 'keyring' ? `Identities are encrypted with a key kept in ${p.keyring}` : <span className="warn-text">No OS keyring found, so identities are stored as plain text in the project. On Linux, install libsecret-tools (secret-tool) and a keyring such as GNOME Keyring or KWallet; on Windows, DPAPI is used through PowerShell, which was not available.</span>}
       </Row>
       <Row label="Keep traffic">
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>

@@ -1,13 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { defaultDataDir } from './paths.js';
 
 /**
  * Secrets at rest. The CA's private key and saved credentials (identities)
  * are encrypted with a master key that lives in the OS keyring (the Secret
- * Service: GNOME Keyring, KWallet), so a copy of the data folder or project
- * database alone does not give them away. Where there is no keyring, they
+ * Service: GNOME Keyring, KWallet; on Windows, DPAPI), so a copy of the data
+ * folder or project database alone does not give them away. Where there is no keyring, they
  * stay in files only the user can read, and the app says so.
  */
 
@@ -54,6 +55,62 @@ export class SecretToolKeyring implements Keyring {
   }
 }
 
+/** PowerShell, for the Windows APIs Node has no binding for. Script text only; inputs go through stdin. */
+function powershell(script: string, input = ''): { ok: boolean; out: string; err: string } {
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { input, encoding: 'utf8', timeout: 30_000, windowsHide: true });
+  return { ok: !r.error && r.status === 0, out: r.stdout ?? '', err: r.error?.message ?? r.stderr ?? '' };
+}
+
+/**
+ * Windows: each secret is a DPAPI blob (CurrentUser scope) in a file. Only
+ * this Windows account on this computer can unprotect it, as with the
+ * browser's saved passwords.
+ */
+export class DpapiKeyring implements Keyring {
+  readonly name = 'Windows DPAPI';
+  constructor(private readonly dir: string) {}
+
+  private file(key: string) {
+    return join(this.dir, `${key.replace(/[^\w.-]/g, '_')}.dpapi`);
+  }
+
+  static available(): boolean {
+    return process.platform === 'win32' && powershell('Add-Type -AssemblyName System.Security; exit 0').ok;
+  }
+
+  get(key: string): string | undefined {
+    const f = this.file(key);
+    if (!existsSync(f)) return undefined;
+    const r = powershell(
+      "Add-Type -AssemblyName System.Security; $b = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()); " +
+        "[Console]::Out.Write([Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Unprotect($b, $null, 'CurrentUser')))",
+      readFileSync(f, 'utf8'),
+    );
+    if (!r.ok) throw new Error(`could not read ${key} with DPAPI: ${r.err.trim()}`);
+    return Buffer.from(r.out.trim(), 'base64').toString('utf8');
+  }
+
+  set(key: string, value: string): void {
+    const r = powershell(
+      "Add-Type -AssemblyName System.Security; $b = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()); " +
+        "[Console]::Out.Write([Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect($b, $null, 'CurrentUser')))",
+      Buffer.from(value, 'utf8').toString('base64'),
+    );
+    if (!r.ok || !r.out.trim()) throw new Error(`could not protect ${key} with DPAPI: ${r.err.trim()}`);
+    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    writeFileSync(this.file(key), r.out.trim(), { mode: 0o600 });
+    try {
+      chmodSync(this.file(key), 0o600);
+    } catch {
+      // POSIX modes mean little on Windows; the blob is useless to other accounts anyway
+    }
+  }
+
+  delete(key: string): void {
+    rmSync(this.file(key), { force: true });
+  }
+}
+
 /** For tests, and for callers that bring their own keyring (e.g. Electron's safeStorage). */
 export class MemoryKeyring implements Keyring {
   readonly name = 'memory';
@@ -74,7 +131,9 @@ let cached: Keyring | null | undefined;
 /** The keyring to use, or null when there is none. SIQ_KEYRING=none turns it off. */
 export function defaultKeyring(): Keyring | null {
   if (cached !== undefined) return cached;
-  cached = process.env.SIQ_KEYRING === 'none' ? null : SecretToolKeyring.available() ? new SecretToolKeyring() : null;
+  if (process.env.SIQ_KEYRING === 'none') cached = null;
+  else if (process.platform === 'win32') cached = DpapiKeyring.available() ? new DpapiKeyring(join(defaultDataDir(), 'keyring')) : null;
+  else cached = SecretToolKeyring.available() ? new SecretToolKeyring() : null;
   return cached;
 }
 
@@ -139,6 +198,7 @@ export interface DiskEncryption {
  * reports it. Linux only; elsewhere "unknown".
  */
 export function diskEncryption(path: string, root = '/'): DiskEncryption {
+  if (process.platform === 'win32') return bitlocker(path);
   if (process.platform !== 'linux') return { state: 'unknown', detail: `not checked on ${process.platform}` };
   try {
     let real = path;
@@ -189,4 +249,25 @@ function cryptBelow(sysDir: string, root: string, depth: number): string | undef
   }
   // A partition: its parent's holders do not matter, but a partition of a dm device does.
   return undefined;
+}
+
+/**
+ * BitLocker state of a drive, from the System.Volume.BitLockerProtection
+ * value Explorer shows (reading it needs no administrator rights).
+ */
+export function bitlockerState(value: number | null, drive: string): DiskEncryption {
+  if (value === 1 || value === 3 || value === 6) return { state: 'encrypted', detail: `BitLocker on ${drive}` };
+  if (value === 0 || value === 2 || value === 5 || value === 8) {
+    const why = value === 5 ? 'BitLocker suspended' : value === 8 ? 'BitLocker waiting for activation' : 'BitLocker off';
+    return { state: 'not-encrypted', detail: `${why} on ${drive}` };
+  }
+  return { state: 'unknown', detail: `BitLocker state not reported for ${drive}` };
+}
+
+function bitlocker(path: string): DiskEncryption {
+  const drive = /^([a-z]):/i.exec(path)?.[1]?.toUpperCase();
+  if (!drive) return { state: 'unknown', detail: `${path} is not on a lettered drive (network share?)` };
+  const r = powershell(`$v = (New-Object -ComObject Shell.Application).NameSpace('${drive}:').Self.ExtendedProperty('System.Volume.BitLockerProtection'); if ($v -ne $null) { [Console]::Out.Write($v) }`);
+  const value = r.ok && /^\d+$/.test(r.out.trim()) ? Number(r.out.trim()) : null;
+  return bitlockerState(value, `${drive}:`);
 }

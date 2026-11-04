@@ -1,9 +1,9 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from '@siteinquisition/devkit/test';
-import { ar, tar, tarGz } from '../src/package/archive.js';
+import { ar, tar, tarGz, unzip, zip } from '../src/package/archive.js';
 
 const has = (cmd: string) => spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0;
 
@@ -28,7 +28,7 @@ describe('release archives', () => {
       ),
     );
     const out = join(dir, 'out');
-    execFileSync('mkdir', ['-p', out]);
+    mkdirSync(out, { recursive: true });
     execFileSync('tar', ['xzf', file, '-C', out]);
     expect(readFileSync(join(out, 'app/run'), 'utf8')).toContain('echo hi');
     expect(statSync(join(out, 'app/run')).mode & 0o777).toBe(0o755);
@@ -61,6 +61,38 @@ describe('release archives', () => {
       const f = join(dir, 'x.ar');
       writeFileSync(f, a);
       expect(execFileSync('ar', ['t', f], { encoding: 'utf8' }).trim().split('\n')).toEqual(['debian-binary', 'odd', 'next']);
+    }
+  });
+
+  it('writes zip files that it and other tools read back', () => {
+    const big = Buffer.alloc(100_000, 'abc');
+    const random = Buffer.from(Array.from({ length: 5000 }, (_, i) => (i * 7919) % 251));
+    const z = zip(
+      [
+        { path: 'app/' },
+        { path: 'app/SiteInquisition.exe', data: random },
+        { path: 'app/bin/siq.cmd', data: Buffer.from('@echo off\r\n') },
+        { path: 'app/big.txt', data: big },
+        { path: 'app/empty', data: Buffer.alloc(0) },
+        { path: `app/${long}`, data: Buffer.from('deep') },
+      ],
+      1_700_000_000,
+    );
+    expect(z.length).toBeLessThan(big.length); // deflated
+    const back = unzip(z);
+    expect(back.map((e) => e.path)).toEqual(['app/', 'app/SiteInquisition.exe', 'app/bin/siq.cmd', 'app/big.txt', 'app/empty', `app/${long}`]);
+    expect(back[1]!.data).toEqual(random);
+    expect(back[3]!.data).toEqual(big);
+    expect(back[4]!.data).toEqual(Buffer.alloc(0));
+    expect(zip([{ path: 'a', data: Buffer.from('x') }], 1_700_000_000)).toEqual(zip([{ path: 'a', data: Buffer.from('x') }], 1_700_000_000));
+    const flipped = Buffer.from(z);
+    flipped[60] ^= 0xff;
+    expect(() => unzip(flipped)).toThrow();
+    if (has('python3')) {
+      const f = join(dir, 'x.zip');
+      writeFileSync(f, z);
+      const r = spawnSync('python3', ['-I', '-c', 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); print(z.testzip()); print(len(z.namelist()))', f], { encoding: 'utf8' });
+      expect(r.stdout.trim().split('\n')).toEqual(['None', '6']);
     }
   });
 });

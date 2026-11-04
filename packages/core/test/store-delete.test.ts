@@ -74,7 +74,8 @@ describe('deleting traffic', () => {
     expect(store.liveBytes()).toBeLessThanOrEqual(1_500_000);
   });
 
-  it('keeps the project folder and database private to the user', () => {
+  // POSIX modes; on Windows the folder's ACL comes from its parent (the user's profile by default).
+  it.skipIf(process.platform === 'win32')('keeps the project folder and database private to the user', () => {
     add('http://e.test/', 'x');
     expect(statSync(join(dir, 'p')).mode & 0o777).toBe(0o700);
     expect(statSync(join(dir, 'p', 'project.sqlite')).mode & 0o077).toBe(0);

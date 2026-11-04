@@ -83,6 +83,8 @@ function readExact(n: number): Buffer {
       if (got === 0) throw new Error('the core closed the SDK channel');
       off += got;
     } catch (e) {
+      // Windows reports a closed pipe as EOF rather than a zero-length read.
+      if ((e as NodeJS.ErrnoException).code === 'EOF') throw new Error('the core closed the SDK channel');
       if ((e as NodeJS.ErrnoException).code !== 'EAGAIN') throw e;
       Atomics.wait(nap, 0, 0, 1);
     }

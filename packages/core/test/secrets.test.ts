@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
-import { CA_VALID_DAYS, Core, MemoryKeyring, SecretBox, diskEncryption, loadOrCreateCA, removeCA, rotateCA } from '@siteinquisition/core';
+import { CA_VALID_DAYS, Core, MemoryKeyring, SecretBox, bitlockerState, diskEncryption, loadOrCreateCA, removeCA, rotateCA } from '@siteinquisition/core';
 
 let dir: string;
 beforeAll(() => {
@@ -31,8 +31,11 @@ describe('CA key at rest', () => {
     const plain = await loadOrCreateCA(data, { keyring: null });
     expect(plain.keyProtection).toBe('file');
     const keyFile = join(data, 'ca', 'siteinquisition-ca.key');
-    expect(statSync(keyFile).mode & 0o077).toBe(0);
-    expect(statSync(join(data, 'ca')).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32') {
+      // POSIX modes; on Windows the per-user profile folder's ACL does this job.
+      expect(statSync(keyFile).mode & 0o077).toBe(0);
+      expect(statSync(join(data, 'ca')).mode & 0o777).toBe(0o700);
+    }
     expect((plain.expiresAt.getTime() - Date.now()) / 86_400_000).toBeLessThan(CA_VALID_DAYS + 1);
 
     const ring = new MemoryKeyring();
@@ -88,7 +91,7 @@ describe('saved identities', () => {
 
 describe('disk encryption check', () => {
   /** A fake /proc and /sys: / on a LUKS volume under LVM, /data on a plain partition. */
-  it('finds dm-crypt below LVM, and reports a plain partition', () => {
+  it.skipIf(process.platform === 'win32')('finds dm-crypt below LVM, and reports a plain partition', () => {
     const root = join(dir, 'fake');
     mkdirSync(join(root, 'proc/self'), { recursive: true });
     writeFileSync(
@@ -117,3 +120,19 @@ describe('disk encryption check', () => {
     expect(diskEncryption('/home/me/.Private/no-such', root)).toEqual({ state: 'encrypted', detail: 'eCryptfs on /home/me/.Private' });
   });
 });
+
+describe('BitLocker check', () => {
+  it('reads the protection values Explorer reports', () => {
+    expect(bitlockerState(1, 'C:')).toEqual({ state: 'encrypted', detail: 'BitLocker on C:' });
+    expect(bitlockerState(6, 'D:').state).toBe('encrypted');
+    expect(bitlockerState(2, 'C:')).toEqual({ state: 'not-encrypted', detail: 'BitLocker off on C:' });
+    expect(bitlockerState(5, 'C:')).toEqual({ state: 'not-encrypted', detail: 'BitLocker suspended on C:' });
+    expect(bitlockerState(null, 'E:').state).toBe('unknown');
+  });
+
+  it.skipIf(process.platform !== 'win32')('asks Windows about the project drive', () => {
+    expect(['encrypted', 'not-encrypted', 'unknown']).toContain(diskEncryption(dir).state);
+    expect(diskEncryption('\\\\server\\share\\p').state).toBe('unknown');
+  });
+});
+

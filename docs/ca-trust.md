@@ -4,8 +4,9 @@ SiteInquisition decrypts HTTPS for in-scope hosts by signing certificates with
 its own root CA. A device only accepts those certificates if it trusts the CA.
 
 Trusting the CA lets **anyone who has its private key** impersonate any website
-to that device. The key is kept in `~/.config/siteinquisition/ca`, encrypted with
-a key from your OS keyring when there is one. Install the CA only on devices
+to that device. The key is kept in `~/.config/siteinquisition/ca` (on Windows,
+`%APPDATA%\SiteInquisition\ca`), encrypted with a key from your OS keyring
+(Secret Service on Linux, DPAPI on Windows) when there is one. Install the CA only on devices
 you test with, and remove it when you are done.
 
 Find the certificate and its fingerprint with:
@@ -40,6 +41,26 @@ sudo trust anchor --remove siteinquisition-ca.pem
 
 Node.js ignores the system store by default; use `NODE_EXTRA_CA_CERTS=siteinquisition-ca.pem`
 for one run instead of installing anything. Python `requests` uses `REQUESTS_CA_BUNDLE`.
+
+## Windows (Edge, Chrome, curl.exe and most Windows programs)
+
+Install it for your user only, which needs no administrator rights. Windows
+shows the fingerprint and asks you to confirm.
+
+```bat
+certutil -user -addstore Root siteinquisition-ca.pem
+```
+
+To remove it, in PowerShell (this removes every SiteInquisition CA you trusted,
+old ones included):
+
+```powershell
+Get-ChildItem Cert:\CurrentUser\Root | Where-Object Subject -like '*O=SiteInquisition*' | Remove-Item
+```
+
+Or open `certmgr.msc`, go to Trusted Root Certification Authorities,
+Certificates, and use All Tasks, Import (or Delete to remove). Firefox keeps
+its own store; see below. Node.js and Python behave as on Linux.
 
 ## Chrome and Chromium on Linux
 

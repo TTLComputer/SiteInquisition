@@ -1,16 +1,16 @@
 import { createRequire } from 'node:module';
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
-import { ar, tarGz, type TarEntry } from './archive.js';
+import { ar, tarGz, unzip, zip, type TarEntry, type ZipEntry } from './archive.js';
 
 /**
- * Release packaging for Linux, without electron-builder: lay out an
- * unpacked app (Electron's own files, renamed, plus our code in
- * resources/app), then write it as a .tar.gz and a .deb.
+ * Release packaging without electron-builder: lay out an unpacked app
+ * (Electron's own files, renamed, plus our code in resources/app), then write
+ * it as a .tar.gz and a .deb for Linux, or a .zip for Windows.
  *
  *   resources/app/                  package.json, dist/ (main process), renderer/ (UI)
  *   resources/app/node_modules/     @siteinquisition/{core,codecs,cli}: package.json + dist
- *   bin/siq                         the CLI, run by the app's binary in Node mode
+ *   bin/siq (Linux), bin/siq.cmd    the CLI, run by the app's binary in Node mode
  */
 
 export interface PackageOptions {
@@ -58,7 +58,7 @@ function copyPackage(root: string, name: (typeof OUR_PACKAGES)[number], dest: st
   cpSync(join(src, 'dist'), join(out, 'dist'), { recursive: true, filter: (f) => !f.endsWith('.map') && !f.endsWith('.d.ts') && !f.endsWith('.d.cts') });
 }
 
-/** Write the unpacked app to `dir`. */
+/** Write the unpacked Linux app to `dir`. */
 function layout(root: string, dir: string, version: string) {
   const electron = electronDist(root);
   cpSync(electron, dir, { recursive: true, verbatimSymlinks: true });
@@ -67,20 +67,7 @@ function layout(root: string, dir: string, version: string) {
   cpSync(join(dir, 'electron'), bin);
   rmSync(join(dir, 'electron'));
   chmodSync(bin, 0o755);
-
-  const app = join(dir, 'resources', 'app');
-  mkdirSync(app, { recursive: true });
-  const appPkg = readJson(join(root, 'packages', 'app', 'package.json'));
-  writeFileSync(
-    join(app, 'package.json'),
-    JSON.stringify({ name: NAME, productName: PRODUCT, version, description: appPkg.description, license: appPkg.license, type: 'module', main: 'dist/main.js' }, null, 2),
-  );
-  cpSync(join(root, 'packages', 'app', 'dist'), join(app, 'dist'), { recursive: true, filter: (f) => !f.endsWith('.map') && !/\.d\.c?ts$/.test(f) });
-  const ui = join(root, 'packages', 'ui', 'dist');
-  if (!existsSync(join(ui, 'index.html'))) throw new Error('packages/ui is not built; run pnpm build');
-  cpSync(ui, join(app, 'renderer'), { recursive: true });
-  for (const p of OUR_PACKAGES) copyPackage(root, p, join(app, 'node_modules'), version);
-
+  addApp(root, dir, version);
   mkdirSync(join(dir, 'bin'), { recursive: true });
   writeFileSync(
     join(dir, 'bin', 'siq'),
@@ -93,6 +80,22 @@ function layout(root: string, dir: string, version: string) {
     ].join('\n'),
     { mode: 0o755 },
   );
+}
+
+/** Our part of the package, the same on every platform: resources/app and the license files. */
+function addApp(root: string, dir: string, version: string) {
+  const app = join(dir, 'resources', 'app');
+  mkdirSync(app, { recursive: true });
+  const appPkg = readJson(join(root, 'packages', 'app', 'package.json'));
+  writeFileSync(
+    join(app, 'package.json'),
+    JSON.stringify({ name: NAME, productName: PRODUCT, version, description: appPkg.description, license: appPkg.license, type: 'module', main: 'dist/main.js' }, null, 2),
+  );
+  cpSync(join(root, 'packages', 'app', 'dist'), join(app, 'dist'), { recursive: true, filter: (f) => !f.endsWith('.map') && !/\.d\.c?ts$/.test(f) });
+  const ui = join(root, 'packages', 'ui', 'dist');
+  if (!existsSync(join(ui, 'index.html'))) throw new Error('packages/ui is not built; run pnpm build');
+  cpSync(ui, join(app, 'renderer'), { recursive: true });
+  for (const p of OUR_PACKAGES) copyPackage(root, p, join(app, 'node_modules'), version);
 
   cpSync(join(root, 'LICENSE'), join(dir, 'LICENSE.siteinquisition'));
   const notices = join(root, 'THIRD_PARTY_NOTICES.md');
@@ -227,4 +230,116 @@ export function packageLinux(opts: PackageOptions): PackageResult {
   }
   for (const f of files) if (!statSync(f).size) throw new Error(`empty output ${f}`);
   return { version, unpacked, files };
+}
+
+// ---------- Windows ----------
+
+export interface WindowsPackageOptions {
+  root: string;
+  /** Output folder; its win-unpacked folder and zip are replaced. */
+  out: string;
+  mtime?: number;
+  /**
+   * Electron's Windows release zip. Defaults to SIQ_ELECTRON_WIN32_ZIP, then
+   * Electron's own dist on a Windows machine, then a download through
+   * @electron/get (cached, checked against Electron's checksums).
+   */
+  electronZip?: string;
+}
+
+/** Electron's win32-x64 files, as zip entries. */
+async function electronWin32(root: string, zipPath?: string): Promise<ZipEntry[]> {
+  const given = zipPath ?? process.env.SIQ_ELECTRON_WIN32_ZIP;
+  if (given) return unzip(readFileSync(given));
+  const req = createRequire(join(root, 'packages', 'app', 'package.json'));
+  const electronDir = dirname(req.resolve('electron/package.json'));
+  if (process.platform === 'win32' && existsSync(join(electronDir, 'dist', 'electron.exe'))) {
+    const dist = join(electronDir, 'dist');
+    const out: ZipEntry[] = [];
+    const walk = (abs: string) => {
+      for (const name of readdirSync(abs).sort()) {
+        const p = join(abs, name);
+        const rel = relative(dist, p).split('\\').join('/');
+        if (statSync(p).isDirectory()) {
+          out.push({ path: `${rel}/` });
+          walk(p);
+        } else out.push({ path: rel, data: readFileSync(p) });
+      }
+    };
+    walk(dist);
+    return out;
+  }
+  const version = String(readJson(join(electronDir, 'package.json')).version);
+  const fromElectron = createRequire(join(electronDir, 'package.json'));
+  const { downloadArtifact } = fromElectron('@electron/get') as { downloadArtifact(o: Record<string, unknown>): Promise<string> };
+  const file = await downloadArtifact({ version, artifactName: 'electron', platform: 'win32', arch: 'x64', checksums: fromElectron('./checksums.json') });
+  return unzip(readFileSync(file));
+}
+
+const SIQ_CMD = [
+  '@echo off',
+  'rem The siq CLI, run by SiteInquisition.exe in Node mode.',
+  'setlocal',
+  'set ELECTRON_RUN_AS_NODE=1',
+  `"%~dp0..\\${PRODUCT}.exe" "%~dp0..\\resources\\app\\node_modules\\@siteinquisition\\cli\\dist\\main.js" %*`,
+  'exit /b %ERRORLEVEL%',
+  '',
+].join('\r\n');
+
+/**
+ * Package for Windows x64: a portable zip that runs from any folder, and the
+ * same files unpacked (for the smoke test). Works on Linux too.
+ */
+export async function packageWindows(opts: WindowsPackageOptions): Promise<PackageResult> {
+  const root = resolve(opts.root);
+  const version = String(readJson(join(root, 'package.json')).version);
+  const mtime = opts.mtime ?? Number(process.env.SOURCE_DATE_EPOCH ?? 0);
+  const out = resolve(opts.out);
+  mkdirSync(out, { recursive: true });
+  const unpacked = join(out, 'win-unpacked');
+  rmSync(unpacked, { recursive: true, force: true });
+  const electron = await electronWin32(root, opts.electronZip);
+  for (const e of electron) {
+    let path = e.path;
+    if (path === 'resources/default_app.asar') continue;
+    if (path === 'electron.exe') path = `${PRODUCT}.exe`;
+    const abs = join(unpacked, ...path.split('/'));
+    if (!e.data) mkdirSync(abs, { recursive: true });
+    else {
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, e.data);
+    }
+  }
+  if (!existsSync(join(unpacked, `${PRODUCT}.exe`))) throw new Error('the Electron zip has no electron.exe; is it the win32 build?');
+  addApp(root, unpacked, version);
+  mkdirSync(join(unpacked, 'bin'), { recursive: true });
+  writeFileSync(join(unpacked, 'bin', 'siq.cmd'), SIQ_CMD);
+  writeFileSync(
+    join(unpacked, 'README.txt'),
+    [
+      `SiteInquisition ${version} for Windows (x64)`,
+      '',
+      'Run SiteInquisition.exe to start the app. Keep the folder together: the app needs every file in it.',
+      'For the command line, add the bin folder to PATH and run: siq --help',
+      'Uninstall by deleting this folder. Your data is in %APPDATA%\\SiteInquisition and your project folders;',
+      'remove the CA from Windows first (certmgr.msc, Trusted Root Certification Authorities). See docs/ca-trust.md.',
+      '',
+    ].join('\r\n'),
+  );
+  const base = `${NAME}-${version}-win-x64`;
+  const entries: ZipEntry[] = [{ path: `${base}/` }];
+  const walk = (abs: string) => {
+    for (const name of readdirSync(abs).sort()) {
+      const p = join(abs, name);
+      const rel = `${base}/${relative(unpacked, p).split('\\').join('/')}`;
+      if (statSync(p).isDirectory()) {
+        entries.push({ path: `${rel}/` });
+        walk(p);
+      } else entries.push({ path: rel, data: readFileSync(p) });
+    }
+  };
+  walk(unpacked);
+  const file = join(out, `${base}.zip`);
+  writeFileSync(file, zip(entries, mtime));
+  return { version, unpacked, files: [file] };
 }

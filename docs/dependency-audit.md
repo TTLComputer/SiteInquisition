@@ -89,9 +89,22 @@ In the UI, the Streams composer has a Frames mode with a preset picker and an ed
 
 Tests: 158 pass. New ones cover the codec, every preset, plans over replay, session replay, passthrough of fragmented frames through the proxy, injection both ways, and the Frames composer in the renderer. Real Chromium through the proxy received a 3-fragment injected message and echoed a split UTF-8 character correctly.
 
+## Round 4: vitest and Vite replaced
+
+`packages/devkit` holds two small tools built on TypeScript, which the repo already needs:
+
+- **Test runner** (`siq-test`, about 950 lines). It has the vitest API, so test files only changed their import line: `describe`, `it`/`test` with `.each`, `.skip`, `.skipIf`, `.only` and `.todo`, the four hooks, per-test timeouts, and `expect` with the matchers the repo uses, including `.not`, `.resolves`, `.rejects`, `expect.poll` and asymmetric matchers. Module hooks compile TypeScript with `transpileModule`, let `./x.js` find `./x.ts`, and point workspace packages at their sources. Each file runs in its own process, several at a time. Failures print a line diff and the test's stack. `-t` filters by name, file arguments filter by path, and `--watch` reruns on change.
+- **Bundler** (`siq-bundle`, about 450 lines). It reads the entry from `index.html` and compiles TS, TSX and ES modules to CommonJS with `transpileModule`. It resolves packages through `exports` maps (browser, import, default) and `main`, and applies `process.env.NODE_ENV`, dropping the `if` branches that become constant so React's development build is never included. CSS imports are concatenated in order, `@import` is inlined, and every `url()` asset is copied under a hashed name. `--serve` rebuilds on save and reloads the page.
+
+The script is 445 kB against Vite's 320 kB, because our own code is not minified. React ships pre-minified. The app loads it from disk, so the difference does not matter there.
+
+The whole tree, dev tools included, went from 160 packages to 27. The shipped tree is still 7. What remains is React, the fonts, Electron with its downloader, TypeScript and type definitions.
+
+Tests: 166 pass. New ones cover the matchers, the runner's hook order, skipping, `.each`, timeouts, failing `beforeAll`, diff output and name filters, plus the bundler (TSX, ES and CommonJS packages, conditional exports, JSON, CSS with `@import` and fonts, branch folding, missing imports). The renderer suites pass against the new bundle, and the Electron smoke test loads it from `file://`.
+
 ## Kept, and why
 
 - **react, react-dom** (5 packages): the UI.
 - **@fontsource/inter, @fontsource/jetbrains-mono** (0 dependencies): bundled fonts, so nothing loads from the network.
-- **electron, typescript** (dev): the app shell and the compiler.
-- **vite, @vitejs/plugin-react, vitest** (dev, about 130 packages): planned for replacement. Tests would move to a small vitest-compatible runner on `node:test`, so the test files barely change.
+- **electron, typescript** (dev): the app shell and the compiler. TypeScript also powers the test runner and the bundler.
+- **@types/*** (dev): type definitions only.

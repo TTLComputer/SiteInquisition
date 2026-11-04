@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from '@siteinquisition/devkit/test';
 import { MqttError, MqttParser, encodePacket, type Packet } from '../src/mqttcodec.js';
 import { VECTORS } from './mqtt-vectors.js';
 

@@ -6,9 +6,9 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "build": "tsc -p tsconfig.json --noEmit && node ../devkit/dist/bundle/cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "vite"
+    "dev": "node ../devkit/dist/bundle/cli.js --serve 5173"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",
@@ -19,10 +19,9 @@
   "devDependencies": {
     "@siteinquisition/codecs": "workspace:*",
     "@siteinquisition/core": "workspace:*",
+    "@siteinquisition/devkit": "workspace:*",
     "@types/node": "^22.20.5",
     "@types/react": "^18.3.31",
-    "@types/react-dom": "^18.3.7",
-    "@vitejs/plugin-react": "^6.2.1",
-    "vite": "^8.3.5"
+    "@types/react-dom": "^18.3.7"
   }
 }

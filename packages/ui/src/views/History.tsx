@@ -439,7 +439,7 @@ export function History() {
           >
             {error && <div className="empty error-text">Search failed: {error}</div>}
             {firstRun && <FirstRun />}
-            {!error && !firstRun && rows.length === 0 && !loading && <div className="empty">Nothing matches this filter.</div>}
+            {!error && !firstRun && info && rows.length === 0 && !loading && <div className="empty">Nothing matches this filter.</div>}
             <div style={{ height: rows.length * ROW_HEIGHT, position: 'relative' }}>
               {visible.map((r, i) => (
                 <Row

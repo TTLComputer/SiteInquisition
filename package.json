@@ -12,7 +12,8 @@
     "typecheck": "pnpm -r typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
-    "siq": "node packages/cli/dist/main.js"
+    "siq": "node packages/cli/dist/main.js",
+    "app": "pnpm --filter @siteinquisition/app start"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

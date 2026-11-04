@@ -1,0 +1,21 @@
+{
+  "name": "@siteinquisition/app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SiteInquisition desktop app: Electron shell that hosts the core and the renderer.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@siteinquisition/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@siteinquisition/ui": "workspace:*",
+    "electron": "^45.2.2"
+  }
+}

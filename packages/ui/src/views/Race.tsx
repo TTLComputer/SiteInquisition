@@ -5,9 +5,11 @@ import { Icon } from '../components/icons';
 import { fmtMs, parseRawRequest, toRawRequest } from '../format';
 import { bodyText } from '../actions';
 
-const SYNC: Array<{ id: 'last-byte' | 'single-packet' | 'none'; label: string; hint: string }> = [
+type Sync = 'last-byte' | 'single-packet' | 'h3-single-datagram' | 'none';
+const SYNC: Array<{ id: Sync; label: string; hint: string }> = [
   { id: 'last-byte', label: 'Last byte', hint: 'HTTP/1.1: send everything but the last byte on separate connections, then release all last bytes together.' },
   { id: 'single-packet', label: 'Single packet', hint: 'HTTP/2: all requests on one connection, final frames written in one go. One origin only.' },
+  { id: 'h3-single-datagram', label: 'Single datagram', hint: 'HTTP/3: all requests on one QUIC connection, every stream held at its last byte, then all last bytes in one UDP datagram. One origin only. The HTTP/3 lab has more controls.' },
   { id: 'none', label: 'Plain timers', hint: 'Start each request at its offset with no synchronisation. Good for spacing sends out.' },
 ];
 
@@ -17,7 +19,7 @@ const SYNC: Array<{ id: 'last-byte' | 'single-packet' | 'none'; label: string; h
  */
 export function Race() {
   const { client, raceItems, setRaceItems, selectedId, notify, select, setView, setQuery } = useApp();
-  const [sync, setSync] = useState<'last-byte' | 'single-packet' | 'none'>('last-byte');
+  const [sync, setSync] = useState<Sync>('last-byte');
   const [repeat, setRepeat] = useState(1);
   const [jitter, setJitter] = useState(0);
   const [ignoreTls, setIgnoreTls] = useState(false);

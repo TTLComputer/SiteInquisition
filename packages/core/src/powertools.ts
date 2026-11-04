@@ -8,6 +8,7 @@ import { applyEdits, Intercept, normalizeBreakpoint, type Breakpoint } from './i
 import { McpServer, type McpSettings, type ToolDef } from './mcp.js';
 import type { ProxyHooks } from './proxy.js';
 import { runRace, type RaceOptions, type RaceRequest } from './race.js';
+import { h3Tickets, runH3Plan, type H3PlanOptions, type H3PlanRequest } from './quic/plan.js';
 import { applyRule, conditionsMatch, normalizeMock, normalizeReplaceRule, type HookMessage, type MockRule, type ReplaceRule, type RuleInput } from './rules.js';
 import { normalizeScript, ScriptEngine, type Script, type Sdk } from './scripts.js';
 import { Sender, type AwsProfile, type Macro, type SendOptions, type SendRequest } from './send.js';
@@ -271,6 +272,8 @@ export class PowerTools {
         return { ...res, body: this.textBody(res.id, 'response') };
       },
       race: (requests: RaceRequest[], opts: RaceOptions) => runRace(store, requests, opts),
+      h3: (requests: Array<H3PlanRequest & { body?: string | Uint8Array }>, opts: H3PlanOptions = {}) =>
+        runH3Plan(store, requests.map((r) => ({ ...r, headers: r.headers ?? [], body: typeof r.body === 'string' ? new TextEncoder().encode(r.body) : r.body })), opts),
       vars: () => this.vars.values(),
       getVar: (name: string) => this.vars.values()[name],
       setVar: (name: string, value: string) => this.vars.set(String(name), String(value), 'script'),
@@ -291,6 +294,19 @@ export class PowerTools {
   // ---------- race and streams ----------
   race(requests: RaceRequest[], opts: RaceOptions) {
     return runRace(this.core.store, requests, opts);
+  }
+
+  /** HTTP/3 stream plan (the HTTP/3 lab). */
+  h3Plan(rows: H3PlanRequest[], opts: H3PlanOptions) {
+    return runH3Plan(this.core.store, rows, opts);
+  }
+
+  h3Tickets() {
+    return h3Tickets.list();
+  }
+
+  clearH3Tickets() {
+    h3Tickets.clear();
   }
 
   mqttPublish(exchangeId: string, msg: { to: 'broker' | 'device'; topic: string; payload: Uint8Array; qos?: 0 | 1; retain?: boolean }): boolean {
@@ -452,7 +468,7 @@ export class PowerTools {
       },
       {
         name: 'run_script',
-        description: 'Run JavaScript with the `siq` SDK (siq.search, siq.get, siq.body, siq.json, siq.send, siq.resend, siq.race, siq.setVar, siq.cookies, ...). The value of a final `return` is returned along with console output.',
+        description: 'Run JavaScript with the `siq` SDK (siq.search, siq.get, siq.body, siq.json, siq.send, siq.resend, siq.race, siq.h3, siq.setVar, siq.cookies, ...). The value of a final `return` is returned along with console output.',
         inputSchema: { type: 'object', properties: { code: str }, required: ['code'] },
         write: true,
         summary: (a) => `Run a script (${String(a.code).split('\n').length} lines)`,

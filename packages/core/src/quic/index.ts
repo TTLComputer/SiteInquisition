@@ -114,7 +114,12 @@ export class H3Server extends EventEmitter {
         const get = (n: string) => h.find(([k]) => k === n)?.[1] ?? '';
         const chunks: Buffer[] = [];
         stream.on('data', (d: Buffer) => chunks.push(d));
-        const ended = new Promise<Buffer>((r) => (stream.ended ? r(Buffer.concat(chunks)) : stream.once('end', () => r(Buffer.concat(chunks)))));
+        const ended = new Promise<Buffer>((r) => {
+          if (stream.ended) return r(Buffer.concat(chunks));
+          stream.once('end', () => r(Buffer.concat(chunks)));
+          // A reset request resolves with what arrived; check stream.resetCode.
+          stream.once('reset', () => r(Buffer.concat(chunks)));
+        });
         this.emit('request', {
           stream,
           session,

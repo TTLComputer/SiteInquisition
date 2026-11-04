@@ -16,6 +16,8 @@ export * from './intercept.js';
 export * from './mcp.js';
 export * from './powertools.js';
 export * from './race.js';
+export { runH3Plan, h3Tickets, type H3PlanRequest, type H3PlanOptions, type H3PlanResult, type H3PlanRun, type H3RowResult, type H3ConnectionReport } from './quic/plan.js';
+export { H3Server, h3Connect, requestFields, type H3ServerRequest } from './quic/index.js';
 export * from './rules.js';
 export * from './scripts.js';
 export * from './send.js';

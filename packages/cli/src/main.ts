@@ -78,7 +78,7 @@ function withStore<T>(fn: (store: CaptureStore) => T): T {
 program
   .command('proxy')
   .description('run the capture proxy headless and print traffic as it happens')
-  .option('--port <n>', 'proxy port (0 = first free port from 8000)', '8080')
+  .option('--port <n>', 'proxy port (0 = any free port)', '8080')
   .option('--api-port <n>', 'core API port (0 = pick a free port)', '0')
   .option('--lan', 'accept connections from other machines, e.g. IoT devices', false)
   .option('--include <host...>', 'add include rules for these host globs before starting')

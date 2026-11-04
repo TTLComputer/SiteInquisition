@@ -1,0 +1,35 @@
+{
+  "name": "@siteinquisition/core",
+  "version": "0.0.0",
+  "description": "SiteInquisition core: intercepting proxy, scope rules, capture database and core API.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@siteinquisition/codecs": "workspace:*",
+    "better-sqlite3": "^12.4.1",
+    "mockttp": "^4.2.1",
+    "ulid": "^3.0.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/ws": "^8.18.1",
+    "https-proxy-agent": "^9.1.0",
+    "undici": "^7.16.0"
+  }
+}

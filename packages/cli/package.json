@@ -1,0 +1,25 @@
+{
+  "name": "@siteinquisition/cli",
+  "version": "0.0.0",
+  "description": "siq: run the SiteInquisition core headless, search captured traffic and export the CA.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "siq": "dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@siteinquisition/core": "workspace:*",
+    "commander": "^14.0.1",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}

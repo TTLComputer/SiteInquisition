@@ -41,9 +41,11 @@ export function ApprovalCard({ a }: { a: Approval }) {
         <button className="btn small primary" onClick={() => void decide('once')}>
           Approve once
         </button>
-        <button className="btn small" onClick={() => void decide('ten-minutes')} title={`Approve every ${a.tool} call for the next 10 minutes`}>
-          Approve for 10 minutes
-        </button>
+        {a.allowGrant !== false && (
+          <button className="btn small" onClick={() => void decide('ten-minutes')} title={`Approve every ${a.tool} call for the next 10 minutes`}>
+            Approve for 10 minutes
+          </button>
+        )}
         {canReplay && (
           <button className="btn small" onClick={() => void decide('open-in-replay')} title="Do not send; open it in a Replay tab so you can check and send it yourself">
             Open in Replay instead

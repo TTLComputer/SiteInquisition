@@ -16,6 +16,8 @@ export interface ToolDef {
   run(args: Record<string, unknown>): Promise<unknown> | unknown;
   /** One line for the approval card. */
   summary?(args: Record<string, unknown>): string;
+  /** Every call needs its own approval: no "approve for 10 minutes" (running code). */
+  noGrant?: boolean;
 }
 
 export interface McpSettings {
@@ -29,6 +31,8 @@ export interface Approval {
   args: Record<string, unknown>;
   summary: string;
   createdAt: number;
+  /** Whether "approve for 10 minutes" is offered. */
+  allowGrant: boolean;
 }
 
 export type Decision = 'once' | 'ten-minutes' | 'deny' | 'open-in-replay';
@@ -65,6 +69,8 @@ export class McpServer extends EventEmitter<{ approval: [Approval]; decided: [st
     if (!p) return false;
     clearTimeout(p.timer);
     this.pending.delete(id);
+    // A tool that needs approval per call treats a 10-minute grant as this call only.
+    if (decision === 'ten-minutes' && !p.approval.allowGrant) decision = 'once';
     if (decision === 'ten-minutes') this.grants.set(p.approval.tool, Date.now() + 10 * 60_000);
     p.resolve(decision);
     this.emit('decided', id, decision);
@@ -79,9 +85,9 @@ export class McpServer extends EventEmitter<{ approval: [Approval]; decided: [st
 
   private async approve(tool: ToolDef, args: Record<string, unknown>): Promise<Decision> {
     if (this.settings().writeMode === 'allow') return 'once';
-    const grant = this.grants.get(tool.name);
+    const grant = tool.noGrant ? undefined : this.grants.get(tool.name);
     if (grant && grant > Date.now()) return 'once';
-    const approval: Approval = { id: newId(), tool: tool.name, args, summary: tool.summary?.(args) ?? tool.name, createdAt: Date.now() };
+    const approval: Approval = { id: newId(), tool: tool.name, args, summary: tool.summary?.(args) ?? tool.name, createdAt: Date.now(), allowGrant: !tool.noGrant };
     return new Promise<Decision>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(approval.id);

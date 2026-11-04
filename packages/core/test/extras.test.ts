@@ -296,7 +296,7 @@ describe('exports', () => {
     expect(pm.item[0]!.event[0]!.script.exec.join('\n')).toContain("pm.collectionVariables.set('order_id', String(pm.response.json().id))");
     const code = flowToTest(core.tools.flowList().find((f) => f.name === 'new-order')!);
     expect(code).toContain("expect(String(r.steps[0]?.status)).toMatch(\"^(201)$\")");
-    const script = core.tools.flowToTest('new-order');
+    const script = await core.tools.flowToTest('new-order');
     expect(script.kind).toBe('test');
     core.tools.vars.set('token', 'alice');
     const run = await core.tools.runScript(script);

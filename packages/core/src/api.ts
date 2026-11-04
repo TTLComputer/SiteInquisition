@@ -262,7 +262,9 @@ export class CoreApiServer {
         scripts: core.tools.scriptList(),
         stats: Object.fromEntries(core.tools.scripts.stats),
         errors: Object.fromEntries(core.tools.scripts.compileErrors),
+        untrusted: core.tools.untrustedScripts(),
       }),
+      'scripts.trust': (p) => core.tools.trustScript(str(p, 'id')!),
       'scripts.set': (p) => core.tools.setScripts(arr(p, 'scripts') as never),
       'scripts.logs': (p) => core.tools.scripts.logs.get(str(p, 'id')!) ?? [],
       'scripts.run': (p) => {

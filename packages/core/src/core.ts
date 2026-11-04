@@ -78,6 +78,8 @@ export function writeBrowserHttp3Hosts(projectDir: string, hosts: string[]): str
 
 export class Core {
   readonly projectDir: string;
+  /** Per-user folder: the CA and settings that belong to this computer, not the project. */
+  readonly dataDir: string;
   readonly store: CaptureStore;
   readonly scope: Scope;
   readonly proxy: ProxyEngine;
@@ -92,6 +94,7 @@ export class Core {
     readonly ca: CertificateAuthority,
   ) {
     this.projectDir = resolve(opts.projectDir);
+    this.dataDir = resolve(opts.dataDir ?? defaultDataDir());
     this.store = CaptureStore.openProject(this.projectDir, { ...opts.store, actor: opts.actor });
     this.scope = new Scope(this.store.getMeta<ScopeConfig>('scope') ?? DEFAULT_SCOPE);
     this.proxy = new ProxyEngine(this.store, this.scope, ca, opts.proxy, this.seen);

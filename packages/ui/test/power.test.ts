@@ -230,7 +230,8 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
     const input = page.getByLabel('Console input');
     await input.fill("siq.search('path:/api/', 50).length > 3");
     await input.press('Enter');
-    await expect.poll(() => page.locator('.console-log').textContent()).toContain('true');
+    // Each run starts a script host process, which is slower under the test's TypeScript loader.
+    await expect.poll(() => page.locator('.console-log').textContent(), { timeout: 8000 }).toContain('true');
     await shot('scripts');
   });
 });

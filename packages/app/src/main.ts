@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, shell, utilityProcess, type UtilityProcess } from 'electron';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createSocket } from 'node:dgram';
 import { createServer } from 'node:net';
 import { setupBrowser } from './browser.js';
@@ -102,6 +102,9 @@ function startCore(): Promise<Ready> {
 }
 
 function rendererIndex(): string {
+  // A packaged app carries the renderer next to its main process (see devkit/src/package).
+  const packaged = join(app.getAppPath(), 'renderer', 'index.html');
+  if (app.isPackaged || existsSync(packaged)) return packaged;
   const uiDir = dirname(require.resolve('@siteinquisition/ui/package.json'));
   return join(uiDir, 'dist', 'index.html');
 }
@@ -162,6 +165,30 @@ async function smoke(win: BrowserWindow, path: string) {
   }
   await new Promise((r) => setTimeout(r, 500));
   await capture(win, path);
+  // Scripts run in their own process; check one runs, and that the sandbox holds, in this build.
+  const rpc = (method: string, params: unknown) =>
+    win.webContents.executeJavaScript(`(async () => {
+      const c = await window.siq.getConnection();
+      const ws = new WebSocket(c.url + '?token=' + c.token);
+      await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: ${JSON.stringify(method)}, params: ${JSON.stringify(params)} }));
+      const m = await new Promise((r) => (ws.onmessage = (e) => r(JSON.parse(e.data))));
+      ws.close();
+      return m;
+    })()`) as Promise<{ result?: { ok: boolean; value?: string; error?: string }; error?: { message: string } }>;
+  const plain = await rpc('scripts.run', { code: '6 * 7' });
+  if (plain.result?.value !== '42') {
+    console.error(`smoke: a script did not run: ${JSON.stringify(plain)}`);
+    app.exit(1);
+    return;
+  }
+  const escape = await rpc('scripts.run', { code: "console.log.constructor('return process')().getBuiltinModule('node:child_process').execSync('id').toString()" });
+  if (escape.result?.ok !== false || !/restricted/.test(escape.result.error ?? '')) {
+    console.error(`smoke: the script sandbox did not hold: ${JSON.stringify(escape)}`);
+    app.exit(1);
+    return;
+  }
+  console.log('smoke: scripts ok (sandboxed)');
   // Optionally drive the built-in browser too: open the Browser view, load a URL, and wait for it to be recorded.
   const target = process.env.SIQ_SMOKE_BROWSER_URL;
   if (target) {

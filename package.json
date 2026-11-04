@@ -1,7 +1,7 @@
 {
   "name": "siteinquisition",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Intercepting proxy, built-in browser and replay toolkit for testing unfinished websites, APIs and IoT devices.",
   "license": "MIT",
   "type": "module",
@@ -15,7 +15,9 @@
     "test": "pnpm --filter @siteinquisition/devkit build && node packages/devkit/dist/test/cli.js",
     "test:watch": "pnpm --filter @siteinquisition/devkit build && node packages/devkit/dist/test/cli.js --watch",
     "siq": "node packages/cli/dist/main.js",
-    "app": "pnpm --filter @siteinquisition/app start"
+    "app": "pnpm --filter @siteinquisition/app start",
+    "package": "pnpm --filter @siteinquisition/devkit build && node packages/devkit/dist/package/cli.js",
+    "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
     "@siteinquisition/devkit": "workspace:*",

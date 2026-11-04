@@ -1,6 +1,6 @@
 {
   "name": "@siteinquisition/cli",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "siq: run the SiteInquisition core headless, search captured traffic and export the CA.",
   "license": "MIT",
   "type": "module",

@@ -121,6 +121,13 @@ export interface CoreInfo {
   browserProxyPort?: number | null;
   apiPort: number | null;
   allowLan: boolean;
+  /** How data at rest is protected (older cores leave it out). */
+  protection?: {
+    caKey: 'keyring' | 'file';
+    secrets: 'keyring' | 'file';
+    keyring: string | null;
+    disk: { state: 'encrypted' | 'not-encrypted' | 'unknown'; detail: string };
+  };
   ca: { certPath: string; fingerprint: string; expiresAt: string };
   decryptHosts: string[];
   stats: { exchanges: number; databaseBytes: number };

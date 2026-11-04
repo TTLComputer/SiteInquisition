@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { SecretBox } from './secrets.js';
 import { bytesToString, decodeChain, detectChain } from '@siteinquisition/codecs';
 import { coverage, pathTemplate } from './coverage.js';
 import { checkExchange, contractScan } from './contract.js';
@@ -293,11 +294,21 @@ export class PowerTools {
     return contractScan(this.core.store, this.specs(), host);
   }
   identities(): Identity[] {
-    return this.meta<Identity[]>('identities', [{ name: 'no auth', headers: [], anonymous: true }]);
+    const fallback: Identity[] = [{ name: 'no auth', headers: [], anonymous: true }];
+    const raw = this.core.store.getMeta<Identity[] | string>('identities');
+    if (raw === undefined) return fallback;
+    if (!SecretBox.isSealed(raw)) return raw as Identity[];
+    if (!this.core.secrets) throw new Error('Saved identities are encrypted with a key from the OS keyring, which is not available. Unlock the keyring and try again.');
+    try {
+      return JSON.parse(this.core.secrets.open(raw).toString('utf8')) as Identity[];
+    } catch {
+      throw new Error("Saved identities were encrypted on another computer or with another keyring and cannot be read here. Save new ones to replace them.");
+    }
   }
   setIdentities(list: Identity[]): Identity[] {
     for (const i of list) if (!i.name?.trim()) throw new Error('an identity needs a name');
-    this.core.store.setMeta('identities', list);
+    // Identities hold tokens and passwords: keep them encrypted when there is a keyring.
+    this.core.store.setMeta('identities', this.core.secrets ? this.core.secrets.seal(JSON.stringify(list)) : list);
     return list;
   }
   authMatrix(exchangeIds: string[], identities?: string[], ignoreTlsErrors?: boolean) {

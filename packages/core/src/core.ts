@@ -9,6 +9,7 @@ import { DEFAULT_SCOPE, Scope, type ScopeConfig } from './scope.js';
 import { SeenHosts } from './seen.js';
 import { PowerTools } from './powertools.js';
 import { LanGate } from './lan.js';
+import { SecretBox, defaultKeyring, diskEncryption, type DiskEncryption, type Keyring } from './secrets.js';
 import { CaptureStore, type StoreOptions } from './store.js';
 import { newId } from './ids.js';
 
@@ -32,6 +33,8 @@ export interface CoreOptions {
   browserProxy?: boolean | { port?: number; http3?: boolean };
   /** Core API settings, or false to run without it. */
   api?: { port?: number; token?: string } | false;
+  /** Where the master key for secrets at rest lives. Defaults to the OS keyring; null stores secrets as plain, user-only files. */
+  keyring?: Keyring | null;
 }
 
 /** Connection details a running core writes into its project folder for local clients such as `siq`. */
@@ -97,6 +100,9 @@ export class Core {
   readonly seen = new SeenHosts();
   /** Who on the LAN may connect, and who is waiting to be let in. */
   readonly lan: LanGate;
+  /** Encrypts saved credentials with the keyring's master key; undefined without a keyring. */
+  readonly secrets: SecretBox | undefined;
+  private disk?: DiskEncryption;
   readonly tools: PowerTools;
 
   private constructor(
@@ -105,6 +111,7 @@ export class Core {
   ) {
     this.projectDir = resolve(opts.projectDir);
     this.dataDir = resolve(opts.dataDir ?? defaultDataDir());
+    this.secrets = SecretBox.open(opts.keyring === undefined ? defaultKeyring() : opts.keyring);
     this.store = CaptureStore.openProject(this.projectDir, { ...opts.store, actor: opts.actor });
     this.scope = new Scope(this.store.getMeta<ScopeConfig>('scope') ?? DEFAULT_SCOPE);
     const saved = this.store.getMeta<string[]>('lanAllow') ?? [];
@@ -127,7 +134,7 @@ export class Core {
   }
 
   static async open(opts: CoreOptions): Promise<Core> {
-    const ca = await loadOrCreateCA(opts.dataDir ?? defaultDataDir());
+    const ca = await loadOrCreateCA(opts.dataDir ?? defaultDataDir(), { keyring: opts.keyring });
     return new Core(opts, ca);
   }
 
@@ -203,6 +210,17 @@ export class Core {
     });
   }
 
+  /** How data at rest is protected, for the Settings warning. */
+  protection() {
+    this.disk ??= diskEncryption(this.projectDir);
+    return {
+      caKey: this.ca.keyProtection,
+      secrets: this.secrets ? ('keyring' as const) : ('file' as const),
+      keyring: this.secrets?.keyring.name ?? null,
+      disk: this.disk,
+    };
+  }
+
   lanState() {
     return { enabled: this.lan.enabled, allowed: this.lan.allowed, pending: this.lan.pending() };
   }
@@ -220,6 +238,7 @@ export class Core {
       ca: { certPath: this.ca.certPath, fingerprint: this.ca.fingerprint, expiresAt: this.ca.expiresAt.toISOString() },
       decryptHosts: this.scope.decryptHosts(),
       allowLan: !!this.opts.proxy?.allowLan,
+      protection: this.protection(),
       stats: this.store.stats(),
       mqtt: this.mqtt.map((m) => ({ port: safe(() => m.port), broker: m.brokerUrl, listenTls: !!m.config.listenTls })),
     };

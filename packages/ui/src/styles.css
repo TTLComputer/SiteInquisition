@@ -572,3 +572,4 @@ textarea.editor.composer-text { min-height: 90px; height: 110px; width: 100%; bo
 .diff-before { color: var(--diff-del); background: var(--diff-del-bg); font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
 .diff-after { color: var(--diff-add); background: var(--diff-add-bg); font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
 .form-grid { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 6px 10px; align-items: center; font-size: 12px; }
+.warn-text { color: var(--warn-text); }

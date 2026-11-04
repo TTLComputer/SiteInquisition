@@ -8,6 +8,8 @@ import {
   VERSION,
   defaultDataDir,
   loadOrCreateCA,
+  removeCA,
+  rotateCA,
   normalizeRule,
   parseRange,
   readRuntimeInfo,
@@ -431,8 +433,10 @@ lan
     console.log(`removed ${spec}`);
   });
 
-program
-  .command('ca')
+const caCmd = program.command('ca').description('the root CA that signs certificates for decrypted hosts');
+
+caCmd
+  .command('show', { isDefault: true })
   .description('print the root CA certificate path and fingerprint, or the PEM itself')
   .option('--pem', 'print the certificate in PEM format', false)
   .action(async (o: { pem: boolean }) => {
@@ -442,8 +446,36 @@ program
       console.log(`certificate  ${ca.certPath}`);
       console.log(`sha256       ${ca.fingerprint}`);
       console.log(`expires      ${ca.expiresAt.toISOString().slice(0, 10)}`);
+      console.log(`private key  ${ca.keyProtection === 'keyring' ? 'encrypted with a key from the OS keyring' : paint(33, 'plain file readable only by you (no OS keyring found; install libsecret-tools)')}`);
       console.log('Install this certificate as a trusted root on devices whose HTTPS traffic you want to inspect.');
     }
+  });
+
+const restartNote = () => {
+  if (readRuntimeInfo(projectDir())) console.log(paint(33, 'A proxy is running for this project: restart it to use the change.'));
+};
+
+caCmd
+  .command('rotate')
+  .description('replace the CA with a new one (devices must trust the new certificate)')
+  .option('--yes', 'do not ask for confirmation', false)
+  .action(async (o: { yes: boolean }) => {
+    if (!o.yes && !(await confirm('Replace the CA? Devices that trust the current one will need the new certificate.'))) return;
+    const ca = await rotateCA(defaultDataDir());
+    console.log(`new CA  ${ca.certPath}`);
+    console.log(`sha256  ${ca.fingerprint}`);
+    console.log('Remove the old SiteInquisition CA from the devices and browsers that trust it, then install this one.');
+    restartNote();
+  });
+
+caCmd
+  .command('remove')
+  .description('delete the CA certificate and key from this computer (a new one is made the next time the proxy starts)')
+  .option('--yes', 'do not ask for confirmation', false)
+  .action(async (o: { yes: boolean }) => {
+    if (!o.yes && !(await confirm('Delete the CA certificate and key?'))) return;
+    console.log(removeCA(defaultDataDir()) ? 'CA deleted. Also remove it from the devices and browsers that trust it; see docs/ca-trust.md.' : 'there was no CA');
+    restartNote();
   });
 
 program

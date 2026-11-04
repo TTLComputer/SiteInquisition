@@ -124,6 +124,16 @@ export function Settings() {
                     </span>
                   </Row>
                   <Row label="CA expires">{new Date(info.ca.expiresAt).toLocaleDateString()}</Row>
+                  <Row label="CA private key">
+                    {info.protection?.caKey === 'keyring' ? (
+                      `Encrypted with a key kept in ${info.protection.keyring}`
+                    ) : (
+                      <span className="warn-text">A plain file readable only by your account (no OS keyring found). Anyone who copies it can intercept the traffic of devices that trust this CA.</span>
+                    )}
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      Replace it with <code>siq ca rotate</code>, or delete it with <code>siq ca remove</code>; see docs/ca-trust.md for removing it from devices.
+                    </div>
+                  </Row>
                   <Row label="Decrypting">{info.decryptHosts.length ? <span className="mono">{info.decryptHosts.join(', ')}</span> : 'No hosts (add include rules in Rules › Scope)'}</Row>
                   <Row label="Browser over HTTP/3">
                     <BrowserHttp3 />

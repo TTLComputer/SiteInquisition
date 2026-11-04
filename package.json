@@ -12,7 +12,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm --filter @siteinquisition/devkit build && node packages/devkit/dist/test/cli.js",
+    "test": "pnpm --filter @siteinquisition/devkit build && SIQ_KEYRING=none node packages/devkit/dist/test/cli.js",
     "test:watch": "pnpm --filter @siteinquisition/devkit build && node packages/devkit/dist/test/cli.js --watch",
     "siq": "node packages/cli/dist/main.js",
     "app": "pnpm --filter @siteinquisition/app start",

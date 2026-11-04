@@ -6,6 +6,7 @@ const mb = (n: number) => `${(n / 1048576).toFixed(n < 10 * 1048576 ? 1 : 0)} MB
 /** Settings, Storage: how much traffic the project keeps, and deleting it. */
 export function StorageSettings({ Row }: { Row: (p: { label: string; children: React.ReactNode }) => React.ReactElement }) {
   const { client, info, notify } = useApp();
+  const p = info?.protection;
   const [age, setAge] = useState('');
   const [size, setSize] = useState('');
   const [saved, setSaved] = useState<{ maxAgeDays?: number; maxSizeMB?: number } | null>(null);
@@ -46,6 +47,20 @@ export function StorageSettings({ Row }: { Row: (p: { label: string; children: R
       <Row label="Database">
         <span className="mono">{info?.projectDir}</span>
         <span className="muted"> · readable only by your user account</span>
+      </Row>
+      <Row label="Disk encryption">
+        {!p ? (
+          '...'
+        ) : p.disk.state === 'encrypted' ? (
+          <span>Encrypted: {p.disk.detail}</span>
+        ) : (
+          <span className="warn-text">
+            {p.disk.state === 'not-encrypted' ? 'Not encrypted' : 'Could not tell'} ({p.disk.detail}). Captured traffic holds cookies, tokens and passwords in plain form. Keep projects on an encrypted disk (LUKS full-disk encryption, or an encrypted home folder) if this computer could be lost or shared.
+          </span>
+        )}
+      </Row>
+      <Row label="Saved credentials">
+        {!p ? '...' : p.secrets === 'keyring' ? `Identities are encrypted with a key kept in ${p.keyring}` : <span className="warn-text">No OS keyring found, so identities are stored as plain text in the project. Install libsecret-tools (secret-tool) and a keyring such as GNOME Keyring or KWallet.</span>}
       </Row>
       <Row label="Keep traffic">
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>

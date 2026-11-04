@@ -83,11 +83,11 @@ export class McpServer extends EventEmitter<{ approval: [Approval]; decided: [st
     this.emit('activity', e);
   }
 
-  private async approve(tool: ToolDef, args: Record<string, unknown>): Promise<Decision> {
+  private async approve(tool: ToolDef, args: Record<string, unknown>, summary: string): Promise<Decision> {
     if (this.settings().writeMode === 'allow') return 'once';
     const grant = tool.noGrant ? undefined : this.grants.get(tool.name);
     if (grant && grant > Date.now()) return 'once';
-    const approval: Approval = { id: newId(), tool: tool.name, args, summary: tool.summary?.(args) ?? tool.name, createdAt: Date.now(), allowGrant: !tool.noGrant };
+    const approval: Approval = { id: newId(), tool: tool.name, args, summary, createdAt: Date.now(), allowGrant: !tool.noGrant };
     return new Promise<Decision>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(approval.id);
@@ -103,9 +103,14 @@ export class McpServer extends EventEmitter<{ approval: [Approval]; decided: [st
     const tool = this.tools.find((t) => t.name === name);
     if (!tool) return { content: [{ type: 'text', text: `unknown tool ${name}` }], isError: true };
     const t0 = Date.now();
-    const summary = tool.summary?.(args) ?? name;
+    let summary = name;
+    try {
+      summary = tool.summary?.(args) ?? name;
+    } catch {
+      // bad arguments; the approval card shows the tool name and the run reports the error
+    }
     if (tool.write) {
-      const d = await this.approve(tool, args);
+      const d = await this.approve(tool, args, summary);
       if (d === 'deny' || d === 'open-in-replay') {
         const sent = d === 'open-in-replay';
         this.log({ at: t0, tool: name, summary, outcome: sent ? 'sent to replay' : 'denied', ms: Date.now() - t0 });

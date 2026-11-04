@@ -15,11 +15,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@siteinquisition/core": "workspace:*",
-    "commander": "^14.0.1",
-    "ws": "^8.22.1"
-  },
-  "devDependencies": {
-    "@types/ws": "^8.18.2"
+    "@siteinquisition/core": "workspace:*"
   }
 }

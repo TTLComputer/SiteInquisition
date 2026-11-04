@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { ProxyAgent, fetch } from 'undici';
+import { ProxyClient } from './proxy-client.js';
 import { WebSocketServer } from 'ws';
 import { Core, batchPlan, coverage, parseSigV4, pathTemplate, readRuntimeInfo, resolveTokens, runRace, signSigV4, type ExchangeSummary } from '@siteinquisition/core';
 
@@ -13,7 +13,7 @@ let core: Core;
 let target: Server;
 let port: number;
 let base: string;
-let agent: ProxyAgent;
+let agent: ProxyClient;
 let mcpUrl: string;
 let token: string;
 
@@ -93,14 +93,14 @@ beforeAll(async () => {
   core = await Core.open({ projectDir: join(tmp, 'p'), dataDir: join(tmp, 'd') });
   await core.setScope({ defaultAction: 'ignore', rules: [{ action: 'include', host: '127.0.0.1' }] });
   const { proxyPort } = await core.start();
-  agent = new ProxyAgent({ uri: `http://127.0.0.1:${proxyPort}` });
+  agent = new ProxyClient({ uri: `http://127.0.0.1:${proxyPort}` });
   const info = readRuntimeInfo(join(tmp, 'p'))!;
   mcpUrl = `http://127.0.0.1:${info.apiPort}/mcp`;
   token = info.token;
 });
 
 afterAll(async () => {
-  await agent?.close();
+  agent?.close();
   await core?.close();
   target?.closeAllConnections();
   await new Promise((r) => target?.close(r));
@@ -160,10 +160,10 @@ describe('proxy hooks', () => {
     core.tools.setMocks([{ name: 'fake-flags', pathPrefix: '/flags', status: 200, headers: [['content-type', 'application/json']], body: '{"beta":true}' }]);
     core.tools.vars.set('dbg', 'on', 'manual');
 
-    const h = (await (await fetch(`${base}/headers`, { dispatcher: agent })).json()) as Record<string, string>;
+    const h = (await (await agent.fetch(`${base}/headers`)).json()) as Record<string, string>;
     expect(h['x-debug']).toBe('on');
-    expect(await (await fetch(`${base}/profile`, { dispatcher: agent })).json()).toEqual({ user: { name: 'ada', role: 'admin' } });
-    const flags = await fetch(`${base}/flags`, { dispatcher: agent });
+    expect(await (await agent.fetch(`${base}/profile`)).json()).toEqual({ user: { name: 'ada', role: 'admin' } });
+    const flags = await agent.fetch(`${base}/flags`);
     expect([flags.status, await flags.json()]).toEqual([200, { beta: true }]);
 
     const [p] = await waitFor('path:/profile');
@@ -177,7 +177,7 @@ describe('proxy hooks', () => {
 
   it('pauses on a breakpoint and forwards the edited request', async () => {
     core.tools.setBreakpoints([{ phase: 'request', pathPrefix: '/echo' }]);
-    const pending = fetch(`${base}/echo`, { method: 'POST', body: 'original', dispatcher: agent });
+    const pending = agent.fetch(`${base}/echo`, { method: 'POST', body: 'original' });
     const paused = await until(() => core.tools.intercept.list()[0], 'a paused request');
     expect(paused).toMatchObject({ phase: 'request', message: { method: 'POST' } });
     expect(Buffer.from(paused.message.bodyBase64, 'base64').toString()).toBe('original');
@@ -188,7 +188,7 @@ describe('proxy hooks', () => {
 
   it('runs hook scripts on responses and test scripts with the SDK', async () => {
     core.tools.setScripts([{ name: 'stamp', kind: 'hook', code: 'function onResponse(req, res) { res.setHeader("x-stamped", "yes"); }' }]);
-    const res = await fetch(`${base}/items/3`, { dispatcher: agent });
+    const res = await agent.fetch(`${base}/items/3`);
     expect(res.headers.get('x-stamped')).toBe('yes');
     await res.text();
     const [ex] = await waitFor('path:/items/3');
@@ -268,7 +268,7 @@ describe('coverage', () => {
   });
 
   it('lists exercised endpoints and paths the app references that nobody requested', async () => {
-    await (await fetch(`${base}/app`, { dispatcher: agent })).text();
+    await (await agent.fetch(`${base}/app`)).text();
     await waitFor('path:/app');
     const report = coverage(core.store, '127.0.0.1');
     const items = report.endpoints.find((e) => e.method === 'GET' && e.template === '/items/{n}')!;

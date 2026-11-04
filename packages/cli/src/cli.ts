@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Command, Option } from 'commander';
+import { Command, Option } from './args.js';
 import {
   CaptureStore,
   Core,
@@ -204,23 +204,33 @@ program
     });
   });
 
+/** One JSON-RPC call to a running core over its WebSocket API (Node's built-in WebSocket client). */
+async function callRunningCore(running: { apiPort: number; token: string }, method: string, params: unknown): Promise<unknown> {
+  const ws = new WebSocket(`ws://127.0.0.1:${running.apiPort}/?token=${running.token}`);
+  try {
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true });
+      ws.addEventListener('error', () => reject(new Error(`cannot reach the running core on port ${running.apiPort}`)), { once: true });
+    });
+    const reply = new Promise<{ result?: unknown; error?: { message: string } }>((resolve) =>
+      ws.addEventListener('message', (ev) => resolve(JSON.parse(String(ev.data)) as { result?: unknown; error?: { message: string } }), { once: true }),
+    );
+    ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }));
+    const msg = await reply;
+    if (msg.error) throw new Error(msg.error.message);
+    return msg.result;
+  } finally {
+    ws.close();
+  }
+}
+
 const scope = program.command('scope').description('view and change which hosts are decrypted and recorded');
 
 const saveScope = async (config: ScopeConfig) => {
   const running = readRuntimeInfo(projectDir());
   if (running) {
     // A live core owns the scope (it may need to restart its listener), so ask it.
-    const { WebSocket } = await import('ws');
-    const ws = new WebSocket(`ws://127.0.0.1:${running.apiPort}/?token=${running.token}`);
-    await new Promise((r, j) => ws.once('open', r).once('error', j));
-    await new Promise<void>((r, j) => {
-      ws.once('message', (raw) => {
-        const msg = JSON.parse(raw.toString()) as { error?: { message: string } };
-        ws.close();
-        return msg.error ? j(new Error(msg.error.message)) : r();
-      });
-      ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'scope.set', params: { config } }));
-    });
+    await callRunningCore(running, 'scope.set', { config });
   } else {
     withStore((s) => s.setMeta('scope', config));
   }
@@ -312,13 +322,7 @@ program
     if (mode !== 'ask' && mode !== 'allow') throw new Error('mode must be "ask" or "allow"');
     const running = readRuntimeInfo(projectDir());
     if (running) {
-      const { WebSocket } = await import('ws');
-      const ws = new WebSocket(`ws://127.0.0.1:${running.apiPort}/?token=${running.token}`);
-      await new Promise((r, j) => ws.once('open', r).once('error', j));
-      await new Promise<void>((r) => {
-        ws.once('message', () => (ws.close(), r()));
-        ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'mcp.setSettings', params: { writeMode: mode } }));
-      });
+      await callRunningCore(running, 'mcp.setSettings', { writeMode: mode });
     } else withStore((s) => s.setMeta('mcpSettings', { writeMode: mode }));
     console.log(mode === 'allow' ? 'Agents may now send traffic and change settings without asking.' : 'Agent write actions will wait for approval.');
   });

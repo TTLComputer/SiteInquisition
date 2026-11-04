@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from '@siteinquisition/devkit/test';
 import { Scope } from '@siteinquisition/core';
 
 describe('Scope', () => {

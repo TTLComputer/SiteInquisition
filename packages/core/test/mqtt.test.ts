@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { generateCA } from '../src/x509.js';
 import { Core, type ExchangeSummary } from '@siteinquisition/core';
 import { TestClient, createBroker, createBrokerHandler } from './mqtt-fixtures.js';

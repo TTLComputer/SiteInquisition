@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { ProxyClient } from './proxy-client.js';
 import { serveWebSockets } from '../src/websocket.js';
 import { Core, batchPlan, coverage, parseSigV4, pathTemplate, readRuntimeInfo, resolveTokens, runRace, signSigV4, type ExchangeSummary } from '@siteinquisition/core';

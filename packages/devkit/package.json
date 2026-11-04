@@ -1,0 +1,26 @@
+{
+  "name": "@siteinquisition/devkit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SiteInquisition build tools: a test runner with a vitest-style API and a bundler for the renderer.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./test": { "types": "./dist/test/index.d.ts", "default": "./dist/test/index.js" },
+    "./bundle": { "types": "./dist/bundle/index.d.ts", "default": "./dist/bundle/index.js" }
+  },
+  "bin": {
+    "siq-test": "./dist/test/cli.js",
+    "siq-bundle": "./dist/bundle/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5"
+  }
+}

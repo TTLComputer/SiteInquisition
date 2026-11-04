@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { DIST, startHarness, type Harness } from './harness';
 
 // Drives the built renderer in Chromium against a real core. Needs `pnpm build`

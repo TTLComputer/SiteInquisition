@@ -6,7 +6,7 @@ import { networkInterfaces, tmpdir } from 'node:os';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { generateCA } from '../src/x509.js';
 import { ProxyClient, tunnel } from './proxy-client.js';
 import { connectWebSocket, serveWebSockets } from '../src/websocket.js';

@@ -3,4 +3,3 @@ packages:
 
 onlyBuiltDependencies:
   - electron
-  - esbuild

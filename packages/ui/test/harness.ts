@@ -1,0 +1,114 @@
+import { createServer, request, type Server } from 'node:http';
+import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { extname, join, normalize } from 'node:path';
+import type { AddressInfo } from 'node:net';
+import { WebSocketServer } from 'ws';
+import { Core } from '@siteinquisition/core';
+
+export const DIST = join(import.meta.dirname, '..', 'dist');
+
+const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.woff': 'font/woff' };
+
+const listen = (server: Server) => new Promise<number>((r) => server.listen(0, '127.0.0.1', () => r((server.address() as AddressInfo).port)));
+
+/** A small upstream app: JSON, HTML, a redirect, an error, and a WebSocket echo. */
+async function startUpstream() {
+  let hits = 0;
+  const server = createServer((req, res) => {
+    hits++;
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      if (req.url === '/old') {
+        res.writeHead(302, { location: '/api/cart' });
+        res.end();
+      } else if (req.url?.startsWith('/api/')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ path: req.url, method: req.method, hits, echo: body || null }));
+      } else if (req.url === '/broken') {
+        res.writeHead(500, { 'content-type': 'text/plain' });
+        res.end('boom');
+      } else {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<!doctype html><title>shop</title><h1>Shop</h1>');
+      }
+    });
+  });
+  const wss = new WebSocketServer({ server });
+  wss.on('connection', (ws) => ws.on('message', (m) => ws.send(`echo ${String(m)}`)));
+  const port = await listen(server);
+  return { port, close: () => new Promise<void>((r) => (wss.close(), server.close(() => r()))) };
+}
+
+function viaProxy(proxyPort: number, url: string, method = 'GET', body?: string) {
+  return new Promise<number>((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port: proxyPort, method, path: url, headers: { host: new URL(url).host, ...(body ? { 'content-type': 'application/json' } : {}) } }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode ?? 0));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+/** Serve the built renderer the way a browser would load it. */
+async function startStatic() {
+  const server = createServer((req, res) => {
+    const path = normalize(decodeURIComponent((req.url ?? '/').split('?')[0]!)).replace(/^([/\\])+/, '');
+    const file = join(DIST, path || 'index.html');
+    if (!file.startsWith(DIST) || !existsSync(file)) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' });
+    res.end(readFileSync(file));
+  });
+  const port = await listen(server);
+  return { port, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+export interface Harness {
+  core: Core;
+  upstreamPort: number;
+  proxyPort: number;
+  pageUrl: string;
+  send(path: string, method?: string, body?: string): Promise<number>;
+  close(): Promise<void>;
+}
+
+export async function startHarness(opts: { traffic?: boolean } = {}): Promise<Harness> {
+  const dir = mkdtempSync(join(tmpdir(), 'siq-ui-'));
+  const upstream = await startUpstream();
+  const core = await Core.open({ projectDir: join(dir, 'project'), dataDir: join(dir, 'data'), api: { token: 'ui-test-token' } });
+  await core.setScope({ defaultAction: 'ignore', rules: [{ id: 'r1', action: 'include', host: '127.0.0.1', port: upstream.port }] });
+  const { proxyPort, apiPort } = await core.start();
+  const base = `http://127.0.0.1:${upstream.port}`;
+  const send = (path: string, method = 'GET', body?: string) => viaProxy(proxyPort, `${base}${path}`, method, body);
+  if (opts.traffic !== false) {
+    await send('/');
+    await send('/api/cart');
+    await send('/api/apply-coupon', 'POST', JSON.stringify({ code: 'SAVE10', cart: 42 }));
+    await send('/old');
+    await send('/broken');
+    // Out of scope: shows up under "seen but not in scope".
+    await viaProxy(proxyPort, 'http://localhost.test.invalid:9/').catch(() => 0);
+  }
+  const web = await startStatic();
+  const token = 'ui-test-token';
+  const pageUrl = `http://127.0.0.1:${web.port}/index.html?api=${encodeURIComponent(`ws://127.0.0.1:${apiPort}`)}&token=${encodeURIComponent(token)}`;
+  return {
+    core,
+    upstreamPort: upstream.port,
+    proxyPort,
+    pageUrl,
+    send,
+    close: async () => {
+      await web.close();
+      await core.close();
+      await upstream.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}

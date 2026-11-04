@@ -30,6 +30,18 @@ export class RpcError extends Error {
   }
 }
 
+export interface SavedView {
+  name: string;
+  query: string;
+}
+
+const DEFAULT_VIEWS: SavedView[] = [
+  { name: 'Errors', query: 'status:>=400' },
+  { name: 'Replays', query: 'source:replay' },
+  { name: 'WebSockets', query: 'ws:true' },
+  { name: 'MQTT sessions', query: 'scheme:mqtt' },
+];
+
 type Handler = (params: Record<string, unknown>, client: WebSocket) => unknown;
 
 const b64 = (b: Uint8Array) => Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString('base64');
@@ -116,6 +128,15 @@ export class CoreApiServer {
         });
       },
       'replay.history': (p) => store.search(`replayof:${JSON.stringify(str(p, 'of')!)}`, { limit: num(p, 'limit') ?? 100 }),
+      'views.get': () => store.getMeta<SavedView[]>('savedViews') ?? DEFAULT_VIEWS,
+      'views.set': (p) => {
+        const views = p.views;
+        if (!Array.isArray(views) || !views.every((v) => v && typeof v.name === 'string' && typeof v.query === 'string')) {
+          throw new RpcError(-32602, 'views must be {name, query} objects');
+        }
+        store.setMeta('savedViews', views.map((v: SavedView) => ({ name: v.name, query: v.query })));
+        return true;
+      },
       'scope.get': () => core.scope.get(),
       'scope.seen': () => core.seenNotInScope(),
       'scope.set': async (p) => {

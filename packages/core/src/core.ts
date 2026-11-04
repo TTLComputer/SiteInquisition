@@ -42,6 +42,12 @@ export interface CoreRuntimeInfo {
 
 export const RUNTIME_FILE = 'core.json';
 
+/** How much traffic a project keeps. Unset or 0 means no limit. */
+export interface RetentionSettings {
+  maxAgeDays?: number;
+  maxSizeMB?: number;
+}
+
 /**
  * Hosts the built-in browser sends to the HTTP/3 listener. Chromium reads
  * them from its command line, so the app reads this file before it starts
@@ -114,7 +120,37 @@ export class Core {
     return new Core(opts, ca);
   }
 
+  private pruneTimer?: NodeJS.Timeout;
+
+  retention(): RetentionSettings {
+    return this.store.getMeta<RetentionSettings>('retention') ?? {};
+  }
+
+  setRetention(r: RetentionSettings): RetentionSettings {
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined);
+    const clean: RetentionSettings = { maxAgeDays: num(r.maxAgeDays), maxSizeMB: num(r.maxSizeMB) };
+    this.store.setMeta('retention', clean);
+    this.applyRetention();
+    return clean;
+  }
+
+  /** Delete traffic past the project's retention limits; returns how many exchanges went. */
+  applyRetention(): number {
+    const r = this.retention();
+    if (!r.maxAgeDays && !r.maxSizeMB) return 0;
+    return this.store.prune({ maxAgeDays: r.maxAgeDays, maxBytes: r.maxSizeMB ? r.maxSizeMB * 1024 * 1024 : undefined });
+  }
+
   async start(): Promise<{ proxyPort: number; apiPort?: number; browserProxyPort?: number }> {
+    this.applyRetention();
+    this.pruneTimer = setInterval(() => {
+      try {
+        this.applyRetention();
+      } catch {
+        // a busy database; the next round tries again
+      }
+    }, 60 * 60_000);
+    this.pruneTimer.unref();
     const proxyPort = await this.proxy.start();
     const browserProxyPort = this.browserProxy ? await this.browserProxy.start() : undefined;
     for (const relay of this.mqtt) await relay.start();
@@ -128,6 +164,7 @@ export class Core {
   }
 
   async close(): Promise<void> {
+    clearInterval(this.pruneTimer);
     this.tools.close();
     await this.api?.stop();
     await this.proxy.stop();

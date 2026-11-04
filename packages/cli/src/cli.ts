@@ -299,6 +299,88 @@ scope
     await saveScope({ ...loadScope(), defaultAction: action });
   });
 
+/** Run against the running app or `siq proxy` when there is one, so its view stays current; otherwise use the store. */
+async function viaCore<T>(method: string, params: unknown, offline: (store: CaptureStore) => T): Promise<T> {
+  const running = readRuntimeInfo(projectDir());
+  if (running) return (await callRunningCore(running, method, params)) as T;
+  return withStore(offline);
+}
+
+program
+  .command('delete')
+  .description('delete the recorded exchanges a search query matches (same syntax as `siq search`)')
+  .argument('<query...>', 'search query, e.g. host:ads.example.com')
+  .option('--yes', 'do not ask for confirmation', false)
+  .action(async (query: string[], o: { yes: boolean }) => {
+    const q = query.join(' ').trim();
+    if (!q) throw new Error('a query is required; use `siq clear` to delete everything');
+    if (!o.yes) {
+      const n = withStore((s) => s.search(q, { limit: 100000 }).length);
+      if (!n) return console.log('nothing matches');
+      if (!(await confirm(`Delete ${n} exchange${n === 1 ? '' : 's'}?`))) return;
+    }
+    const r = await viaCore<{ deleted: number }>('traffic.delete', { query: q }, (s) => ({ deleted: s.deleteMatching(q) }));
+    console.log(`deleted ${r.deleted}`);
+  });
+
+program
+  .command('clear')
+  .description("delete all of this project's recorded traffic (settings, rules and scripts stay)")
+  .option('--yes', 'do not ask for confirmation', false)
+  .action(async (o: { yes: boolean }) => {
+    if (!o.yes && !(await confirm('Delete all recorded traffic in this project?'))) return;
+    const r = await viaCore<{ deleted: number }>('traffic.clear', {}, (s) => ({ deleted: s.clearTraffic() }));
+    console.log(`deleted ${r.deleted}`);
+  });
+
+program
+  .command('prune')
+  .description('delete old traffic now, and with --keep, set the limits the app applies every hour')
+  .option('--older-than <days>', 'delete exchanges older than this many days')
+  .option('--max-size <MB>', 'delete the oldest exchanges until the stored bodies fit')
+  .option('--keep', 'save these limits as the project\'s retention setting', false)
+  .option('--off', 'turn the retention setting off', false)
+  .action(async (o: { olderThan?: string; maxSize?: string; keep: boolean; off: boolean }) => {
+    const pos = (v: string | undefined, name: string) => {
+      if (v === undefined) return undefined;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive number`);
+      return n;
+    };
+    const limits = { maxAgeDays: pos(o.olderThan, '--older-than'), maxSizeMB: pos(o.maxSize, '--max-size') };
+    if (o.off) {
+      await viaCore('retention.set', { retention: {} }, (s) => s.setMeta('retention', {}));
+      return console.log('retention off: traffic is kept until you delete it');
+    }
+    if (!limits.maxAgeDays && !limits.maxSizeMB) {
+      const r = await viaCore<{ maxAgeDays?: number; maxSizeMB?: number }>('retention.get', {}, (s) => s.getMeta('retention') ?? {});
+      const parts = [r.maxAgeDays && `older than ${r.maxAgeDays} days`, r.maxSizeMB && `beyond ${r.maxSizeMB} MB`].filter(Boolean);
+      return console.log(parts.length ? `retention: delete traffic ${parts.join(' or ')}` : 'retention off: traffic is kept until you delete it');
+    }
+    const offline = (s: CaptureStore) => {
+      if (o.keep) s.setMeta('retention', limits);
+      return { deleted: s.prune({ maxAgeDays: limits.maxAgeDays, maxBytes: limits.maxSizeMB ? limits.maxSizeMB * 1048576 : undefined }) };
+    };
+    const running = readRuntimeInfo(projectDir());
+    let deleted: number;
+    if (running && o.keep) {
+      await callRunningCore(running, 'retention.set', { retention: limits });
+      deleted = ((await callRunningCore(running, 'retention.apply', {})) as { deleted: number }).deleted;
+    } else deleted = withStore(offline).deleted;
+    console.log(`deleted ${deleted}${o.keep ? '; limits saved' : ''}`);
+  });
+
+async function confirm(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) throw new Error(`${question} Pass --yes to confirm when not at a terminal.`);
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return /^y(es)?$/i.test((await rl.question(`${question} [y/N] `)).trim());
+  } finally {
+    rl.close();
+  }
+}
+
 program
   .command('ca')
   .description('print the root CA certificate path and fingerprint, or the PEM itself')

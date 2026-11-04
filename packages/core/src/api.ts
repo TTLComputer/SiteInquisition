@@ -130,6 +130,16 @@ export class CoreApiServer {
       },
       'traffic.flow': (p) => store.getFlow(str(p, 'flowId')!),
       'traffic.siteMap': (p) => store.siteMap(num(p, 'limit')),
+      'traffic.delete': (p) => {
+        if (Array.isArray(p.ids)) return { deleted: store.deleteExchanges(p.ids.map(String)) };
+        const q = str(p, 'query');
+        if (!q!.trim()) throw new RpcError(-32602, 'a query is required; use traffic.clear to delete everything');
+        return { deleted: store.deleteMatching(q!) };
+      },
+      'traffic.clear': () => ({ deleted: store.clearTraffic() }),
+      'retention.get': () => core.retention(),
+      'retention.set': (p) => core.setRetention((p.retention as never) ?? {}),
+      'retention.apply': () => ({ deleted: core.applyRetention() }),
       'traffic.stats': () => store.stats(),
       'traffic.streamMessages': (p) => {
         const stream = store.getStreamForExchange(str(p, 'exchangeId')!);

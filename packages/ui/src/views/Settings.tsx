@@ -2,17 +2,19 @@ import { useEffect, useState } from 'react';
 import { useApp } from '../state';
 import { applyTheme, storedTheme, type ThemeChoice } from '../theme';
 import { McpSection } from './Mcp';
+import { StorageSettings } from './Storage';
 import { KeySettings, TechSettings } from './Tech';
 
-type Section = 'proxy' | 'tech' | 'signing' | 'mcp' | 'appearance' | 'keys' | 'together';
+type Section = 'proxy' | 'storage' | 'tech' | 'signing' | 'mcp' | 'appearance' | 'keys' | 'together';
 
-const SHORTCUTS: Array<[string, string]> = [
+export const SHORTCUTS: Array<[string, string]> = [
   ['Ctrl K', 'Filter traffic (focus the History filter)'],
   ['Ctrl R', 'Send the selected exchange to replay'],
   ['Ctrl Enter', 'Send the request in the current replay tab'],
   ['Ctrl Shift Enter', 'Resend the selected exchange without opening the editor'],
   ['Up / Down', 'Move the selection in History'],
   ['Shift F10', 'Open the row menu for the selected exchange'],
+  ['Delete', 'Delete the selected exchange (asks first)'],
   ['Double click', 'Open a row in replay'],
   ['Ctrl D', 'Decode the selected text (or the selected exchange\'s response body) in Codecs'],
   ['Ctrl Shift R', 'Send the selected exchange to Race'],
@@ -83,7 +85,7 @@ export function Settings() {
     if (subTab.settings) setSection(subTab.settings as Section);
   }, [subTab]);
   const [theme, setTheme] = useState<ThemeChoice>(storedTheme());
-  const labels: Record<Section, string> = { proxy: 'Proxy and TLS', tech: 'Technologies', signing: 'Signing keys', mcp: 'MCP and agents', appearance: 'Appearance', keys: 'Keyboard', together: 'Work together' };
+  const labels: Record<Section, string> = { proxy: 'Proxy and TLS', storage: 'Storage', tech: 'Technologies', signing: 'Signing keys', mcp: 'MCP and agents', appearance: 'Appearance', keys: 'Keyboard', together: 'Work together' };
   return (
     <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
       <div className="tabs" role="tablist" aria-label="Settings">
@@ -145,6 +147,7 @@ export function Settings() {
               )}
             </>
           )}
+          {section === 'storage' && <StorageSettings Row={Row} />}
           {section === 'mcp' && <McpSection Row={Row} />}
           {section === 'appearance' && (
             <>

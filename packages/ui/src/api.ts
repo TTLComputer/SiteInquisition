@@ -456,6 +456,10 @@ export class CoreClient {
   graphqlOperations = (host?: string) => this.call<SeenOperation[]>('graphql.operations', { host });
   graphqlDrift = (targetUrl: string) => this.call<Array<{ field: string; type: string; count: number; exampleId: string }>>('graphql.drift', { targetUrl });
   curl = (id: string) => this.call<string>('export.curl', { id });
+  deleteTraffic = (p: { ids: string[] } | { query: string }) => this.call<{ deleted: number }>('traffic.delete', p);
+  clearTraffic = () => this.call<{ deleted: number }>('traffic.clear');
+  retention = () => this.call<{ maxAgeDays?: number; maxSizeMB?: number }>('retention.get');
+  setRetention = (retention: { maxAgeDays?: number; maxSizeMB?: number }) => this.call<{ maxAgeDays?: number; maxSizeMB?: number }>('retention.set', { retention });
   exportHar = (p: { ids?: string[]; query?: string }) => this.call<Record<string, unknown>>('export.har', p);
   exportPostman = (p: { flow?: string; ids?: string[]; name?: string }) => this.call<Record<string, unknown>>('export.postman', p);
   flowToTest = (name: string) => this.call<Script>('flows.toTest', { name });

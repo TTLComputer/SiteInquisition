@@ -102,7 +102,7 @@ interface MenuState {
 }
 
 function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): void; setQuery(q: string): void; query: string }) {
-  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select, flowPicks, setFlowPicks, openAt, compareMark, setCompareMark, sendToApi } = useApp();
+  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select, flowPicks, setFlowPicks, openAt, compareMark, setCompareMark, sendToApi, selectedId } = useApp();
   const ref = useRef<HTMLDivElement>(null);
   const [tagging, setTagging] = useState(false);
   const [tagName, setTagName] = useState('');
@@ -154,6 +154,7 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
           Open in Streams composer
         </button>
       )}
+      <div className="menu-sep" role="separator" />
       <button role="menuitem" onClick={run(async () => sendToCodecs(await bodyText(client, row.id, 'response'), `${row.method} ${replayName(row.path)} response`))}>
         Decode response body <kbd>Ctrl D</kbd>
       </button>
@@ -178,6 +179,7 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
       >
         Break on this endpoint
       </button>
+      <div className="menu-sep" role="separator" />
       <button
         role="menuitem"
         onClick={run(() => {
@@ -250,6 +252,7 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
           </button>
         </>
       )}
+      <div className="menu-sep" role="separator" />
       <button role="menuitem" onClick={run(() => navigator.clipboard.writeText(row.url).then(() => notify('URL copied')))}>
         Copy URL
       </button>
@@ -267,6 +270,19 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
           Show replays of this request
         </button>
       )}
+      <div className="menu-sep" role="separator" />
+      <button
+        role="menuitem"
+        className="danger"
+        onClick={run(async () => {
+          if (!window.confirm(`Delete ${row.method} ${row.url}?\n\nIts bodies and any WebSocket or MQTT messages go with it.`)) return;
+          await client.deleteTraffic({ ids: [row.id] });
+          if (selectedId === row.id) select(null);
+          notify('Request deleted');
+        })}
+      >
+        Delete this request <kbd>Del</kbd>
+      </button>
     </div>
   );
 }
@@ -408,6 +424,13 @@ export function History() {
     let mapTimer: number | undefined;
     const off = client.onChange((c) => {
       if (c.entity !== 'exchange') return;
+      if (c.kind === 'exchange.deleted' || c.kind === 'exchange.cleared') {
+        const ids = (c.data as { ids?: string[] } | null)?.ids;
+        if (ids) setRows((rs) => rs.filter((r) => !ids.includes(r.id)));
+        else void load('refresh');
+        setMapVersion((v) => v + 1);
+        return;
+      }
       if (!mapTimer) mapTimer = window.setTimeout(() => ((mapTimer = undefined), setMapVersion((v) => v + 1)), 3000);
       const known = rowsRef.current.some((r) => r.id === c.entityId);
       if (!followRef.current && !known) {
@@ -474,6 +497,13 @@ export function History() {
         e.preventDefault();
         setMenu({ x: el.left + 200, y: el.bottom, row: r });
       }
+    } else if (e.key === 'Delete' && selectedId) {
+      const i = rows.findIndex((x) => x.id === selectedId);
+      const r = rows[i];
+      if (!r || !window.confirm(`Delete ${r.method} ${r.url}?`)) return;
+      e.preventDefault();
+      const next = rows[i + 1] ?? rows[i - 1];
+      client.deleteTraffic({ ids: [r.id] }).then(() => select(next?.id ?? null), (err: Error) => notify(err.message));
     }
   };
 
@@ -564,6 +594,24 @@ export function History() {
           }
         >
           Export HAR
+        </button>
+        <button
+          className="btn small"
+          disabled={!query.trim()}
+          title={query.trim() ? 'Delete every recorded request that matches the filter' : 'Type a filter first; to delete everything, use Settings, Storage'}
+          onClick={() => {
+            const shown = rows.length + (exhausted ? '' : '+');
+            if (!window.confirm(`Delete the ${shown} requests that match\n\n${query}\n\nThis cannot be undone.`)) return;
+            client.deleteTraffic({ query }).then(
+              (r) => {
+                if (selectedId && rows.some((x) => x.id === selectedId)) select(null);
+                notify(`Deleted ${r.deleted} requests`);
+              },
+              (e: Error) => notify(e.message),
+            );
+          }}
+        >
+          Delete matching
         </button>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }} className="muted">
           <button className="switch" role="switch" aria-checked={follow} aria-label="Live follow" onClick={() => setFollow((f) => !f)} />

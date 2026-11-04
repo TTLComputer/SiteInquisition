@@ -23,7 +23,7 @@ export async function loadOrCreateCA(dataDir: string): Promise<CertificateAuthor
   const certPath = join(dir, 'siteinquisition-ca.pem');
   const keyPath = join(dir, 'siteinquisition-ca.key');
   if (!existsSync(certPath) || !existsSync(keyPath)) {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     const created = new Date().toISOString().slice(0, 10);
     const { cert, key } = generateCA({ commonName: `SiteInquisition CA (${hostname()}, ${created})`, organizationName: 'SiteInquisition' });
     writeFileSync(keyPath, key, { mode: 0o600 });

@@ -12,14 +12,14 @@ An intercepting proxy, built-in browser and replay toolkit for testing websites,
 - **MQTT** 3.1, 3.1.1 and 5.0 relay: devices connect to SiteInquisition as their broker, every byte is passed to the real broker unchanged, and each packet (CONNECT, SUBSCRIBE, PUBLISH, acks, ...) is recorded with topic, QoS, retain flag, properties and payload. TLS is supported on both sides, with device-facing certificates signed by the project CA.
 - **Scope rules** (host glob, port, scheme, path prefix) that decide what is decrypted and what is recorded. A new project records nothing until you add a host.
 - Redirect chains linked into a single flow.
-- A capture database in SQLite with full-text search over URLs, headers and decoded bodies (gzip, deflate, brotli, zstd).
+- A capture database in SQLite (`node:sqlite`) with full-text search over URLs, headers and decoded bodies (gzip, deflate, brotli, zstd).
 - An append-only change log with ULID ids on every row, ready for the planned multi-user and replication work.
 - A core API (JSON-RPC 2.0 over a token-protected local WebSocket) with live change notifications.
 - By default only loopback clients may connect. Pass `--lan` to accept phones and IoT devices.
 
 ## Quick start
 
-Requires Node.js 22.12 or later and pnpm 10.
+Requires Node.js 22.13 or later and pnpm 10. There are no native modules: storage uses the `node:sqlite` module built into Node and Electron.
 
 ```sh
 pnpm install

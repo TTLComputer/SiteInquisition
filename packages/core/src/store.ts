@@ -84,10 +84,13 @@ export interface StreamMessage {
   id: string;
   streamId: string;
   direction: 'client' | 'server';
-  opcode: 'text' | 'binary';
+  /** WebSocket: "text" or "binary". MQTT: the packet type, e.g. "publish", "subscribe", "connack". */
+  opcode: string;
   at: number;
   size: number;
   payload: Uint8Array;
+  /** Protocol details that are not the payload, e.g. MQTT topic, QoS and retain flag. */
+  meta?: Record<string, unknown> | null;
 }
 
 export interface Change {
@@ -116,7 +119,7 @@ export interface StoreOptions {
   maxIndexBytes?: number;
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -184,7 +187,8 @@ CREATE TABLE IF NOT EXISTS stream_message (
   opcode TEXT NOT NULL,
   at INTEGER NOT NULL,
   size INTEGER NOT NULL,
-  payload BLOB NOT NULL
+  payload BLOB NOT NULL,
+  meta TEXT
 );
 CREATE INDEX IF NOT EXISTS stream_message_stream ON stream_message(stream_id, id);
 CREATE TABLE IF NOT EXISTS tls_failure (
@@ -246,6 +250,9 @@ const header = (headers: HeaderList, name: string): string | undefined => {
   return headers.find(([k]) => k.toLowerCase() === lower)?.[1];
 };
 
+export const defaultPort = (scheme: string): number =>
+  ({ https: 443, wss: 443, mqtt: 1883, mqtts: 8883 })[scheme] ?? 80;
+
 const headersText = (headers: HeaderList) => headers.map(([k, v]) => `${k}: ${v}`).join('\n');
 
 const toSummary = (r: ExchangeRow): ExchangeSummary => ({
@@ -290,7 +297,12 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('foreign_keys = ON');
-    this.migrate();
+    try {
+      this.migrate();
+    } catch (err) {
+      this.db.close();
+      throw err;
+    }
   }
 
   /** Open (or create) the database inside a project folder. */
@@ -306,11 +318,15 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   private migrate(): void {
     this.db.exec(SCHEMA);
     const row = this.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string } | undefined;
-    if (!row) {
-      this.db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION));
-    } else if (Number(row.value) > SCHEMA_VERSION) {
-      throw new Error(`project was created by a newer SiteInquisition (schema ${row.value})`);
+    const version = row ? Number(row.value) : SCHEMA_VERSION;
+    if (version > SCHEMA_VERSION) throw new Error(`project was created by a newer SiteInquisition (schema ${row!.value})`);
+    if (version < 2) {
+      const cols = this.db.prepare('PRAGMA table_info(stream_message)').all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'meta')) this.db.exec('ALTER TABLE stream_message ADD COLUMN meta TEXT');
     }
+    this.db
+      .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(String(SCHEMA_VERSION));
   }
 
   // ---------- meta ----------
@@ -407,7 +423,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       }
       const body = req.body && req.body.byteLength ? this.putBlob(req.body) : undefined;
       const scheme = url.protocol.replace(/:$/, '');
-      const port = url.port ? Number(url.port) : scheme === 'https' || scheme === 'wss' ? 443 : 80;
+      const port = url.port ? Number(url.port) : defaultPort(scheme);
       this.db
         .prepare(
           `INSERT INTO exchange (id, flow_id, parent_id, source, client_addr, started_at, method, url, scheme, host, port, path,
@@ -467,6 +483,16 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       }
       const summary = this.getSummary(id)!;
       this.recordChange('exchange.response', 'exchange', id, summary);
+      return summary;
+    });
+  }
+
+  /** Mark a connection-style exchange (e.g. an MQTT session) as established, without an HTTP response. */
+  markEstablished(id: string, timings?: Timings): ExchangeSummary {
+    return this.tx(() => {
+      this.db.prepare("UPDATE exchange SET state = 'complete', timings = COALESCE(?, timings) WHERE id = ?").run(timings ? JSON.stringify(timings) : null, id);
+      const summary = this.getSummary(id)!;
+      this.recordChange('exchange.established', 'exchange', id, summary);
       return summary;
     });
   }
@@ -575,8 +601,8 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     const full: StreamMessage = { ...msg, id: newId(), size: msg.payload.byteLength };
     this.tx(() => {
       this.db
-        .prepare('INSERT INTO stream_message (id, stream_id, direction, opcode, at, size, payload) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(full.id, full.streamId, full.direction, full.opcode, full.at, full.size, full.payload);
+        .prepare('INSERT INTO stream_message (id, stream_id, direction, opcode, at, size, payload, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(full.id, full.streamId, full.direction, full.opcode, full.at, full.size, full.payload, full.meta ? JSON.stringify(full.meta) : null);
       const { payload: _payload, ...rest } = full;
       this.recordChange('stream.message', 'stream', full.streamId, rest);
     });
@@ -600,8 +626,17 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   getStreamMessages(streamId: string, opts: { after?: string; limit?: number } = {}): StreamMessage[] {
     const rows = this.db
       .prepare('SELECT * FROM stream_message WHERE stream_id = ? AND id > ? ORDER BY id LIMIT ?')
-      .all(streamId, opts.after ?? '', opts.limit ?? 1000) as Array<{ id: string; stream_id: string; direction: 'client' | 'server'; opcode: 'text' | 'binary'; at: number; size: number; payload: Buffer }>;
-    return rows.map((r) => ({ id: r.id, streamId: r.stream_id, direction: r.direction, opcode: r.opcode, at: r.at, size: r.size, payload: new Uint8Array(r.payload) }));
+      .all(streamId, opts.after ?? '', opts.limit ?? 1000) as Array<{ id: string; stream_id: string; direction: 'client' | 'server'; opcode: string; at: number; size: number; payload: Buffer; meta: string | null }>;
+    return rows.map((r) => ({
+      id: r.id,
+      streamId: r.stream_id,
+      direction: r.direction,
+      opcode: r.opcode,
+      at: r.at,
+      size: r.size,
+      payload: new Uint8Array(r.payload),
+      meta: r.meta ? (JSON.parse(r.meta) as Record<string, unknown>) : null,
+    }));
   }
 
   // ---------- TLS failures ----------

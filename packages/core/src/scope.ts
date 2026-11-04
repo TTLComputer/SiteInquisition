@@ -1,5 +1,7 @@
 import { newId } from './ids.js';
 
+const DEFAULT_PORTS: Record<string, number> = { http: 80, ws: 80, https: 443, wss: 443, mqtt: 1883, mqtts: 8883 };
+
 /**
  * Scope decides, per request, whether SiteInquisition decrypts, records or
  * modifies traffic. Rules are evaluated in order and the first match wins.
@@ -90,8 +92,9 @@ export class Scope {
     const url = typeof target === 'string' ? new URL(target) : target;
     const scheme = url.protocol.replace(/:$/, '');
     const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    const port = url.port ? Number(url.port) : scheme === 'https' || scheme === 'wss' ? 443 : 80;
-    const httpScheme = scheme === 'wss' ? 'https' : scheme === 'ws' ? 'http' : scheme;
+    const port = url.port ? Number(url.port) : (DEFAULT_PORTS[scheme] ?? 80);
+    // Rules name http or https; WebSocket and MQTT traffic matches by whether it is encrypted.
+    const httpScheme = scheme === 'wss' || scheme === 'mqtts' ? 'https' : scheme === 'ws' || scheme === 'mqtt' ? 'http' : scheme;
 
     for (const { rule, host: re } of this.compiled) {
       if (rule.enabled === false) continue;

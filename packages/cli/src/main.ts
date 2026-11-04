@@ -12,8 +12,30 @@ import {
   normalizeRule,
   readRuntimeInfo,
   type ExchangeSummary,
+  type MqttListenerConfig,
   type ScopeConfig,
 } from '@siteinquisition/core';
+
+/**
+ * Parse an MQTT listener spec: LISTEN_PORT=BROKER_HOST[:PORT][,tls][,listen-tls][,insecure]
+ *   1883=broker.local              plain in, plain out
+ *   8883=broker.example.com:8883,tls,listen-tls
+ */
+export function parseMqttSpec(spec: string, allowLan: boolean): MqttListenerConfig {
+  const m = /^(\d+)=([^,:]+|\[[^\]]+\])(?::(\d+))?((?:,[a-z-]+)*)$/i.exec(spec.trim());
+  if (!m) throw new Error(`invalid --mqtt spec "${spec}" (expected PORT=HOST[:PORT][,tls][,listen-tls][,insecure])`);
+  const flags = new Set(m[4]!.split(',').filter(Boolean).map((f) => f.toLowerCase()));
+  for (const f of flags) if (!['tls', 'listen-tls', 'insecure'].includes(f)) throw new Error(`unknown --mqtt flag "${f}"`);
+  return {
+    port: Number(m[1]),
+    upstreamHost: m[2]!.replace(/^\[|\]$/g, ''),
+    upstreamPort: m[3] ? Number(m[3]) : undefined,
+    upstreamTls: flags.has('tls'),
+    listenTls: flags.has('listen-tls'),
+    ignoreUpstreamTlsErrors: flags.has('insecure'),
+    allowLan,
+  };
+}
 
 const program = new Command()
   .name('siq')
@@ -31,7 +53,7 @@ const size = (n: number | null) => (n === null ? '-' : n < 1024 ? `${n}B` : n < 
 
 function line(e: ExchangeSummary): string {
   const time = new Date(e.startedAt).toTimeString().slice(0, 8);
-  const status = e.status === null ? e.state.slice(0, 3).toUpperCase() : String(e.status);
+  const status = e.status === null ? (e.state === 'complete' ? 'OK' : e.state.slice(0, 3).toUpperCase()) : String(e.status);
   const dur = e.durationMs === null ? '' : `${Math.round(e.durationMs)}ms`;
   return [
     paint(90, time),
@@ -56,16 +78,18 @@ function withStore<T>(fn: (store: CaptureStore) => T): T {
 program
   .command('proxy')
   .description('run the capture proxy headless and print traffic as it happens')
-  .option('--port <n>', 'proxy port (0 = first free port from 8000)', '8080')
+  .option('--port <n>', 'proxy port (0 = any free port)', '8080')
   .option('--api-port <n>', 'core API port (0 = pick a free port)', '0')
   .option('--lan', 'accept connections from other machines, e.g. IoT devices', false)
   .option('--include <host...>', 'add include rules for these host globs before starting')
   .option('--insecure-upstream', 'skip certificate checks on upstream servers', false)
+  .option('--mqtt <spec...>', 'relay MQTT: PORT=BROKER[:PORT][,tls][,listen-tls][,insecure], e.g. 1883=broker.local')
   .addOption(new Option('--quiet', 'do not print each exchange'))
-  .action(async (o: { port: string; apiPort: string; lan: boolean; include?: string[]; insecureUpstream: boolean; quiet?: boolean }) => {
+  .action(async (o: { port: string; apiPort: string; lan: boolean; include?: string[]; insecureUpstream: boolean; mqtt?: string[]; quiet?: boolean }) => {
     const core = await Core.open({
       projectDir: projectDir(),
       proxy: { port: Number(o.port), allowLan: o.lan, ignoreUpstreamTlsErrors: o.insecureUpstream },
+      mqtt: (o.mqtt ?? []).map((spec) => parseMqttSpec(spec, o.lan)),
       api: { port: Number(o.apiPort) },
     });
     if (o.include?.length) {
@@ -81,9 +105,19 @@ program
     console.error(`  proxy       ${o.lan ? '0.0.0.0' : '127.0.0.1'}:${proxyPort} (HTTP, HTTPS, SOCKS5)`);
     console.error(`  core API    ws://127.0.0.1:${apiPort} (token in ${core.projectDir}/core.json)`);
     console.error(`  CA          ${info.ca.certPath}`);
+    for (const m of info.mqtt) console.error(`  mqtt        ${o.lan ? '0.0.0.0' : '127.0.0.1'}:${m.port}${m.listenTls ? ' (TLS)' : ''} -> ${m.broker}`);
     console.error(`  decrypting  ${info.decryptHosts.length ? info.decryptHosts.join(', ') : 'nothing yet: add hosts with --include or `siq scope add`'}`);
-    if (!o.quiet) core.proxy.on('response', (e) => console.log(line(e)));
+    if (!o.quiet) {
+      core.proxy.on('response', (e) => console.log(line(e)));
+      core.store.on('change', (c) => {
+        if (c.kind === 'exchange.established' || (c.kind === 'exchange.error' && core.store.getSummary(c.entityId)?.scheme.startsWith('mqtt'))) {
+          const e = core.store.getSummary(c.entityId);
+          if (e) console.log(line(e));
+        }
+      });
+    }
     core.proxy.on('error', (err) => console.error(paint(31, `capture error: ${err.message}`)));
+    for (const relay of core.mqtt) relay.on('error', (err) => console.error(paint(31, `mqtt: ${err.message}`)));
     let closing = false;
     const shutdown = async () => {
       if (closing) return;
@@ -128,12 +162,13 @@ program
         return;
       }
       const text = (b: Uint8Array) => (b.byteLength ? Buffer.from(b).toString('utf8') : '');
-      console.log(`${ex.method} ${ex.url} HTTP/${ex.httpVersion}`);
+      const proto = (v: string) => (/^[A-Z]+\//.test(v) ? v : `HTTP/${v}`);
+      console.log(`${ex.method} ${ex.url} ${proto(ex.httpVersion)}`);
       for (const [k, v] of ex.requestHeaders) console.log(`${k}: ${v}`);
       if (req.byteLength) console.log(`\n${text(req)}`);
       console.log('');
       if (ex.status !== null) {
-        console.log(`HTTP/${ex.httpVersion} ${ex.status} ${ex.statusMessage ?? ''}`.trim());
+        console.log(`${proto(ex.httpVersion)} ${ex.status} ${ex.statusMessage ?? ''}`.trim());
         for (const [k, v] of ex.responseHeaders ?? []) console.log(`${k}: ${v}`);
         if (res.byteLength) console.log(`\n${text(res)}`);
       } else {
@@ -142,9 +177,25 @@ program
       const stream = s.getStreamForExchange(id);
       if (stream) {
         console.log(`\n-- ${stream.protocol} messages --`);
+        const show = (b: Uint8Array) => {
+          const buf = Buffer.from(b);
+          const printable = !buf.subarray(0, 512).some((c) => c < 9 || (c > 13 && c < 32));
+          return printable ? buf.toString('utf8') : `<${b.byteLength} bytes> ${buf.subarray(0, 32).toString('hex')}`;
+        };
         for (const m of s.getStreamMessages(stream.id)) {
           const arrow = m.direction === 'client' ? '>>' : '<<';
-          console.log(`${arrow} ${m.opcode === 'text' ? Buffer.from(m.payload).toString('utf8') : `<${m.size} bytes> ${Buffer.from(m.payload.subarray(0, 32)).toString('hex')}`}`);
+          if (stream.protocol === 'mqtt') {
+            const meta = m.meta ?? {};
+            const bits = [m.opcode.toUpperCase()];
+            if (typeof meta.topic === 'string') bits.push(meta.topic);
+            if (typeof meta.qos === 'number' && (m.opcode === 'publish' || m.opcode === 'subscribe')) bits.push(`qos${meta.qos}`);
+            if (meta.retain) bits.push('retain');
+            if (typeof meta.messageId === 'number') bits.push(`#${meta.messageId}`);
+            if (Array.isArray(meta.subscriptions)) bits.push((meta.subscriptions as Array<{ topic: string }>).map((x) => x.topic).join(' '));
+            console.log(`${arrow} ${bits.join(' ')}${m.size ? `  ${show(m.payload)}` : ''}`);
+          } else {
+            console.log(`${arrow} ${m.opcode === 'text' ? Buffer.from(m.payload).toString('utf8') : show(m.payload)}`);
+          }
         }
       }
     });

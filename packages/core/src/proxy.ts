@@ -1,12 +1,12 @@
 import { EventEmitter } from 'node:events';
-import type { Server, Socket } from 'node:net';
+import { createServer, type AddressInfo, type Server, type Socket } from 'node:net';
 import * as mockttp from 'mockttp';
 import type { CertificateAuthority } from './ca.js';
 import type { Scope } from './scope.js';
 import type { CaptureStore, ExchangeSource, ExchangeSummary, HeaderList, Timings } from './store.js';
 
 export interface ProxyOptions {
-  /** Port to listen on. 0 or undefined picks a free port. */
+  /** Port to listen on. 0 or undefined lets the OS pick a free port. */
   port?: number;
   /**
    * Accept connections from other machines (phones, IoT devices). When false
@@ -26,6 +26,36 @@ interface Live {
   flowId: string;
   url: string;
   clientAddr: string | null;
+}
+
+/** Ask the OS for an unused port (mockttp's own default scans upwards from 8000, which collides easily). */
+const freePort = () =>
+  new Promise<number>((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', reject);
+    probe.listen(0, () => {
+      const { port } = probe.address() as AddressInfo;
+      probe.close(() => resolve(port));
+    });
+  });
+
+/**
+ * A restart frees the port for a moment before re-binding it, so retry
+ * briefly if something grabbed it in between, then fail with a clear message.
+ */
+async function startWithRetry(server: mockttp.Mockttp, port: number, attempts = 5): Promise<void> {
+  for (let i = 1; ; i++) {
+    try {
+      await server.start(port);
+      return;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE' || i >= attempts) {
+        if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') throw new Error(`proxy port ${port} is in use by another program`);
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, 50 * i));
+    }
+  }
 }
 
 const LOOPBACK = /^(127\.|::1$|::ffff:127\.)/;
@@ -89,7 +119,8 @@ export class ProxyEngine extends EventEmitter<{
     await server.forAnyRequest().thenPassThrough(passthrough);
     await server.forAnyWebSocket().thenPassThrough(passthrough);
     await this.subscribe(server);
-    await server.start(this.listenPort ?? (this.opts.port || undefined));
+    const port = this.listenPort ?? (this.opts.port || (await freePort()));
+    await startWithRetry(server, port);
     this.restrictClients(server);
     this.server = server;
     this.listenPort = server.port;

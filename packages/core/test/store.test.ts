@@ -102,6 +102,23 @@ describe('CaptureStore', () => {
   });
 });
 
+describe('schema migration', () => {
+  it('upgrades a version 1 project by adding stream_message.meta', () => {
+    store.db.exec("ALTER TABLE stream_message DROP COLUMN meta; UPDATE meta SET value = '1' WHERE key = 'schema_version'");
+    store.close();
+    store = CaptureStore.openProject(dir);
+    const cols = (store.db.prepare('PRAGMA table_info(stream_message)').all() as Array<{ name: string }>).map((c) => c.name);
+    expect(cols).toContain('meta');
+    expect((store.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string }).value).toBe('2');
+  });
+
+  it('refuses projects from a newer version', () => {
+    store.db.exec("UPDATE meta SET value = '99' WHERE key = 'schema_version'");
+    store.close();
+    expect(() => CaptureStore.openProject(dir)).toThrow(/newer SiteInquisition/);
+  });
+});
+
 describe('compileQuery', () => {
   it('rejects bad status filters', () => {
     expect(() => compileQuery('status:abc')).toThrow(/invalid status/);

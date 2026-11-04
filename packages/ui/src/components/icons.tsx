@@ -5,6 +5,7 @@ const P: Record<string, string> = {
   timeline: 'M4 6h8 M8 12h11 M6 18h6',
   replay: 'M4 12a8 8 0 1 0 2.3-5.6 M4 4v4h4',
   race: 'M4 6h9 M4 12h13 M4 18h6 M20 4v16',
+  h3: 'M3 6h7 M13 6h8 M3 12h12 M18 12h3 M3 18h4 M10 18h11',
   rules: 'M4 7h10 M18 7h2 M4 17h4 M12 17h8 M14 5v4 M8 15v4',
   codecs: 'M8 7l-4 5 4 5 M16 7l4 5-4 5 M13 5l-2 14',
   cookies: 'M12 3a9 9 0 1 0 9 9 3 3 0 0 1-3-3 3 3 0 0 1-3-3 3 3 0 0 1-3-3z M9 10h.01 M14 15h.01 M9 15h.01',

@@ -12,6 +12,7 @@ import { Timeline } from './views/Timeline';
 import { Cookies } from './views/Cookies';
 import { Codecs } from './views/Codecs';
 import { Race } from './views/Race';
+import { H3Lab } from './views/H3Lab';
 import { Streams } from './views/Streams';
 import { Scripts } from './views/Scripts';
 import { Api } from './views/Api';
@@ -26,6 +27,7 @@ const NAV: Array<{ id: ViewId; label: string }> = [
   { id: 'timeline', label: 'Timeline' },
   { id: 'replay', label: 'Replay' },
   { id: 'race', label: 'Race' },
+  { id: 'h3', label: 'HTTP/3' },
   { id: 'rules', label: 'Rules' },
   { id: 'codecs', label: 'Codecs' },
   { id: 'cookies', label: 'Cookies' },
@@ -274,6 +276,7 @@ export function App() {
           {view === 'cookies' && <Cookies macros={<Macros />} vars={<Variables />} aws={<Aws />} />}
           {view === 'codecs' && <Codecs />}
           {view === 'race' && <Race />}
+          {view === 'h3' && <H3Lab />}
           {view === 'streams' && <Streams />}
           {view === 'scripts' && <Scripts />}
           {view === 'api' && <Api />}

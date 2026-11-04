@@ -26,6 +26,8 @@ export interface SendOptions {
   loginMacro?: boolean;
   ignoreTlsErrors?: boolean;
   timeoutMs?: number;
+  /** Send over HTTP/3 ('h3') instead of HTTP/1.1. */
+  protocol?: 'h1' | 'h3';
   /** Variables that override project variables for this send (a flow's own). */
   vars?: Record<string, string>;
   /** Run this flow first; its variables are visible as {{var:name}} and {{flow:name.var}}. */
@@ -226,7 +228,7 @@ export class Sender {
     const fl = await this.runFlows(req, opts);
     const o = { ...opts, vars: fl.vars };
     const { req: r, applied } = this.prepare(req, o, batch, fl.flows);
-    let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+    let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
     this.addTags(res.id, [...applied, ...[...fl.flows.keys()].map((n) => `used-flow:${n}`)]);
 
     if (opts.loginMacro && res.status !== null) {
@@ -236,12 +238,12 @@ export class Sender {
       if (macro || loginFlow) {
         if (macro) await this.runMacro(macro.id);
         else {
-          const lr = await this.flows!.run(loginFlow!, {}, opts.flowDepth ?? 0, { ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+          const lr = await this.flows!.run(loginFlow!, {}, opts.flowDepth ?? 0, { ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
           if (!lr.ok) throw new Error(`login flow "${loginFlow!.name}" failed: ${lr.error}`);
         }
         // Resend with fresh tokens and cookies; the login's responses have updated both.
         const again = this.prepare(req, { ...o, refreshCookies: opts.refreshCookies ?? true }, batch, fl.flows);
-        res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+        res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
         this.addTags(res.id, [...again.applied, `after-login:${macro?.name ?? loginFlow!.name}`]);
       }
     }
@@ -266,6 +268,7 @@ export class Sender {
         replayOf: r.replayOf,
         ignoreTlsErrors: opts.ignoreTlsErrors,
         timeoutMs: opts.timeoutMs,
+        protocol: opts.protocol,
       });
       this.addTags(current.id, [`redirect-of:${flowRoot.id}`]);
     }

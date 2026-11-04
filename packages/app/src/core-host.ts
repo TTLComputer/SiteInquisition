@@ -10,6 +10,8 @@ interface StartMessage {
   projectDir: string;
   proxyPort?: number;
   allowLan?: boolean;
+  /** Port for the browser listener (TCP and UDP), set when browser hosts are mapped to it. */
+  browserPort?: number;
 }
 
 type Message = StartMessage | { type: 'close' };
@@ -25,7 +27,7 @@ port.on('message', (e: { data: Message }) => {
 
 async function start(msg: StartMessage) {
   try {
-    const open = (proxyPort: number) => Core.open({ projectDir: msg.projectDir, proxy: { port: proxyPort, allowLan: msg.allowLan ?? false }, browserProxy: true, api: {} });
+    const open = (proxyPort: number) => Core.open({ projectDir: msg.projectDir, proxy: { port: proxyPort, allowLan: msg.allowLan ?? false }, browserProxy: { port: msg.browserPort, http3: true }, api: {} });
     core = await open(msg.proxyPort ?? 8080);
     let ports;
     try {

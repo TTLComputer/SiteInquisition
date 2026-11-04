@@ -1,7 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { createServer, type AddressInfo } from 'node:net';
 import { leafIssuer, type CertificateAuthority } from './ca.js';
-import { Interceptor, decodeBody, type InterceptorHooks, type ProxiedRequest, type Timings as WireTimings } from './interceptor.js';
+import type { EventEmitter as Emitter } from 'node:events';
+import { Interceptor, decodeBody, type InterceptorEvents, type InterceptorHooks, type ProxiedRequest, type Timings as WireTimings } from './interceptor.js';
+import { H3Capture } from './quic/capture.js';
 import type { HookMessage } from './rules.js';
 import { globToRegExp, type Scope } from './scope.js';
 import type { PlanStep, SentStep } from './wsplan.js';
@@ -22,6 +24,11 @@ export interface ProxyOptions {
   source?: ExchangeSource;
   /** How long a redirect waits for the client to follow it before the chain is forgotten. */
   redirectWindowMs?: number;
+  /**
+   * Also accept HTTP/3 (QUIC over UDP) on the same port number. The built-in
+   * browser sends QUIC here when its hosts are mapped to this port.
+   */
+  http3?: boolean;
 }
 
 /**
@@ -94,6 +101,7 @@ export class ProxyEngine extends EventEmitter<{
   error: [Error];
 }> {
   private server?: Interceptor;
+  private h3?: H3Capture;
   private live = new Map<string, Live>();
   private wsStreams = new Map<string, string>();
   /** Recorded exchange id to proxy request id, for open WebSockets. */
@@ -225,13 +233,38 @@ export class ProxyEngine extends EventEmitter<{
     await startWithRetry(server, port);
     this.server = server;
     this.listenPort = server.port;
+    if (this.opts.http3) {
+      const h3 = new H3Capture({
+        issuer: leafIssuer(this.ca),
+        caCert: this.ca.cert,
+        ignoreUpstreamTlsErrors: (host) => (ignoreHosts ? ignoreHosts.has(host.toLowerCase()) : ignore === true),
+        hooks: this.interceptorHooks(),
+        loopbackOnly: !this.opts.allowLan,
+      });
+      this.subscribe(h3);
+      try {
+        await h3.listen(server.port, this.opts.allowLan ? '0.0.0.0' : '127.0.0.1');
+        this.h3 = h3;
+      } catch (err) {
+        // TCP is what most clients use; report the UDP problem and carry on without HTTP/3.
+        this.emit('error', new Error(`HTTP/3 listener on UDP ${server.port} failed: ${(err as Error).message}`));
+      }
+    }
     return server.port;
+  }
+
+  /** The UDP port taking HTTP/3, when that listener is running. */
+  get http3Port(): number | null {
+    return this.h3 ? this.h3.port : null;
   }
 
   async stop(): Promise<void> {
     const server = this.server;
+    const h3 = this.h3;
     this.server = undefined;
+    this.h3 = undefined;
     if (server) await server.close();
+    if (h3) await h3.close();
     this.live.clear();
     this.wsStreams.clear();
   }
@@ -306,7 +339,7 @@ export class ProxyEngine extends EventEmitter<{
     this.emit('exchange', ex);
   }
 
-  private subscribe(server: Interceptor): void {
+  private subscribe(server: Emitter<InterceptorEvents>): void {
     server.on('request', this.guard((req) => this.recordRequest(req, false)));
     server.on('websocket-request', this.guard((req) => this.recordRequest(req, true)));
     server.on('error', (err) => this.emit('error', err));

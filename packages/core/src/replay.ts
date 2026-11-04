@@ -1,5 +1,6 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
+import { runH3Plan } from './quic/plan.js';
 import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
 
 export interface ReplayRequest {
@@ -12,6 +13,8 @@ export interface ReplayRequest {
   /** Skip certificate checks on the target. */
   ignoreTlsErrors?: boolean;
   timeoutMs?: number;
+  /** 'h3' sends over HTTP/3 with the in-house QUIC stack; otherwise HTTP/1.1. */
+  protocol?: 'h1' | 'h3';
 }
 
 /** Headers Node manages per connection; sending captured values would break the request. */
@@ -24,6 +27,7 @@ const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'tra
  * Replays are always recorded, whatever the scope, since the user asked for them.
  */
 export async function sendReplay(store: CaptureStore, req: ReplayRequest): Promise<ExchangeSummary> {
+  if (req.protocol === 'h3') return sendH3(store, req);
   const url = new URL(req.url);
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error(`cannot replay ${url.protocol} URLs yet`);
   const body = req.body ?? new Uint8Array();
@@ -102,3 +106,13 @@ export async function sendReplay(store: CaptureStore, req: ReplayRequest): Promi
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
+
+/** One request over HTTP/3, recorded like any other replay. */
+async function sendH3(store: CaptureStore, req: ReplayRequest): Promise<ExchangeSummary> {
+  const r = await runH3Plan(store, [{ method: req.method, url: req.url, headers: req.headers.filter(([k]) => k.toLowerCase() !== 'content-length'), body: req.body, replayOf: req.replayOf }], {
+    ignoreTlsErrors: req.ignoreTlsErrors,
+    timeoutMs: req.timeoutMs,
+  });
+  const id = r.runs[0]!.rows[0]!.exchangeId;
+  return store.getSummary(id)!;
+}

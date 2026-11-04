@@ -24,6 +24,8 @@ export interface H3CaptureOptions {
   upstream?: 'auto' | 'h3' | 'tcp';
   /** Drop datagrams from other machines (default true). */
   loopbackOnly?: boolean;
+  /** Decide per client address instead of loopbackOnly. */
+  acceptClient?(address: string): boolean;
 }
 
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'http2-settings', 'alt-svc']);
@@ -55,9 +57,10 @@ export class H3Capture extends EventEmitter<InterceptorEvents> {
       },
       (req) => void this.onRequest(req).catch((err) => this.emit('error', err instanceof Error ? err : new Error(String(err)))),
     );
-    if (opts.loopbackOnly !== false) {
+    const accept = opts.acceptClient ?? (opts.loopbackOnly !== false ? (a: string) => LOOPBACK.test(a) : undefined);
+    if (accept) {
       this.server.quic.on('connection', (conn) => {
-        if (!LOOPBACK.test(conn.path.address)) conn.close(0x2, 'not a loopback client');
+        if (!accept(conn.path.address)) conn.close(0x2, 'client not allowed');
       });
     }
   }

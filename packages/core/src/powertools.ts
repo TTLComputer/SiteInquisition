@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { SecretBox } from './secrets.js';
 import { bytesToString, decodeChain, detectChain } from '@siteinquisition/codecs';
 import { coverage, pathTemplate } from './coverage.js';
 import { checkExchange, contractScan } from './contract.js';
@@ -20,6 +21,7 @@ import { runRace, type RaceOptions, type RaceRequest } from './race.js';
 import { h3Tickets, runH3Plan, type H3PlanOptions, type H3PlanRequest } from './quic/plan.js';
 import { applyRule, conditionsMatch, normalizeMock, normalizeReplaceRule, type HookMessage, type MockRule, type ReplaceRule, type RuleInput } from './rules.js';
 import { normalizeScript, ScriptEngine, type Script, type Sdk } from './scripts.js';
+import { TrustedScripts } from './trust.js';
 import { Sender, type AwsProfile, type Macro, type SendOptions, type SendRequest } from './send.js';
 import { parseSigV4, type AwsCredentials } from './sigv4.js';
 import type { Change, HeaderList } from './store.js';
@@ -45,6 +47,7 @@ export class PowerTools {
   readonly tech: TechService;
   readonly errors: ErrorService;
   readonly scripts: ScriptEngine;
+  private readonly trust: TrustedScripts;
   readonly intercept: Intercept;
   readonly sender: Sender;
   readonly ws: WsReplays;
@@ -101,8 +104,9 @@ export class PowerTools {
       setGlobalVar: (k, v, src) => this.vars.set(k, v, src),
     });
     this.sender.flows = this.flows;
-    this.scripts = new ScriptEngine(() => this.hookSdk());
-    this.scripts.load(this.scriptList());
+    this.trust = new TrustedScripts(core.dataDir, core.projectDir);
+    this.scripts = new ScriptEngine({ values: () => this.vars.values(), set: (name, value) => this.vars.set(name, value, 'script') }, (s) => this.trust.has(s.code));
+    void this.scripts.load(this.scriptList());
     this.mcp = new McpServer(this.mcpTools(), () => this.mcpSettings());
 
     // Extraction rules watch every completed response, including replays.
@@ -153,13 +157,29 @@ export class PowerTools {
     this.core.store.setMeta('breakpoints', out);
     return out;
   }
+  /** Scripts that ask to run without the sandbox but whose code nobody on this computer trusted yet; they run sandboxed. */
+  untrustedScripts(): string[] {
+    return this.scriptList()
+      .filter((s) => s.sandbox === false && !this.trust.has(s.code))
+      .map((s) => s.id);
+  }
+  async trustScript(id: string): Promise<boolean> {
+    const s = this.scriptList().find((x) => x.id === id);
+    if (!s) throw new Error('script not found');
+    this.trust.add(s.code);
+    await this.scripts.load(this.scriptList());
+    return true;
+  }
   scriptList(): Script[] {
     return this.meta<Script[]>('scripts', []);
   }
-  setScripts(list: Array<Omit<Script, 'id'> & { id?: string }>): Script[] {
+  /** Save the scripts and recompile hooks; resolves once compile errors are known. */
+  async setScripts(list: Array<Omit<Script, 'id'> & { id?: string }>): Promise<Script[]> {
     const out = list.map(normalizeScript);
+    // Saving a script with the sandbox off, through the app or API on this computer, is the user trusting that code.
+    for (const s of out) if (s.sandbox === false) this.trust.add(s.code);
     this.core.store.setMeta('scripts', out);
-    this.scripts.load(out);
+    await this.scripts.load(out);
     return out;
   }
   macros(): Macro[] {
@@ -274,11 +294,21 @@ export class PowerTools {
     return contractScan(this.core.store, this.specs(), host);
   }
   identities(): Identity[] {
-    return this.meta<Identity[]>('identities', [{ name: 'no auth', headers: [], anonymous: true }]);
+    const fallback: Identity[] = [{ name: 'no auth', headers: [], anonymous: true }];
+    const raw = this.core.store.getMeta<Identity[] | string>('identities');
+    if (raw === undefined) return fallback;
+    if (!SecretBox.isSealed(raw)) return raw as Identity[];
+    if (!this.core.secrets) throw new Error('Saved identities are encrypted with a key from the OS keyring, which is not available. Unlock the keyring and try again.');
+    try {
+      return JSON.parse(this.core.secrets.open(raw).toString('utf8')) as Identity[];
+    } catch {
+      throw new Error("Saved identities were encrypted on another computer or with another keyring and cannot be read here. Save new ones to replace them.");
+    }
   }
   setIdentities(list: Identity[]): Identity[] {
     for (const i of list) if (!i.name?.trim()) throw new Error('an identity needs a name');
-    this.core.store.setMeta('identities', list);
+    // Identities hold tokens and passwords: keep them encrypted when there is a keyring.
+    this.core.store.setMeta('identities', this.core.secrets ? this.core.secrets.seal(JSON.stringify(list)) : list);
     return list;
   }
   authMatrix(exchangeIds: string[], identities?: string[], ignoreTlsErrors?: boolean) {
@@ -347,12 +377,12 @@ export class PowerTools {
     return exchangesToPostman(this.core.store, p.ids ?? [], p.name);
   }
   /** Save a test-suite script that checks a flow; returns the script. */
-  flowToTest(name: string): Script {
+  async flowToTest(name: string): Promise<Script> {
     const f = this.flows.find(name);
     if (!f) throw new Error(`no flow "${name}"`);
     const scriptName = `test ${f.name}`;
     const list = this.scriptList().filter((x) => x.name !== scriptName);
-    const saved = this.setScripts([...list, { name: scriptName, kind: 'test', code: flowToTest(f) }]);
+    const saved = await this.setScripts([...list, { name: scriptName, kind: 'test', code: flowToTest(f) }]);
     return saved.find((x) => x.name === scriptName)!;
   }
   endpointNotes(): Record<string, { notes: string; tags: string[]; updatedAt: number; by: string }> {
@@ -464,7 +494,7 @@ export class PowerTools {
         return { applied: [...applied, `mock:${mock.name}`], respond: { status: mock.status, headers: mock.headers, body } };
       }
       applied.push(...this.applyRules('request', msg, msg.url, msg.method));
-      if (this.scripts.active) applied.push(...this.scripts.run('request', msg).map((n) => `script:${n}`));
+      if (this.scripts.active) applied.push(...(await this.scripts.run('request', msg)).map((n) => `script:${n}`));
       return { applied };
     },
     wantsResponse: (req, ctx) =>
@@ -473,7 +503,7 @@ export class PowerTools {
       this.replaceRules().some((r) => r.enabled !== false && r.phase === 'response' && conditionsMatch(r, req)),
     response: async (req, res, ctx) => {
       const applied = this.applyRules('response', res, req.url, req.method);
-      if (this.scripts.active) applied.push(...this.scripts.run('response', req, res).map((n) => `script:${n}`));
+      if (this.scripts.active) applied.push(...(await this.scripts.run('response', req, res)).map((n) => `script:${n}`));
       const paused = await this.intercept.check('response', res, ctx.source, ctx.key);
       if (paused?.action === 'drop') return { applied: [...applied, 'breakpoint:dropped'], drop: true };
       if (paused) {
@@ -488,14 +518,6 @@ export class PowerTools {
   private textBody(id: string, side: 'request' | 'response') {
     const b = this.core.store.getBody(id, side, true);
     return b ? bytesToString(b) : null;
-  }
-
-  /** Hooks get a synchronous subset: variables and tags. */
-  private hookSdk(): Sdk {
-    return {
-      getVar: ((name: string) => this.vars.values()[name]) as never,
-      setVar: ((name: string, value: string) => this.vars.set(String(name), String(value), 'script')) as never,
-    };
   }
 
   sdk(): Sdk {
@@ -578,7 +600,7 @@ export class PowerTools {
     return fullSdk as unknown as Sdk;
   }
 
-  runScript(script: Pick<Script, 'id' | 'name' | 'kind' | 'code'>) {
+  runScript(script: Pick<Script, 'id' | 'name' | 'kind' | 'code' | 'sandbox'>) {
     return this.scripts.execute(script, this.sdk());
   }
 
@@ -1014,8 +1036,10 @@ export class PowerTools {
         description: 'Run JavaScript with the `siq` SDK (siq.search, siq.get, siq.body, siq.json, siq.send, siq.resend, siq.race, siq.h3, siq.setVar, siq.cookies, ...). The value of a final `return` is returned along with console output.',
         inputSchema: { type: 'object', properties: { code: str }, required: ['code'] },
         write: true,
-        summary: (a) => `Run a script (${String(a.code).split('\n').length} lines)`,
-        run: (a) => this.runScript({ id: 'mcp', name: 'mcp', kind: 'script', code: String(a.code) }),
+        summary: (a) => `Run a sandboxed script (${String(a.code).split('\n').length} lines): it can read traffic and send requests through the SDK`,
+        noGrant: true,
+        // Agents' scripts always run sandboxed, whatever the project's own scripts use.
+        run: (a) => this.runScript({ id: 'mcp', name: 'mcp', kind: 'script', code: String(a.code), sandbox: true }),
       },
     ];
   }
@@ -1023,6 +1047,7 @@ export class PowerTools {
   close(): void {
     this.intercept.releaseAll();
     this.ws.closeAll();
+    this.scripts.close();
   }
 }
 

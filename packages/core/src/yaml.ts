@@ -51,7 +51,10 @@ function unquoteDouble(s: string, line: number): string {
     if (map[e] !== undefined) out += map[e];
     else if (e === 'x' || e === 'u' || e === 'U') {
       const len = e === 'x' ? 2 : e === 'u' ? 4 : 8;
-      out += String.fromCodePoint(parseInt(s.slice(i + 1, i + 1 + len), 16));
+      const hex = s.slice(i + 1, i + 1 + len);
+      const cp = /^[0-9a-f]+$/i.test(hex) && hex.length === len ? parseInt(hex, 16) : NaN;
+      if (!(cp <= 0x10ffff)) throw new YamlError(`invalid \\${e} escape "\\${e}${hex}"`, line);
+      out += String.fromCodePoint(cp);
       i += len;
     } else out += e;
   }

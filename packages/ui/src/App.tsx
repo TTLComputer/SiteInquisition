@@ -1,11 +1,11 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp, type ViewId } from './state';
 import { Icon } from './components/icons';
 import { fmtCount, fmtSize } from './format';
 import { DRAG_TYPE, History } from './views/History';
 import { Replay } from './views/Replay';
 import { Rules } from './views/Rules';
-import { Settings } from './views/Settings';
+import { SHORTCUTS, Settings } from './views/Settings';
 import { Placeholder } from './views/Placeholder';
 import { Browser } from './views/Browser';
 import { Timeline } from './views/Timeline';
@@ -18,6 +18,7 @@ import { Scripts } from './views/Scripts';
 import { Api } from './views/Api';
 import { Aws, Macros, Variables } from './views/CookiesTools';
 import { ApprovalChip } from './views/Mcp';
+import { LanChip } from './views/Lan';
 import { bodyText } from './actions';
 import { toRawRequest } from './format';
 
@@ -55,7 +56,7 @@ function TitleBar() {
       )}
       <span className="chip-btn" title={connected ? 'Proxy listening' : 'Core not connected'} data-testid="listener">
         <span className="dot" style={{ background: connected && info?.proxyPort ? 'var(--ok)' : 'var(--error)' }} />
-        <span className="mono">{info?.proxyPort ? `127.0.0.1:${info.proxyPort}` : 'not listening'}</span>
+        <span className="mono">{info?.proxyPort ? `${info.allowLan ? '0.0.0.0' : '127.0.0.1'}:${info.proxyPort}` : 'not listening'}</span>
         <span className="muted">{connected ? 'Recording in scope' : 'Disconnected'}</span>
       </span>
       <button className="chip-btn" onClick={() => setView('rules')} title="Edit scope">
@@ -68,6 +69,7 @@ function TitleBar() {
         </button>
       )}
       <ApprovalChip />
+      <LanChip />
       <button
         className="chip-btn search"
         onClick={() => {
@@ -208,6 +210,49 @@ function selectedText(): string {
   return window.getSelection()?.toString() ?? '';
 }
 
+const typing = (el: Element | null) => el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || (el as HTMLElement | null)?.isContentEditable === true;
+
+/** Press ? anywhere outside a text field for the list of keyboard shortcuts. */
+function ShortcutOverlay() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+      else if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey && !typing(document.activeElement)) {
+        e.preventDefault();
+        setOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  if (!open) return null;
+  return (
+    <div className="overlay" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onMouseDown={() => setOpen(false)} data-testid="shortcuts">
+      <div className="card overlay-card" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="panel-title" style={{ padding: '12px 14px' }}>
+          Keyboard shortcuts
+        </div>
+        <table className="shortcut-table">
+          <tbody>
+            {[...SHORTCUTS, ['?', 'Show or hide this list'] as [string, string]].map(([k, v]) => (
+              <tr key={k}>
+                <td>
+                  <kbd>{k}</kbd>
+                </td>
+                <td>{v}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="muted" style={{ padding: '8px 14px 12px', fontSize: 12 }}>
+          Also in Settings, Keyboard. Esc closes this.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function useShortcuts() {
   const { client, selectedId, openReplayById, resendNow, notify, setView, sendToCodecs, sendToRace } = useApp();
   useEffect(() => {
@@ -284,6 +329,7 @@ export function App() {
           {view === 'settings' && <Settings />}
         </main>
       </div>
+      <ShortcutOverlay />
       {toast && (
         <div className="toast" role="status">
           {toast}

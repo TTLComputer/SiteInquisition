@@ -1,18 +1,32 @@
 {
   "name": "@siteinquisition/devkit",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "description": "SiteInquisition build tools: a test runner with a vitest-style API, a Chromium driver for UI tests and a bundler for the renderer.",
   "license": "MIT",
   "type": "module",
   "exports": {
-    "./test": { "types": "./dist/test/index.d.ts", "default": "./dist/test/index.js" },
-    "./browser": { "types": "./dist/browser/index.d.ts", "default": "./dist/browser/index.js" },
-    "./bundle": { "types": "./dist/bundle/index.d.ts", "default": "./dist/bundle/index.js" }
+    "./test": {
+      "types": "./dist/test/index.d.ts",
+      "default": "./dist/test/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "default": "./dist/browser/index.js"
+    },
+    "./bundle": {
+      "types": "./dist/bundle/index.d.ts",
+      "default": "./dist/bundle/index.js"
+    },
+    "./package": {
+      "types": "./dist/package/index.d.ts",
+      "default": "./dist/package/index.js"
+    }
   },
   "bin": {
     "siq-test": "./dist/test/cli.js",
-    "siq-bundle": "./dist/bundle/cli.js"
+    "siq-bundle": "./dist/bundle/cli.js",
+    "siq-package": "./dist/package/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

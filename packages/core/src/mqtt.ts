@@ -3,6 +3,7 @@ import * as net from 'node:net';
 import * as tls from 'node:tls';
 import { MqttParser, encodePacket, type ConnackPacket, type ConnectPacket, type Packet, type PublishPacket } from './mqttcodec.js';
 import { leafIssuer, type CertificateAuthority } from './ca.js';
+import { LOOPBACK, type LanGate } from './lan.js';
 import type { Scope } from './scope.js';
 import type { SeenHosts } from './seen.js';
 import type { CaptureStore, ExchangeSource, HeaderList } from './store.js';
@@ -32,7 +33,6 @@ export interface MqttListenerConfig {
   source?: ExchangeSource;
 }
 
-const LOOPBACK = /^(127\.|::1$|::ffff:127\.)/;
 
 /** The parts of a packet worth showing and searching, minus the payload. */
 export function packetMeta(p: Packet): Record<string, unknown> {
@@ -67,6 +67,7 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
     private readonly ca: CertificateAuthority,
     readonly config: MqttListenerConfig,
     private readonly seen?: SeenHosts,
+    private readonly lanGate?: LanGate,
   ) {
     super();
   }
@@ -98,7 +99,9 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
     }
     // Same rule as the HTTP proxy: refuse non-loopback clients before the handshake unless LAN access is on.
     server.prependListener('connection', (socket: net.Socket) => {
-      if (!this.config.allowLan && !LOOPBACK.test(socket.remoteAddress ?? '')) socket.destroy();
+      const addr = socket.remoteAddress ?? '';
+      const ok = LOOPBACK.test(addr) || (!!this.config.allowLan && (this.lanGate ? this.lanGate.accept(addr, `mqtt :${this.config.port}`) : true));
+      if (!ok) socket.destroy();
     });
     server.on('tlsClientError', (err, socket) => {
       this.store.addTlsFailure({ host: this.config.tlsHostname ?? this.config.upstreamHost, clientAddr: socket.remoteAddress, cause: err.message });

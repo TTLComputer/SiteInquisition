@@ -22,7 +22,7 @@ import { createSecureServer, type Http2ServerRequest, type Http2ServerResponse }
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
 import { connect as netConnect, createServer as createNetServer, isIP, type AddressInfo, type Server, type Socket } from 'node:net';
 import { performance } from 'node:perf_hooks';
-import { Duplex } from 'node:stream';
+import { Duplex, type Readable } from 'node:stream';
 import type { TLSSocket } from 'node:tls';
 import * as zlib from 'node:zlib';
 import { FrameParser, MessageAssembler } from './websocket.js';
@@ -43,8 +43,10 @@ export interface ProxiedRequest {
   url: string;
   httpVersion: string;
   headers: HeaderPairs;
-  /** The body as received, still content-encoded. */
+  /** The body as received, still content-encoded (the first maxCaptureBytes when it was streamed). */
   body: Buffer;
+  /** The full body size when `body` holds only its start; -1 when the size is not known. */
+  bodySize?: number;
   remoteAddress: string | null;
   /** Epoch milliseconds. */
   startTime: number;
@@ -56,8 +58,10 @@ export interface ProxiedResponse {
   status: number;
   statusMessage?: string;
   headers: HeaderPairs;
-  /** The body as sent to the client, still content-encoded. */
+  /** The body as sent to the client, still content-encoded (the first maxCaptureBytes of a large one). */
   body: Buffer;
+  /** The full body size when `body` holds only its start. */
+  bodySize?: number;
   timings: Timings;
 }
 
@@ -100,6 +104,13 @@ export interface InterceptorOptions {
   /** Return false to drop a client before any byte is read. */
   acceptClient?(socket: Socket): boolean;
   hooks?: InterceptorHooks;
+  /** Bytes of each body kept for the record; the rest is passed on but not kept. Default 10 MB. */
+  maxCaptureBytes?: number;
+  /**
+   * Largest body held whole so hooks can see and change it. A bigger one
+   * skips the hooks and streams through. Default 64 MB.
+   */
+  maxBufferBytes?: number;
 }
 
 export type InterceptorEvents = {
@@ -208,11 +219,76 @@ const withLength = (headers: HeaderPairs, length: number, always: boolean): Head
   return out;
 };
 
-const readAll = async (stream: AsyncIterable<unknown>): Promise<Buffer> => {
-  const chunks: Buffer[] = [];
-  for await (const c of stream) chunks.push(typeof c === 'string' ? Buffer.from(c) : (c as Buffer));
-  return Buffer.concat(chunks);
+const DEFAULT_CAPTURE = 10 * 1024 * 1024;
+const DEFAULT_BUFFER = 64 * 1024 * 1024;
+
+/**
+ * Read a stream until it ends or `limit` bytes have arrived. On the limit the
+ * stream is left paused with what was read so far, for the caller to send on
+ * and pipe the rest.
+ */
+function readUpTo(stream: NodeJS.ReadableStream | Readable, limit: number): Promise<{ chunks: Buffer[]; size: number; ended: boolean } | undefined> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const cleanup = () => {
+      stream.off('data', onData);
+      stream.off('end', onEnd);
+      stream.off('error', onError);
+      stream.off('aborted', onError);
+    };
+    const onData = (c: Buffer | string) => {
+      const b = typeof c === 'string' ? Buffer.from(c) : c;
+      chunks.push(b);
+      size += b.length;
+      if (size > limit) {
+        stream.pause();
+        cleanup();
+        resolve({ chunks, size, ended: false });
+      }
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve({ chunks, size, ended: true });
+    };
+    const onError = () => {
+      cleanup();
+      resolve(undefined);
+    };
+    stream.on('data', onData);
+    stream.on('end', onEnd);
+    stream.on('error', onError);
+    stream.on('aborted', onError);
+  });
+}
+
+/** A whole (small) body, or undefined when the stream failed or ran past the buffer limit. */
+const readAll = async (stream: NodeJS.ReadableStream | Readable): Promise<Buffer> => {
+  const r = await readUpTo(stream, DEFAULT_BUFFER);
+  if (!r?.ended) throw new Error('body too large or cut off');
+  return Buffer.concat(r.chunks);
 };
+
+/** Keeps the first `limit` bytes of a stream for the record and counts the rest. */
+class Capture {
+  private chunks: Buffer[] = [];
+  private kept = 0;
+  size = 0;
+  constructor(private readonly limit: number) {}
+  add(c: Buffer) {
+    this.size += c.length;
+    if (this.kept >= this.limit) return;
+    const part = this.kept + c.length > this.limit ? c.subarray(0, this.limit - this.kept) : c;
+    this.chunks.push(part);
+    this.kept += part.length;
+  }
+  get body(): Buffer {
+    return Buffer.concat(this.chunks);
+  }
+  get truncated(): boolean {
+    return this.size > this.kept;
+  }
+}
 
 /** Wait for the next chunk from a stream and pause it again, so nothing is lost before it is wrapped. */
 function readChunk(socket: Duplex): Promise<Buffer | undefined> {
@@ -416,10 +492,11 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
     return (this.net.address() as AddressInfo).port;
   }
 
-  listen(port: number): Promise<void> {
+  /** Listen on `host` (all interfaces when undefined). */
+  listen(port: number, host?: string): Promise<void> {
     return new Promise((resolve, reject) => {
       this.net.once('error', reject);
-      this.net.listen(port, () => {
+      this.net.listen(port, host, () => {
         this.net.off('error', reject);
         resolve();
       });
@@ -660,14 +737,24 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
       res.statusCode = 400;
       return void res.end('bad request target');
     }
-    const body = await readAll(req).catch(() => undefined);
-    if (!body) return;
-    timings.requestBody = rel();
+    const maxCapture = this.opts.maxCaptureBytes ?? DEFAULT_CAPTURE;
+    const read = await readUpTo(req, this.opts.maxBufferBytes ?? DEFAULT_BUFFER);
+    if (!read) return;
+    // A body bigger than the buffer limit streams through: hooks are skipped and only its start is recorded.
+    const streamingUpload = !read.ended;
+    const reqCapture = new Capture(maxCapture);
+    for (const c of read.chunks) reqCapture.add(c);
+    const body = streamingUpload ? reqCapture.body : Buffer.concat(read.chunks);
+    if (read.ended) timings.requestBody = rel();
     const preq = this.newRequest(req, url, body, startTime, conn);
+    if (streamingUpload) {
+      const declared = Number(req.headers['content-length']);
+      preq.bodySize = Number.isFinite(declared) && declared > 0 ? declared : -1;
+    }
     id = preq.id;
     this.emit('request', preq);
 
-    const hooks = this.opts.hooks?.wants(preq.url) ? this.opts.hooks : undefined;
+    const hooks = !streamingUpload && this.opts.hooks?.wants(preq.url) ? this.opts.hooks : undefined;
     let method = preq.method;
     let outUrl = url;
     let headers = endToEnd(preq.headers);
@@ -683,12 +770,12 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
       else res.end();
       return clean;
     };
-    const done = (status: number, statusMessage: string | undefined, hdrs: HeaderPairs, data: Buffer) => {
+    const done = (status: number, statusMessage: string | undefined, hdrs: HeaderPairs, data: Buffer, bodySize?: number) => {
       res.once('finish', () => {
         if (finished) return;
         finished = true;
         timings.total = rel();
-        this.emit('response', { id: preq.id, status, statusMessage, headers: hdrs, body: data, timings });
+        this.emit('response', { id: preq.id, status, statusMessage, headers: hdrs, body: data, ...(bodySize !== undefined ? { bodySize } : {}), timings });
       });
     };
 
@@ -728,10 +815,10 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
       }
     }
 
-    // HTTP/1.1 upstream: needs Host, and a length for the buffered body.
+    // HTTP/1.1 upstream: needs Host, and a length for the buffered body (a streamed one keeps the client's, or goes chunked).
     if (!headers.some(([k]) => k.toLowerCase() === 'host')) headers.unshift(['host', outUrl.host]);
     else headers = headers.map(([k, v]) => (k.toLowerCase() === 'host' ? [k, h2 || bodyChanged ? outUrl.host : v] : [k, v]));
-    headers = withLength(headers, outBody.length, false);
+    if (!streamingUpload) headers = withLength(headers, outBody.length, false);
 
     const insecure = this.opts.ignoreUpstreamTlsErrors(target.host);
     const upstreamReq = (target.secure ? httpsRequest : httpRequest)({
@@ -755,58 +842,81 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
     res.once('close', () => {
       if (!finished) upstreamReq.destroy();
     });
-    upstreamReq.end(outBody);
+    if (streamingUpload) {
+      for (const c of read.chunks) upstreamReq.write(c);
+      req.on('data', (c: Buffer) => {
+        reqCapture.add(c);
+        if (!upstreamReq.write(c)) {
+          req.pause();
+          upstreamReq.once('drain', () => req.resume());
+        }
+      });
+      req.once('end', () => {
+        timings.requestBody = rel();
+        upstreamReq.end();
+      });
+      req.resume();
+    } else upstreamReq.end(outBody);
 
     upstreamReq.once('response', async (up) => {
       const upHeaders = pairsOf(up.rawHeaders);
       const status = up.statusCode ?? 502;
+      const resCapture = new Capture(maxCapture);
+      // Chunks already read when a body turned out too big for hooks; they are sent first.
+      let early: Buffer[] = [];
       if (hooks?.response && (hooks.wantsResponse?.(preq, status) ?? true)) {
-        let data = await readAll(up).catch(() => undefined);
-        if (!data) return abort('error', 'upstream closed mid-response');
-        let st = status;
-        let msg = up.statusMessage;
-        let hdrs = upHeaders;
-        try {
-          const action = await hooks.response(preq, { status, statusMessage: up.statusMessage, headers: upHeaders, decodedBody: decodeBody(data, upHeaders) ?? data });
-          if (action && 'close' in action) {
-            finished = true;
-            timings.total = rel();
-            this.emit('abort', { id: preq.id, kind: 'aborted', message: 'closed by a rule', timings });
-            return void (h2 ? (req as Http2ServerRequest).stream.close(0x8) : req.socket.destroy());
-          }
-          if (action && 'replace' in action) {
-            st = action.replace.status;
-            msg = action.replace.statusMessage;
-            hdrs = action.replace.headers;
-            if (action.replace.body) {
-              const enc = encodeBody(Buffer.from(action.replace.body), hdrs);
-              data = enc.body;
-              hdrs = enc.headers;
+        const got = await readUpTo(up, this.opts.maxBufferBytes ?? DEFAULT_BUFFER);
+        if (!got) return abort('error', 'upstream closed mid-response');
+        if (got.ended) {
+          let data: Buffer = Buffer.concat(got.chunks);
+          let st = status;
+          let msg = up.statusMessage;
+          let hdrs = upHeaders;
+          try {
+            const action = await hooks.response(preq, { status, statusMessage: up.statusMessage, headers: upHeaders, decodedBody: decodeBody(data, upHeaders) ?? data });
+            if (action && 'close' in action) {
+              finished = true;
+              timings.total = rel();
+              this.emit('abort', { id: preq.id, kind: 'aborted', message: 'closed by a rule', timings });
+              return void (h2 ? (req as Http2ServerRequest).stream.close(0x8) : req.socket.destroy());
             }
+            if (action && 'replace' in action) {
+              st = action.replace.status;
+              msg = action.replace.statusMessage;
+              hdrs = action.replace.headers;
+              if (action.replace.body) {
+                const enc = encodeBody(Buffer.from(action.replace.body), hdrs);
+                data = enc.body;
+                hdrs = enc.headers;
+              }
+            }
+          } catch (err) {
+            this.emit('error', err instanceof Error ? err : new Error(String(err)));
           }
-        } catch (err) {
-          this.emit('error', err instanceof Error ? err : new Error(String(err)));
+          hdrs = withLength(endToEnd(hdrs), data.length, method !== 'HEAD' && st !== 204 && st !== 304);
+          const kept = data.length > maxCapture ? data.subarray(0, maxCapture) : data;
+          done(st, msg, hdrs, kept, data.length > maxCapture ? data.length : undefined);
+          send(st, msg, hdrs, method === 'HEAD' ? undefined : data);
+          return;
         }
-        hdrs = withLength(endToEnd(hdrs), data.length, method !== 'HEAD' && st !== 204 && st !== 304);
-        done(st, msg, hdrs, data);
-        send(st, msg, hdrs, method === 'HEAD' ? undefined : data);
-        return;
+        early = got.chunks;
       }
-      // Stream through, keeping a copy for the record.
+      // Stream through, keeping the start of the body for the record.
       const outHeaders = endToEnd(upHeaders);
       if (h2) (res as Http2ServerResponse).writeHead(status, toObject(outHeaders) as IncomingHttpHeaders);
       else (res as ServerResponse).writeHead(status, up.statusMessage ?? '', flat(outHeaders));
       timings.responseHeaders = rel();
-      const chunks: Buffer[] = [];
-      up.on('data', (c: Buffer) => {
-        chunks.push(c);
+      const forward = (c: Buffer) => {
+        resCapture.add(c);
         if (!(res as ServerResponse).write(c)) {
           up.pause();
           res.once('drain', () => up.resume());
         }
-      });
+      };
+      for (const c of early) forward(c);
+      up.on('data', forward);
       up.once('end', () => {
-        done(status, up.statusMessage, outHeaders, Buffer.concat(chunks));
+        done(status, up.statusMessage, outHeaders, resCapture.body, resCapture.truncated ? resCapture.size : undefined);
         res.end();
       });
       up.once('error', () => {
@@ -817,6 +927,7 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
         res.destroy();
         abort('error', 'upstream closed mid-response');
       });
+      up.resume();
     });
   }
 
@@ -925,7 +1036,7 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
     });
     upReq.once('response', (r) => {
       // The server refused the upgrade: relay its answer as a normal response.
-      void readAll(r).then((data) => {
+      void readAll(r).catch(() => Buffer.alloc(0)).then((data) => {
         if (done) return;
         done = true;
         const hdrs = pairsOf(r.rawHeaders);

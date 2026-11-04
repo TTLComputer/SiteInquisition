@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useUnsaved } from '../unsaved';
 import type { RunResult, Script, ScriptStats } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -152,9 +153,11 @@ export function Scripts() {
   const [scripts, setScripts] = useState<Script[]>([]);
   const [stats, setStats] = useState<Record<string, ScriptStats>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [untrusted, setUntrusted] = useState<string[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [dirty, setDirty] = useState(false);
+  useUnsaved(dirty, 'a script');
   const [result, setResult] = useState<RunResult | null>(null);
   const [running, setRunning] = useState(false);
   const [help, setHelp] = useState(false);
@@ -165,6 +168,7 @@ export function Scripts() {
         setScripts(s.scripts);
         setStats(s.stats);
         setErrors(s.errors);
+        setUntrusted(s.untrusted ?? []);
       }, () => undefined),
     [client],
   );
@@ -251,6 +255,11 @@ export function Scripts() {
                 <span>
                   <span className="badge">{s.kind}</span> {s.name}
                   {s.kind === 'hook' && <span className="faint">{s.enabled === false ? ' (off)' : ' (on)'}</span>}
+                  {s.sandbox === false && (
+                    <span className="badge warn" title={untrusted.includes(s.id) ? 'Asks to run without the sandbox; runs sandboxed until you trust it' : 'Runs without the sandbox, with full access to this computer'}>
+                      {untrusted.includes(s.id) ? 'not trusted' : 'no sandbox'}
+                    </span>
+                  )}
                 </span>
                 {errors[s.id] ? (
                   <span className="error-text" style={{ fontSize: 11 }}>
@@ -281,6 +290,31 @@ export function Scripts() {
                     <input type="checkbox" checked={cur.enabled !== false} onChange={(e) => void saveAll(scripts.map((s) => (s.id === cur.id ? { ...s, code: dirty ? code : s.code, enabled: e.target.checked } : s)))} /> Active on
                     live traffic
                   </label>
+                )}
+                <label className="check" title="Sandboxed scripts cannot read or write files, start programs or load native code. Turn this off only for code you wrote or trust.">
+                  <input
+                    type="checkbox"
+                    aria-label="Sandbox"
+                    checked={cur.sandbox !== false}
+                    onChange={(e) => {
+                      const sandbox = e.target.checked;
+                      if (!sandbox && !window.confirm(`Run ${cur.name} without the sandbox?\n\nIt will be able to read and write your files and start programs, with your rights. Only do this for code you wrote or trust.`)) return;
+                      void saveAll(scripts.map((s) => (s.id === cur.id ? { ...s, code: dirty ? code : s.code, sandbox } : s)));
+                    }}
+                  />{' '}
+                  Sandbox
+                </label>
+                {untrusted.includes(cur.id) && (
+                  <button
+                    className="btn small"
+                    title="This project asks to run the script without the sandbox. It runs sandboxed until you trust this exact code on this computer."
+                    onClick={() => {
+                      if (window.confirm(`Trust ${cur.name} and run it without the sandbox?\n\nRead the code first: it will be able to read and write your files and start programs.`))
+                        void client.trustScript(cur.id).then(load, (err: Error) => notify(err.message));
+                    }}
+                  >
+                    Trust this code
+                  </button>
                 )}
                 <span style={{ flex: 1 }} />
                 <button className="btn small" onClick={() => setHelp(!help)} aria-expanded={help}>

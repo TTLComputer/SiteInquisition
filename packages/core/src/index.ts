@@ -43,3 +43,5 @@ export * from './exporters.js';
 export * from './graphql.js';
 export * from './insight.js';
 export * from './probes.js';
+export { LanGate, parseRange, type LanPending } from './lan.js';
+export { SecretBox, SecretToolKeyring, MemoryKeyring, defaultKeyring, diskEncryption, type Keyring, type DiskEncryption } from './secrets.js';

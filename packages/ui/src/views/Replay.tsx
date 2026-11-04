@@ -5,6 +5,7 @@ import { Icon } from '../components/icons';
 import { asText, fmtMs, fmtSize, hexDump, parseRawRequest, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { diffLines } from '../diff';
 import { TokenPicker } from './TokenPicker';
+import { mockFromExchange } from '../actions';
 
 interface Options {
   refreshCookies: boolean;
@@ -80,6 +81,37 @@ export function Replay({ tab }: { tab: ReplayTab }) {
   const [shown, setShown] = useState<Shown | null>(null);
   const [compare, setCompare] = useState(false);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+
+  // Send options are remembered per host, so the next replay to the same API starts the same way.
+  const host = useMemo(() => {
+    const m = /^[A-Z]+\s+(\S+)/.exec(raw);
+    try {
+      return m ? new URL(m[1]!).host : null;
+    } catch {
+      return null;
+    }
+  }, [raw]);
+  const loadedHost = useRef<string | null>(null);
+  useEffect(() => {
+    if (!host || loadedHost.current === host) return;
+    loadedHost.current = host;
+    if (tab.options) return; // opened with explicit options, e.g. "cookies from jar"
+    try {
+      const saved = JSON.parse(localStorage.getItem(`siq.replayOptions.${host}`) ?? 'null') as Partial<Options> | null;
+      if (saved) setOpts((o) => ({ ...o, ...saved }));
+    } catch {
+      // storage unavailable or a bad entry; keep the defaults
+    }
+  }, [host, tab.options]);
+  const changeOpts = (next: Options) => {
+    setOpts(next);
+    if (!host) return;
+    try {
+      localStorage.setItem(`siq.replayOptions.${host}`, JSON.stringify(next));
+    } catch {
+      // not remembered; fine
+    }
+  };
 
   const reset = useCallback(async () => {
     if (tab.draft) {
@@ -223,7 +255,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
 
   const opt = (k: keyof Options, label: string, title: string) => (
     <label className="check" title={title}>
-      <input type="checkbox" checked={opts[k] as boolean} onChange={(e) => setOpts({ ...opts, [k]: e.target.checked })} /> {label}
+      <input type="checkbox" checked={opts[k] as boolean} onChange={(e) => changeOpts({ ...opts, [k]: e.target.checked })} /> {label}
     </label>
   );
 
@@ -290,6 +322,20 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         <button className="btn small" onClick={() => reset().catch((e: Error) => notify(e.message))}>
           {tab.draft ? 'Reset draft' : 'Reset to original'}
         </button>
+        {(shownId || tab.exchangeId) && (
+          <button
+            className="btn small"
+            title="Make a mock rule that answers this request with the response shown below"
+            onClick={() =>
+              client
+                .get(shownId ?? tab.exchangeId)
+                .then((ex) => mockFromExchange(client, ex))
+                .then((n) => notify(`Mock "${n}" added. Edit it in Rules, Mocks.`), (e: Error) => notify(e.message))
+            }
+          >
+            Mock this response
+          </button>
+        )}
         {tab.exchangeId && (
           <button
             className="btn small"
@@ -305,7 +351,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
       <div className="replay-options" aria-label="Send options">
         <label className="check" title="HTTP/3 sends over QUIC with the built-in stack (https URLs only)">
           Protocol
-          <select className="input" value={opts.protocol} onChange={(e) => setOpts({ ...opts, protocol: e.target.value as Options['protocol'] })} aria-label="Protocol">
+          <select className="input" value={opts.protocol} onChange={(e) => changeOpts({ ...opts, protocol: e.target.value as Options['protocol'] })} aria-label="Protocol">
             <option value="h1">HTTP/1.1</option>
             <option value="h3">HTTP/3</option>
           </select>
@@ -318,7 +364,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         {opt('ignoreTls', 'Ignore TLS errors', 'Accept any upstream certificate')}
         <label className="check" title="Sign with AWS SigV4">
           SigV4
-          <select className="input" value={opts.sigv4} onChange={(e) => setOpts({ ...opts, sigv4: e.target.value })} aria-label="SigV4 profile">
+          <select className="input" value={opts.sigv4} onChange={(e) => changeOpts({ ...opts, sigv4: e.target.value })} aria-label="SigV4 profile">
             <option value="">off</option>
             {profiles.length > 0 && <option value="auto">auto (by host or captured signature)</option>}
             {profiles.map((p) => (
@@ -330,7 +376,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         </label>
         <label className="check" title="Run a flow before each send (a batch runs it once per send); its variables fill {{var:name}}">
           Run flow first
-          <select className="input" value={opts.flow} onChange={(e) => setOpts({ ...opts, flow: e.target.value })} aria-label="Run flow first">
+          <select className="input" value={opts.flow} onChange={(e) => changeOpts({ ...opts, flow: e.target.value })} aria-label="Run flow first">
             <option value="">none</option>
             {flowNames.map((n) => (
               <option key={n} value={n}>
@@ -341,7 +387,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         </label>
         <label className="check" title="Write the body decoded; after tokens are filled in it is encoded with this codec chain, outermost first (e.g. base64,json)">
           Encode body
-          <input className="input mono" value={opts.encode} placeholder="none" onChange={(e) => setOpts({ ...opts, encode: e.target.value })} aria-label="Encode body with" style={{ width: 110 }} />
+          <input className="input mono" value={opts.encode} placeholder="none" onChange={(e) => changeOpts({ ...opts, encode: e.target.value })} aria-label="Encode body with" style={{ width: 110 }} />
         </label>
         <span style={{ flex: 1 }} />
         <TokenPicker onPick={insertToken} />

@@ -2,15 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CoverageReport, SiteMapHost, SpecCoverage } from '../api';
 import { useApp } from '../state';
 import { fmtMs, fmtTime } from '../format';
-import { templatePrefix } from '../actions';
+import { bodyText, templatePrefix } from '../actions';
+
+const AUTH_HEADER = /^(authorization|cookie|x-api-key|api-key|apikey|x-auth-token|x-access-token|x-session-token)$/i;
 
 const statusCls = (s: string) => (/^2/.test(s) ? 's-2' : /^3/.test(s) ? 's-3' : /^4/.test(s) ? 's-4' : /^5/.test(s) ? 's-5' : 's-err');
 
 function toMarkdown(r: CoverageReport): string {
-  const lines = [`# Endpoints seen on ${r.host}`, '', `${r.endpoints.length} endpoints from ${r.scanned} recorded exchanges.`, '', '| Method | Path | Calls | Statuses | Query params | Body params | Types |', '|---|---|---|---|---|---|---|'];
+  const lines = [`# Endpoints seen on ${r.host}`, '', `${r.endpoints.length} endpoints from ${r.scanned} recorded exchanges.`, '', '| Method | Path | Calls | Statuses | Auth | Parameters | Types |', '|---|---|---|---|---|---|---|'];
   for (const e of r.endpoints) {
     lines.push(
-      `| ${e.method} | \`${e.template}\` | ${e.count} | ${Object.entries(e.statuses).map(([s, n]) => `${s}×${n}`).join(' ')} | ${e.queryParams.join(', ')} | ${e.bodyParams.join(', ')} | ${e.contentTypes.join(', ')} |`,
+      `| ${e.method} | \`${e.template}\` | ${e.count} | ${Object.entries(e.statuses).map(([s, n]) => `${s}×${n}`).join(' ')} | ${(e.auth ?? []).join(', ')} | ${(e.params ?? []).map((p) => `${p.in === 'query' ? '?' : ''}${p.name}: ${p.types.join('|')}`).join(', ')} | ${e.contentTypes.join(', ')} |`,
     );
   }
   if (r.unexercised.length) {
@@ -160,7 +162,8 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                 <th>Path</th>
                 <th>Calls</th>
                 <th>Statuses</th>
-                <th>Parameters</th>
+                <th title="How the calls authenticated">Auth</th>
+                <th title="Hover a field for its types and an example value">Parameters</th>
                 <th>Types</th>
                 <th>Slowest</th>
                 <th>Last seen</th>
@@ -182,13 +185,37 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                       </span>
                     ))}
                   </td>
-                  <td className="mono" style={{ maxWidth: 260 }}>
-                    {e.queryParams.length > 0 && <div title="Query parameters">?{e.queryParams.join(' &')}</div>}
-                    {e.bodyParams.length > 0 && (
-                      <div className="faint" title="Body fields">
-                        {e.bodyParams.slice(0, 12).join(', ')}
-                        {e.bodyParams.length > 12 ? ` +${e.bodyParams.length - 12}` : ''}
-                      </div>
+                  <td>
+                    {(e.auth ?? []).map((a) => (
+                      <span key={a} className={`chip ${a === 'none' ? 's-4' : ''}`} style={{ marginRight: 4 }} title={a === 'none' ? 'Called without credentials' : `Sent with ${a} credentials`}>
+                        {a === 'none' ? 'no auth' : a}
+                      </span>
+                    ))}
+                  </td>
+                  <td className="mono" style={{ maxWidth: 300 }}>
+                    {e.params ? (
+                      <>
+                        {[e.params.filter((p) => p.in === 'query'), e.params.filter((p) => p.in === 'body')].map((group, gi) =>
+                          group.length ? (
+                            <div key={gi} className={gi ? 'faint' : undefined}>
+                              {gi === 0 ? '?' : ''}
+                              {group.slice(0, 12).map((p, i) => (
+                                <span key={p.name} title={`${p.in} ${p.name}: ${p.types.join(' | ')}\ne.g. ${p.example}`}>
+                                  {i ? (gi === 0 ? ' &' : ', ') : ''}
+                                  {p.name}
+                                  <span className="faint">:{p.types.join('|')}</span>
+                                </span>
+                              ))}
+                              {group.length > 12 ? ` +${group.length - 12}` : ''}
+                            </div>
+                          ) : null,
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {e.queryParams.length > 0 && <div title="Query parameters">?{e.queryParams.join(' &')}</div>}
+                        {e.bodyParams.length > 0 && <div className="faint">{e.bodyParams.slice(0, 12).join(', ')}</div>}
+                      </>
                     )}
                   </td>
                   <td className="faint">{e.contentTypes.join(', ')}</td>
@@ -211,6 +238,24 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                     <button className="btn small" title="Open the example in Replay" onClick={() => openReplayById(e.exampleId).catch((err: Error) => notify(err.message))}>
                       Replay
                     </button>
+                    {e.auth && !(e.auth.length === 1 && e.auth[0] === 'none') && (
+                      <>
+                        {' '}
+                        <button
+                          className="btn small"
+                          title="Open the example in Replay with its Authorization, Cookie and API key headers removed, to check whether the endpoint really needs them"
+                          onClick={() =>
+                            void (async () => {
+                              const ex = await client.get(e.exampleId);
+                              const body = ex.reqBodySize ? await bodyText(client, ex.id, 'request').catch(() => '') : '';
+                              openDraft({ method: ex.method, url: ex.url, headers: ex.requestHeaders.filter(([k]) => !AUTH_HEADER.test(k)), body }, `${e.method} ${e.template} without auth`);
+                            })().catch((err: Error) => notify(err.message))
+                          }
+                        >
+                          Try without auth
+                        </button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}

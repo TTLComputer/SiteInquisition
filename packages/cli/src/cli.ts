@@ -8,33 +8,15 @@ import {
   VERSION,
   defaultDataDir,
   loadOrCreateCA,
+  removeCA,
+  rotateCA,
   normalizeRule,
+  parseRange,
   readRuntimeInfo,
   type ExchangeSummary,
-  type MqttListenerConfig,
   type ScopeConfig,
 } from '@siteinquisition/core';
-
-/**
- * Parse an MQTT listener spec: LISTEN_PORT=BROKER_HOST[:PORT][,tls][,listen-tls][,insecure]
- *   1883=broker.local              plain in, plain out
- *   8883=broker.example.com:8883,tls,listen-tls
- */
-export function parseMqttSpec(spec: string, allowLan: boolean): MqttListenerConfig {
-  const m = /^(\d+)=([^,:]+|\[[^\]]+\])(?::(\d+))?((?:,[a-z-]+)*)$/i.exec(spec.trim());
-  if (!m) throw new Error(`invalid --mqtt spec "${spec}" (expected PORT=HOST[:PORT][,tls][,listen-tls][,insecure])`);
-  const flags = new Set(m[4]!.split(',').filter(Boolean).map((f) => f.toLowerCase()));
-  for (const f of flags) if (!['tls', 'listen-tls', 'insecure'].includes(f)) throw new Error(`unknown --mqtt flag "${f}"`);
-  return {
-    port: Number(m[1]),
-    upstreamHost: m[2]!.replace(/^\[|\]$/g, ''),
-    upstreamPort: m[3] ? Number(m[3]) : undefined,
-    upstreamTls: flags.has('tls'),
-    listenTls: flags.has('listen-tls'),
-    ignoreUpstreamTlsErrors: flags.has('insecure'),
-    allowLan,
-  };
-}
+import { parseMqttSpec } from './cli-spec.js';
 
 const program = new Command()
   .name('siq')
@@ -79,15 +61,16 @@ program
   .description('run the capture proxy headless and print traffic as it happens')
   .option('--port <n>', 'proxy port (0 = any free port)', '8080')
   .option('--api-port <n>', 'core API port (0 = pick a free port)', '0')
-  .option('--lan', 'accept connections from other machines, e.g. IoT devices', false)
+  .option('--lan', 'listen on all interfaces so other machines (phones, IoT devices) can connect once allowed', false)
+  .option('--lan-allow <cidr...>', 'with --lan, let these addresses or ranges in without asking, e.g. 192.168.1.0/24')
   .option('--include <host...>', 'add include rules for these host globs before starting')
   .option('--insecure-upstream', 'skip certificate checks on upstream servers', false)
   .option('--mqtt <spec...>', 'relay MQTT: PORT=BROKER[:PORT][,tls][,listen-tls][,insecure], e.g. 1883=broker.local')
   .addOption(new Option('--quiet', 'do not print each exchange'))
-  .action(async (o: { port: string; apiPort: string; lan: boolean; include?: string[]; insecureUpstream: boolean; mqtt?: string[]; quiet?: boolean }) => {
+  .action(async (o: { port: string; apiPort: string; lan: boolean; lanAllow?: string[]; include?: string[]; insecureUpstream: boolean; mqtt?: string[]; quiet?: boolean }) => {
     const core = await Core.open({
       projectDir: projectDir(),
-      proxy: { port: Number(o.port), allowLan: o.lan, ignoreUpstreamTlsErrors: o.insecureUpstream },
+      proxy: { port: Number(o.port), allowLan: o.lan, lanAllow: o.lanAllow, ignoreUpstreamTlsErrors: o.insecureUpstream },
       mqtt: (o.mqtt ?? []).map((spec) => parseMqttSpec(spec, o.lan)),
       api: { port: Number(o.apiPort) },
     });
@@ -105,6 +88,7 @@ program
     console.error(`  core API    ws://127.0.0.1:${apiPort} (token in ${core.projectDir}/core.json)`);
     console.error(`  CA          ${info.ca.certPath}`);
     for (const m of info.mqtt) console.error(`  mqtt        ${o.lan ? '0.0.0.0' : '127.0.0.1'}:${m.port}${m.listenTls ? ' (TLS)' : ''} -> ${m.broker}`);
+    if (o.lan) console.error(`  LAN         ${core.lan.allowed.length ? `allowed: ${core.lan.allowed.join(', ')}` : 'no devices allowed yet'}; others are refused until you run \`siq lan allow ADDRESS\``);
     console.error(`  decrypting  ${info.decryptHosts.length ? info.decryptHosts.join(', ') : 'nothing yet: add hosts with --include or `siq scope add`'}`);
     if (!o.quiet) {
       core.proxy.on('response', (e) => console.log(line(e)));
@@ -119,6 +103,7 @@ program
     core.tools.mcp.on('approval', (a) =>
       console.error(paint(33, `agent wants to ${a.tool}: ${a.summary}. Approve it in the app, or run \`siq agent-writes allow\` to stop asking. It is denied in 5 minutes.`)),
     );
+    core.lan.on('pending', (p) => console.error(paint(33, `refused ${p.address} (${p.via}): not on the LAN allow list. Run \`siq lan allow ${p.address}\` to let it in.`)));
     core.proxy.on('error', (err) => console.error(paint(31, `capture error: ${err.message}`)));
     for (const relay of core.mqtt) relay.on('error', (err) => console.error(paint(31, `mqtt: ${err.message}`)));
     let closing = false;
@@ -299,8 +284,138 @@ scope
     await saveScope({ ...loadScope(), defaultAction: action });
   });
 
+/** Run against the running app or `siq proxy` when there is one, so its view stays current; otherwise use the store. */
+async function viaCore<T>(method: string, params: unknown, offline: (store: CaptureStore) => T): Promise<T> {
+  const running = readRuntimeInfo(projectDir());
+  if (running) return (await callRunningCore(running, method, params)) as T;
+  return withStore(offline);
+}
+
 program
-  .command('ca')
+  .command('delete')
+  .description('delete the recorded exchanges a search query matches (same syntax as `siq search`)')
+  .argument('<query...>', 'search query, e.g. host:ads.example.com')
+  .option('--yes', 'do not ask for confirmation', false)
+  .action(async (query: string[], o: { yes: boolean }) => {
+    const q = query.join(' ').trim();
+    if (!q) throw new Error('a query is required; use `siq clear` to delete everything');
+    if (!o.yes) {
+      const n = withStore((s) => s.search(q, { limit: 100000 }).length);
+      if (!n) return console.log('nothing matches');
+      if (!(await confirm(`Delete ${n} exchange${n === 1 ? '' : 's'}?`))) return;
+    }
+    const r = await viaCore<{ deleted: number }>('traffic.delete', { query: q }, (s) => ({ deleted: s.deleteMatching(q) }));
+    console.log(`deleted ${r.deleted}`);
+  });
+
+program
+  .command('clear')
+  .description("delete all of this project's recorded traffic (settings, rules and scripts stay)")
+  .option('--yes', 'do not ask for confirmation', false)
+  .action(async (o: { yes: boolean }) => {
+    if (!o.yes && !(await confirm('Delete all recorded traffic in this project?'))) return;
+    const r = await viaCore<{ deleted: number }>('traffic.clear', {}, (s) => ({ deleted: s.clearTraffic() }));
+    console.log(`deleted ${r.deleted}`);
+  });
+
+program
+  .command('prune')
+  .description('delete old traffic now, and with --keep, set the limits the app applies every hour')
+  .option('--older-than <days>', 'delete exchanges older than this many days')
+  .option('--max-size <MB>', 'delete the oldest exchanges until the stored bodies fit')
+  .option('--keep', 'save these limits as the project\'s retention setting', false)
+  .option('--off', 'turn the retention setting off', false)
+  .action(async (o: { olderThan?: string; maxSize?: string; keep: boolean; off: boolean }) => {
+    const pos = (v: string | undefined, name: string) => {
+      if (v === undefined) return undefined;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive number`);
+      return n;
+    };
+    const limits = { maxAgeDays: pos(o.olderThan, '--older-than'), maxSizeMB: pos(o.maxSize, '--max-size') };
+    if (o.off) {
+      await viaCore('retention.set', { retention: {} }, (s) => s.setMeta('retention', {}));
+      return console.log('retention off: traffic is kept until you delete it');
+    }
+    if (!limits.maxAgeDays && !limits.maxSizeMB) {
+      const r = await viaCore<{ maxAgeDays?: number; maxSizeMB?: number }>('retention.get', {}, (s) => s.getMeta('retention') ?? {});
+      const parts = [r.maxAgeDays && `older than ${r.maxAgeDays} days`, r.maxSizeMB && `beyond ${r.maxSizeMB} MB`].filter(Boolean);
+      return console.log(parts.length ? `retention: delete traffic ${parts.join(' or ')}` : 'retention off: traffic is kept until you delete it');
+    }
+    const offline = (s: CaptureStore) => {
+      if (o.keep) s.setMeta('retention', limits);
+      return { deleted: s.prune({ maxAgeDays: limits.maxAgeDays, maxBytes: limits.maxSizeMB ? limits.maxSizeMB * 1048576 : undefined }) };
+    };
+    const running = readRuntimeInfo(projectDir());
+    let deleted: number;
+    if (running && o.keep) {
+      await callRunningCore(running, 'retention.set', { retention: limits });
+      deleted = ((await callRunningCore(running, 'retention.apply', {})) as { deleted: number }).deleted;
+    } else deleted = withStore(offline).deleted;
+    console.log(`deleted ${deleted}${o.keep ? '; limits saved' : ''}`);
+  });
+
+async function confirm(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) throw new Error(`${question} Pass --yes to confirm when not at a terminal.`);
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return /^y(es)?$/i.test((await rl.question(`${question} [y/N] `)).trim());
+  } finally {
+    rl.close();
+  }
+}
+
+const lan = program.command('lan').description('which other machines may connect when the proxy runs with --lan');
+
+type LanState = { enabled: boolean; allowed: string[]; pending: Array<{ address: string; via: string; attempts: number; lastSeen: number }> };
+
+lan
+  .command('list', { isDefault: true })
+  .description('show the allow list and, while the proxy runs, devices waiting to be let in')
+  .action(async () => {
+    const running = readRuntimeInfo(projectDir());
+    const state: LanState = running
+      ? ((await callRunningCore(running, 'lan.get', {})) as LanState)
+      : { enabled: false, allowed: withStore((s) => s.getMeta<string[]>('lanAllow') ?? []), pending: [] };
+    if (running && !state.enabled) console.log('LAN access is off: only this computer can connect (start with --lan to change that)');
+    console.log(state.allowed.length ? `allowed  ${state.allowed.join('\n         ')}` : 'allowed  nothing yet');
+    for (const p of state.pending) console.log(`waiting  ${p.address}  via ${p.via}, ${p.attempts} attempt${p.attempts === 1 ? '' : 's'}, last ${new Date(p.lastSeen).toTimeString().slice(0, 8)}`);
+  });
+
+const editLan = async (method: 'lan.allow' | 'lan.remove', spec: string) => {
+  parseRange(spec);
+  const running = readRuntimeInfo(projectDir());
+  if (running) await callRunningCore(running, method, { address: spec });
+  else
+    withStore((s) => {
+      const now = s.getMeta<string[]>('lanAllow') ?? [];
+      s.setMeta('lanAllow', method === 'lan.allow' ? [...new Set([...now, spec])] : now.filter((x) => x !== spec));
+    });
+};
+
+lan
+  .command('allow')
+  .description('let an address or CIDR range connect (saved in the project)')
+  .argument('<address>', 'e.g. 192.168.1.42 or 192.168.1.0/24')
+  .action(async (spec: string) => {
+    await editLan('lan.allow', spec);
+    console.log(`allowed ${spec}`);
+  });
+
+lan
+  .command('remove')
+  .description('take an address or range off the allow list (open connections stay up)')
+  .argument('<address>')
+  .action(async (spec: string) => {
+    await editLan('lan.remove', spec);
+    console.log(`removed ${spec}`);
+  });
+
+const caCmd = program.command('ca').description('the root CA that signs certificates for decrypted hosts');
+
+caCmd
+  .command('show', { isDefault: true })
   .description('print the root CA certificate path and fingerprint, or the PEM itself')
   .option('--pem', 'print the certificate in PEM format', false)
   .action(async (o: { pem: boolean }) => {
@@ -310,8 +425,36 @@ program
       console.log(`certificate  ${ca.certPath}`);
       console.log(`sha256       ${ca.fingerprint}`);
       console.log(`expires      ${ca.expiresAt.toISOString().slice(0, 10)}`);
+      console.log(`private key  ${ca.keyProtection === 'keyring' ? 'encrypted with a key from the OS keyring' : paint(33, 'plain file readable only by you (no OS keyring found; install libsecret-tools)')}`);
       console.log('Install this certificate as a trusted root on devices whose HTTPS traffic you want to inspect.');
     }
+  });
+
+const restartNote = () => {
+  if (readRuntimeInfo(projectDir())) console.log(paint(33, 'A proxy is running for this project: restart it to use the change.'));
+};
+
+caCmd
+  .command('rotate')
+  .description('replace the CA with a new one (devices must trust the new certificate)')
+  .option('--yes', 'do not ask for confirmation', false)
+  .action(async (o: { yes: boolean }) => {
+    if (!o.yes && !(await confirm('Replace the CA? Devices that trust the current one will need the new certificate.'))) return;
+    const ca = await rotateCA(defaultDataDir());
+    console.log(`new CA  ${ca.certPath}`);
+    console.log(`sha256  ${ca.fingerprint}`);
+    console.log('Remove the old SiteInquisition CA from the devices and browsers that trust it, then install this one.');
+    restartNote();
+  });
+
+caCmd
+  .command('remove')
+  .description('delete the CA certificate and key from this computer (a new one is made the next time the proxy starts)')
+  .option('--yes', 'do not ask for confirmation', false)
+  .action(async (o: { yes: boolean }) => {
+    if (!o.yes && !(await confirm('Delete the CA certificate and key?'))) return;
+    console.log(removeCA(defaultDataDir()) ? 'CA deleted. Also remove it from the devices and browsers that trust it; see docs/ca-trust.md.' : 'there was no CA');
+    restartNote();
   });
 
 program

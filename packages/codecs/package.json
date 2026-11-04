@@ -1,6 +1,6 @@
 {
   "name": "@siteinquisition/codecs",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Chainable, reversible encoders and decoders shared by every part of SiteInquisition.",
   "license": "MIT",
   "type": "module",

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdirSync } from 'node:fs';
+import { chmodSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { DatabaseSync, type SQLInputValue, type StatementSync } from 'node:sqlite';
@@ -71,6 +71,8 @@ export interface NewRequest {
   httpVersion: string;
   headers: HeaderList;
   body?: Uint8Array;
+  /** The real body size when `body` holds only its start (-1: unknown). */
+  bodySize?: number;
   isWebSocket?: boolean;
   /** The exchange this one is a replay of. */
   replayOf?: string | null;
@@ -82,6 +84,8 @@ export interface NewResponse {
   statusMessage?: string;
   headers: HeaderList;
   body?: Uint8Array;
+  /** The real body size when `body` holds only its start (-1: unknown). */
+  bodySize?: number;
   timings?: Timings;
 }
 
@@ -330,7 +334,8 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   readonly db: DatabaseSync;
   private readonly statements = new Map<string, StatementSync>();
   readonly actor: string;
-  private readonly maxBodyBytes: number;
+  /** Bodies are kept up to this size. */
+  readonly maxBodyBytes: number;
   private readonly maxIndexBytes: number;
 
   constructor(file: string, opts: StoreOptions = {}) {
@@ -351,8 +356,18 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   /** Open (or create) the database inside a project folder. */
   static openProject(dir: string, opts?: StoreOptions): CaptureStore {
-    mkdirSync(dir, { recursive: true });
-    return new CaptureStore(join(dir, 'project.sqlite'), opts);
+    // Captured traffic holds cookies and tokens: a new folder is private, and the database files are owner-only.
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = join(dir, 'project.sqlite');
+    const store = new CaptureStore(file, opts);
+    for (const f of [file, `${file}-wal`, `${file}-shm`]) {
+      try {
+        chmodSync(f, 0o600);
+      } catch {
+        // missing until SQLite creates it, or a file system without POSIX modes
+      }
+    }
+    return store;
   }
 
   close(): void {
@@ -448,8 +463,9 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   // ---------- blobs ----------
 
-  private putBlob(data: Uint8Array): { sha: string; size: number; truncated: boolean } {
-    const truncated = data.byteLength > this.maxBodyBytes;
+  /** `fullSize`: the body's real size when `data` is only its start (-1: unknown). */
+  private putBlob(data: Uint8Array, fullSize?: number): { sha: string; size: number; truncated: boolean } {
+    const truncated = data.byteLength > this.maxBodyBytes || (fullSize !== undefined && fullSize !== data.byteLength);
     const body = truncated ? data.subarray(0, this.maxBodyBytes) : data;
     const sha = createHash('sha256').update(body).digest('hex');
     const exists = this.q('SELECT 1 FROM blob WHERE sha256 = ?').get(sha);
@@ -465,7 +481,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       }
       this.q('INSERT INTO blob (sha256, size, compression, data) VALUES (?, ?, ?, ?)').run(sha, body.byteLength, compression, stored);
     }
-    return { sha, size: data.byteLength, truncated };
+    return { sha, size: fullSize !== undefined && fullSize >= 0 ? fullSize : data.byteLength, truncated };
   }
 
   getBlob(sha: string): Uint8Array | undefined {
@@ -492,7 +508,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
         flowId = newId();
         this.q('INSERT INTO flow (id, kind, created_at) VALUES (?, ?, ?)').run(flowId, 'single', req.startedAt);
       }
-      const body = req.body && req.body.byteLength ? this.putBlob(req.body) : undefined;
+      const body = req.body && req.body.byteLength ? this.putBlob(req.body, req.bodySize) : undefined;
       const scheme = url.protocol.replace(/:$/, '');
       const port = url.port ? Number(url.port) : defaultPort(scheme);
       this.db
@@ -538,7 +554,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   completeResponse(id: string, res: NewResponse): ExchangeSummary {
     return this.tx(() => {
-      const body = res.body && res.body.byteLength ? this.putBlob(res.body) : undefined;
+      const body = res.body && res.body.byteLength ? this.putBlob(res.body, res.bodySize) : undefined;
       const info = this.db
         .prepare(
           `UPDATE exchange SET status = ?, status_message = ?, res_headers = ?, res_body = ?, res_body_size = ?, res_truncated = ?,
@@ -753,6 +769,117 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       this.q('DELETE FROM host_tech').run();
       this.recordChange('tech.cleared', 'host', '*', null);
     });
+  }
+
+  // ---------- deleting traffic ----------
+
+  /**
+   * Delete exchanges and everything recorded with them: bodies no other
+   * exchange uses, WebSocket and MQTT messages, error findings, search index
+   * rows and their change-log entries. Redirect children are kept and
+   * unlinked. Returns how many were deleted.
+   */
+  deleteExchanges(ids: string[]): number {
+    const unique = [...new Set(ids)];
+    if (!unique.length) return 0;
+    let deleted = 0;
+    this.tx(() => {
+      for (let i = 0; i < unique.length; i += 500) {
+        const part = unique.slice(i, i + 500);
+        const marks = part.map(() => '?').join(',');
+        this.db.prepare(`UPDATE exchange SET parent_id = NULL WHERE parent_id IN (${marks})`).run(...part);
+        this.db.prepare(`DELETE FROM stream_message WHERE stream_id IN (SELECT id FROM stream WHERE exchange_id IN (${marks}))`).run(...part);
+        this.db.prepare(`DELETE FROM stream WHERE exchange_id IN (${marks})`).run(...part);
+        this.db.prepare(`DELETE FROM exchange_error WHERE exchange_id IN (${marks})`).run(...part);
+        this.db.prepare(`DELETE FROM exchange_fts WHERE exchange_id IN (${marks})`).run(...part);
+        this.db.prepare(`DELETE FROM change WHERE entity = 'exchange' AND entity_id IN (${marks})`).run(...part);
+        deleted += Number(this.db.prepare(`DELETE FROM exchange WHERE id IN (${marks})`).run(...part).changes);
+      }
+      this.db.exec(`DELETE FROM flow WHERE id NOT IN (SELECT flow_id FROM exchange);
+        DELETE FROM blob WHERE sha256 NOT IN (SELECT req_body FROM exchange WHERE req_body IS NOT NULL UNION SELECT res_body FROM exchange WHERE res_body IS NOT NULL);`);
+      this.recordChange('exchange.deleted', 'exchange', '*', { ids: unique.length <= 1000 ? unique : undefined, count: deleted });
+    });
+    return deleted;
+  }
+
+  /** Delete every exchange a search matches (no limit). */
+  deleteMatching(query: string): number {
+    let total = 0;
+    for (;;) {
+      const ids = this.search(query, { limit: 1000 }).map((e) => e.id);
+      if (!ids.length) return total;
+      total += this.deleteExchanges(ids);
+    }
+  }
+
+  /** Delete all captured traffic, keeping settings (scope, rules, scripts, flows...), then compact the file. */
+  clearTraffic(): number {
+    const n = (this.q('SELECT COUNT(*) AS n FROM exchange').get() as unknown as { n: number }).n;
+    this.tx(() => {
+      this.db.exec(`DELETE FROM stream_message; DELETE FROM stream; DELETE FROM exchange_error; DELETE FROM exchange_fts;
+        DELETE FROM change WHERE entity = 'exchange'; UPDATE exchange SET parent_id = NULL; DELETE FROM exchange; DELETE FROM flow;
+        DELETE FROM blob; DELETE FROM tls_failure; DELETE FROM host_tech;`);
+      this.recordChange('exchange.cleared', 'exchange', '*', { count: n });
+    });
+    this.compact();
+    return n;
+  }
+
+  /**
+   * Keep the project within limits: delete exchanges older than `maxAgeDays`,
+   * then the oldest until the recorded bodies and messages fit in `maxBytes`. Returns how many went.
+   */
+  prune(opts: { maxAgeDays?: number; maxBytes?: number }): number {
+    let total = 0;
+    if (opts.maxAgeDays && opts.maxAgeDays > 0) {
+      const before = Date.now() - opts.maxAgeDays * 86_400_000;
+      for (;;) {
+        const ids = (this.q('SELECT id FROM exchange WHERE started_at < ? ORDER BY started_at LIMIT 1000').all(before) as Array<{ id: string }>).map((r) => r.id);
+        if (!ids.length) break;
+        total += this.deleteExchanges(ids);
+      }
+    }
+    if (opts.maxBytes && opts.maxBytes > 0) {
+      // Take the oldest exchanges until their bodies cover the excess. Shared
+      // bodies make that an estimate, so check again and repeat.
+      for (let round = 0; round < 1000; round++) {
+        let excess = this.liveBytes() - opts.maxBytes;
+        if (excess <= 0) break;
+        const rows = this.q(
+          `SELECT e.id, COALESCE(length(rq.data), 0) + COALESCE(length(rs.data), 0)
+             + COALESCE((SELECT SUM(m.size) FROM stream st JOIN stream_message m ON m.stream_id = st.id WHERE st.exchange_id = e.id), 0) AS bytes
+           FROM exchange e LEFT JOIN blob rq ON rq.sha256 = e.req_body LEFT JOIN blob rs ON rs.sha256 = e.res_body
+           ORDER BY e.started_at LIMIT 1000`,
+        ).all() as Array<{ id: string; bytes: number }>;
+        if (!rows.length) break;
+        const ids: string[] = [];
+        for (const r of rows) {
+          ids.push(r.id);
+          excess -= r.bytes;
+          if (excess <= 0) break;
+        }
+        total += this.deleteExchanges(ids);
+      }
+    }
+    if (total) this.compact();
+    return total;
+  }
+
+  /**
+   * Bytes of recorded content: stored bodies and stream messages. This is
+   * what grows; it is measured directly because SQLite (FTS5 in particular)
+   * does not hand pages back promptly after a delete.
+   */
+  liveBytes(): number {
+    const blobs = this.q('SELECT COALESCE(SUM(length(data)), 0) AS n FROM blob').get() as unknown as { n: number };
+    const msgs = this.q('SELECT COALESCE(SUM(size), 0) AS n FROM stream_message').get() as unknown as { n: number };
+    return blobs.n + msgs.n;
+  }
+
+  /** Give free space back to the file system. */
+  compact(): void {
+    this.statements.clear();
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);');
   }
 
   stats(): { exchanges: number; databaseBytes: number } {

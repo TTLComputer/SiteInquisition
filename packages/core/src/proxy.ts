@@ -4,6 +4,7 @@ import { leafIssuer, type CertificateAuthority } from './ca.js';
 import type { EventEmitter as Emitter } from 'node:events';
 import { Interceptor, decodeBody, type InterceptorEvents, type InterceptorHooks, type ProxiedRequest, type Timings as WireTimings } from './interceptor.js';
 import { H3Capture } from './quic/capture.js';
+import { LOOPBACK, type LanGate } from './lan.js';
 import type { HookMessage } from './rules.js';
 import { globToRegExp, type Scope } from './scope.js';
 import type { PlanStep, SentStep } from './wsplan.js';
@@ -13,11 +14,17 @@ import type { CaptureStore, ExchangeSource, ExchangeSummary, HeaderList, Timings
 export interface ProxyOptions {
   /** Port to listen on. 0 or undefined lets the OS pick a free port. */
   port?: number;
+  /** Largest body held whole so hooks can change it; bigger ones stream through. Default 64 MB. */
+  maxBufferBytes?: number;
   /**
    * Accept connections from other machines (phones, IoT devices). When false
    * (the default) only loopback clients can connect.
    */
   allowLan?: boolean;
+  /** With allowLan: which other machines get in. Without a gate, every LAN client is accepted. */
+  lanGate?: LanGate;
+  /** Addresses or CIDR ranges let in from the start, e.g. 192.168.1.0/24 (added to the project's saved list). */
+  lanAllow?: string[];
   /** Skip upstream certificate checks for these hosts (true for all), e.g. dev servers with self-signed certs. */
   ignoreUpstreamTlsErrors?: string[] | boolean;
   /** Recorded as the exchange source. The built-in browser gets its own listener with source "browser". */
@@ -70,10 +77,10 @@ const freePort = () =>
  * A restart frees the port for a moment before re-binding it, so retry
  * briefly if something grabbed it in between, then fail with a clear message.
  */
-async function startWithRetry(server: Interceptor, port: number, attempts = 5): Promise<void> {
+async function startWithRetry(server: Interceptor, port: number, host: string | undefined, attempts = 5): Promise<void> {
   for (let i = 1; ; i++) {
     try {
-      await server.listen(port);
+      await server.listen(port, host);
       return;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE' || i >= attempts) {
@@ -85,7 +92,6 @@ async function startWithRetry(server: Interceptor, port: number, attempts = 5): 
   }
 }
 
-const LOOPBACK = /^(127\.|::1$|::ffff:127\.)/;
 
 const timingsFrom = (t: WireTimings): Timings => ({ requestBody: t.requestBody, responseHeaders: t.responseHeaders, total: t.total });
 
@@ -225,12 +231,14 @@ export class ProxyEngine extends EventEmitter<{
       shouldDecrypt: (host) => decrypt.some((re) => re.test(host)),
       ignoreUpstreamTlsErrors: (host) => (ignoreHosts ? ignoreHosts.has(host.toLowerCase()) : ignore === true),
       // Refuse other machines before any byte is read unless LAN access is on (this covers tunnels and TLS passthrough too).
-      acceptClient: this.opts.allowLan ? undefined : (socket) => LOOPBACK.test(socket.remoteAddress ?? ''),
+      acceptClient: (socket) => this.acceptAddress(socket.remoteAddress, 'proxy'),
       hooks: this.interceptorHooks(),
+      maxCaptureBytes: this.store.maxBodyBytes,
+      maxBufferBytes: this.opts.maxBufferBytes,
     });
     this.subscribe(server);
     const port = this.listenPort ?? (this.opts.port || (await freePort()));
-    await startWithRetry(server, port);
+    await startWithRetry(server, port, this.opts.allowLan ? undefined : '127.0.0.1');
     this.server = server;
     this.listenPort = server.port;
     if (this.opts.http3) {
@@ -239,7 +247,7 @@ export class ProxyEngine extends EventEmitter<{
         caCert: this.ca.cert,
         ignoreUpstreamTlsErrors: (host) => (ignoreHosts ? ignoreHosts.has(host.toLowerCase()) : ignore === true),
         hooks: this.interceptorHooks(),
-        loopbackOnly: !this.opts.allowLan,
+        acceptClient: (address) => this.acceptAddress(address, 'http3'),
       });
       this.subscribe(h3);
       try {
@@ -251,6 +259,12 @@ export class ProxyEngine extends EventEmitter<{
       }
     }
     return server.port;
+  }
+
+  private acceptAddress(address: string | undefined, via: string): boolean {
+    if (LOOPBACK.test(address ?? '')) return true;
+    if (!this.opts.allowLan) return false;
+    return this.opts.lanGate ? this.opts.lanGate.accept(address, via) : true;
   }
 
   /** The UDP port taking HTTP/3, when that listener is running. */
@@ -326,6 +340,7 @@ export class ProxyEngine extends EventEmitter<{
       httpVersion: req.httpVersion,
       headers: req.headers,
       body: req.body,
+      bodySize: req.bodySize,
       isWebSocket,
       flowId: redirect?.flowId,
       parentId: redirect?.exchangeId,
@@ -356,6 +371,7 @@ export class ProxyEngine extends EventEmitter<{
           statusMessage: res.statusMessage,
           headers: res.headers,
           body: res.body,
+          bodySize: res.bodySize,
           timings: timingsFrom(res.timings),
         });
         if (res.status >= 300 && res.status < 400) {

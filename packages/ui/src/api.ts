@@ -121,6 +121,13 @@ export interface CoreInfo {
   browserProxyPort?: number | null;
   apiPort: number | null;
   allowLan: boolean;
+  /** How data at rest is protected (older cores leave it out). */
+  protection?: {
+    caKey: 'keyring' | 'file';
+    secrets: 'keyring' | 'file';
+    keyring: string | null;
+    disk: { state: 'encrypted' | 'not-encrypted' | 'unknown'; detail: string };
+  };
   ca: { certPath: string; fingerprint: string; expiresAt: string };
   decryptHosts: string[];
   stats: { exchanges: number; databaseBytes: number };
@@ -220,6 +227,12 @@ type Status = 'connecting' | 'open' | 'closed';
  * JSON-RPC client for the core API. Reconnects with backoff and re-subscribes
  * to change events, so views can simply redraw from what the core says.
  */
+export interface LanState {
+  enabled: boolean;
+  allowed: string[];
+  pending: Array<{ address: string; firstSeen: number; lastSeen: number; attempts: number; via: string }>;
+}
+
 export class CoreClient {
   private ws?: WebSocket;
   private nextId = 1;
@@ -387,7 +400,8 @@ export class CoreClient {
   paused = () => this.call<Paused[]>('intercept.list');
   resolvePaused = (id: string, action: 'forward' | 'drop' | 'forward-pause-response', edits?: Record<string, unknown>) => this.call<boolean>('intercept.resolve', { id, action, edits });
   releaseAll = () => this.call<number>('intercept.releaseAll');
-  scripts = () => this.call<{ scripts: Script[]; stats: Record<string, ScriptStats>; errors: Record<string, string> }>('scripts.get');
+  scripts = () => this.call<{ scripts: Script[]; stats: Record<string, ScriptStats>; errors: Record<string, string>; untrusted?: string[] }>('scripts.get');
+  trustScript = (id: string) => this.call<boolean>('scripts.trust', { id });
   setScripts = (scripts: Array<Partial<Script>>) => this.call<Script[]>('scripts.set', { scripts });
   scriptLogs = (id: string) => this.call<LogLine[]>('scripts.logs', { id });
   runScript = (p: { id?: string; code?: string }) => this.call<RunResult>('scripts.run', p);
@@ -455,6 +469,14 @@ export class CoreClient {
   graphqlOperations = (host?: string) => this.call<SeenOperation[]>('graphql.operations', { host });
   graphqlDrift = (targetUrl: string) => this.call<Array<{ field: string; type: string; count: number; exampleId: string }>>('graphql.drift', { targetUrl });
   curl = (id: string) => this.call<string>('export.curl', { id });
+  deleteTraffic = (p: { ids: string[] } | { query: string }) => this.call<{ deleted: number }>('traffic.delete', p);
+  lan = () => this.call<LanState>('lan.get');
+  lanAllow = (address: string) => this.call<LanState>('lan.allow', { address });
+  lanRemove = (address: string) => this.call<LanState>('lan.remove', { address });
+  lanDeny = (address: string) => this.call<LanState>('lan.deny', { address });
+  clearTraffic = () => this.call<{ deleted: number }>('traffic.clear');
+  retention = () => this.call<{ maxAgeDays?: number; maxSizeMB?: number }>('retention.get');
+  setRetention = (retention: { maxAgeDays?: number; maxSizeMB?: number }) => this.call<{ maxAgeDays?: number; maxSizeMB?: number }>('retention.set', { retention });
   exportHar = (p: { ids?: string[]; query?: string }) => this.call<Record<string, unknown>>('export.har', p);
   exportPostman = (p: { flow?: string; ids?: string[]; name?: string }) => this.call<Record<string, unknown>>('export.postman', p);
   flowToTest = (name: string) => this.call<Script>('flows.toTest', { name });

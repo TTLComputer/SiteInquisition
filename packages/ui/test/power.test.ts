@@ -80,7 +80,8 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
     const table = page.locator('.coverage-table');
     await expect.poll(() => table.textContent()).toContain('/api/apply-coupon');
     const post = table.locator('tr', { hasText: '/api/apply-coupon' });
-    expect(await post.textContent()).toContain('cart, code');
+    expect(await post.textContent()).toContain('cart:number, code:string');
+    expect(await post.textContent()).toContain('no auth');
     expect(await table.locator('tr', { hasText: '/api/cart' }).first().textContent()).toContain('?page');
     await shot('coverage');
     await post.getByRole('button', { name: 'Calls' }).click();
@@ -230,7 +231,8 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
     const input = page.getByLabel('Console input');
     await input.fill("siq.search('path:/api/', 50).length > 3");
     await input.press('Enter');
-    await expect.poll(() => page.locator('.console-log').textContent()).toContain('true');
+    // Each run starts a script host process, which is slower under the test's TypeScript loader.
+    await expect.poll(() => page.locator('.console-log').textContent(), { timeout: 8000 }).toContain('true');
     await shot('scripts');
   });
 });

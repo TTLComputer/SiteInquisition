@@ -185,6 +185,8 @@ export class Command {
       const eq = tok.startsWith('--') ? tok.indexOf('=') : -1;
       const flag = eq > 0 ? tok.slice(0, eq) : tok;
       const found = this.findOption(flag);
+      // `siq ca --pem` means `siq ca show --pem`: hand the rest to the default subcommand.
+      if (!found && this.defaultCommand && !positionals.length) return this.defaultCommand.run(argv.slice(i));
       if (!found) throw new CommandError(`unknown option '${flag}'\n(run '${this.path()} --help' for usage)`);
       const { owner, spec } = found;
       if (!spec.value) {

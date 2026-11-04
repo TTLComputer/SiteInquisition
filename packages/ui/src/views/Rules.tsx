@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { confirmLeave, useUnsaved } from '../unsaved';
 import type { ScopeConfig, ScopeRule, SeenHost } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -24,6 +25,7 @@ function ScopeEditor() {
   const [rules, setRules] = useState<RuleDraft[]>([]);
   const [defaultAction, setDefaultAction] = useState<ScopeConfig['defaultAction']>('ignore');
   const [dirty, setDirty] = useState(false);
+  useUnsaved(dirty, 'scope rules');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [seen, setSeen] = useState<SeenHost[]>([]);
@@ -242,7 +244,7 @@ export function Rules() {
     <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
       <div className="tabs" role="tablist" aria-label="Rules">
         {(Object.keys(labels) as RulesTab[]).map((t) => (
-          <button key={t} role="tab" className="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
+          <button key={t} role="tab" className="tab" aria-selected={tab === t} onClick={() => confirmLeave() && setTab(t)}>
             {labels[t]}
           </button>
         ))}

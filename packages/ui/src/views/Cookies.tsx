@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { confirmLeave } from '../unsaved';
 import type { JarCookie, JarCookieInfo, SessionCookie } from '../api';
 import { CookieToggle } from './Tech';
 import { useApp } from '../state';
@@ -259,7 +260,7 @@ export function Cookies({ macros, vars, aws }: { macros?: React.ReactNode; vars?
     <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
       <div className="tabs" role="tablist" aria-label="Cookies and auth">
         {(Object.keys(labels) as Tab[]).map((t) => (
-          <button key={t} role="tab" className="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
+          <button key={t} role="tab" className="tab" aria-selected={tab === t} onClick={() => confirmLeave() && setTab(t)}>
             {labels[t]}
           </button>
         ))}

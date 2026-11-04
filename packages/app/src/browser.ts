@@ -83,6 +83,15 @@ export function setupBrowser(ready: Promise<BrowserSetup>) {
     return t;
   };
 
+  /** Tabs show websites only: no file://, chrome:// or other local schemes, from the address bar, links or pop-ups. */
+  const webOnly = (url: string) => {
+    try {
+      return ['http:', 'https:'].includes(new URL(url).protocol) || url === 'about:blank';
+    } catch {
+      return false;
+    }
+  };
+
   const createTab = async (url: string): Promise<number> => {
     const { window, proxyPort, caCertPath, http3Hosts } = await ready;
     const ses = await browserSession(proxyPort, caCertPath, http3Hosts);
@@ -102,8 +111,28 @@ export function setupBrowser(ready: Promise<BrowserSetup>) {
       tab.error = `Could not load ${failedUrl}: ${desc} (${code})`;
       update();
     });
+    const refuse = (target: string) => {
+      tab.error = `Only http and https addresses open in the built-in browser (not ${target.slice(0, 80)})`;
+      update();
+    };
+    wc.on('will-navigate', (ev) => {
+      if (!webOnly(ev.url)) {
+        ev.preventDefault();
+        refuse(ev.url);
+      }
+    });
+    wc.on('will-redirect', (ev) => {
+      if (!webOnly(ev.url)) {
+        ev.preventDefault();
+        refuse(ev.url);
+      }
+    });
     // Pop-ups open as new tabs in the same proxied session.
     wc.setWindowOpenHandler(({ url: target }) => {
+      if (!webOnly(target)) {
+        refuse(target);
+        return { action: 'deny' };
+      }
       void (async () => {
         await createTab(target);
       })();
@@ -112,7 +141,10 @@ export function setupBrowser(ready: Promise<BrowserSetup>) {
     activeId = tab.id;
     await layout();
     update();
-    if (url && url !== 'about:blank') void wc.loadURL(url).catch(() => undefined);
+    if (url && url !== 'about:blank') {
+      if (webOnly(url)) void wc.loadURL(url).catch(() => undefined);
+      else refuse(url);
+    }
     return tab.id;
   };
   ipcMain.handle('siq:browser:create', (_e, url: string) => createTab(url));
@@ -133,6 +165,7 @@ export function setupBrowser(ready: Promise<BrowserSetup>) {
     await layout();
   });
   ipcMain.handle('siq:browser:navigate', (_e, id: number, url: string) => {
+    if (!webOnly(url)) throw new Error('Only http and https addresses open in the built-in browser');
     void get(id).view.webContents.loadURL(url).catch(() => undefined);
   });
   ipcMain.handle('siq:browser:back', (_e, id: number) => get(id).view.webContents.navigationHistory.goBack());

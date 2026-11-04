@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { confirmLeave } from './unsaved';
 import type { Approval, CoreClient, CoreInfo, ExchangeSummary, HeaderList, Paused, ScopeConfig } from './api';
 
 export type ViewId = 'browser' | 'history' | 'timeline' | 'replay' | 'race' | 'h3' | 'rules' | 'codecs' | 'cookies' | 'streams' | 'scripts' | 'api' | 'settings';
@@ -214,6 +215,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
   }, [client, refreshInfo]);
 
   const setView = useCallback((v: ViewId) => {
+    if (!confirmLeave()) return;
     setViewState(v);
     if (v === 'history') setActiveTab('history');
   }, []);

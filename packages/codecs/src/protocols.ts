@@ -158,8 +158,16 @@ export interface ViewState {
 class Reader {
   pos = 0;
   constructor(readonly b: Uint8Array) {}
+  depth = 0;
   u8() {
+    if (this.pos >= this.b.length) throw new Error('ViewState ends early');
     return this.b[this.pos++]!;
+  }
+  /** A count of items still to read: each takes at least one byte, so more than what is left is corrupt. */
+  count(): number {
+    const n = this.len7();
+    if (n < 0 || n > this.b.length - this.pos) throw new Error('ViewState count runs past the end');
+    return n;
   }
   /** 7-bit encoded length prefix, as .NET writes it. */
   len7(): number {
@@ -167,18 +175,20 @@ class Reader {
     let shift = 0;
     for (;;) {
       const byte = this.u8();
+      if (shift > 28) throw new Error('ViewState length too long');
       n |= (byte & 0x7f) << shift;
-      if (!(byte & 0x80)) return n;
+      if (!(byte & 0x80)) return n >>> 0;
       shift += 7;
     }
   }
   str(): string {
-    const n = this.len7();
+    const n = this.count();
     const s = bytesToString(this.b.subarray(this.pos, this.pos + n));
     this.pos += n;
     return s;
   }
   int32(): number {
+    if (this.pos + 4 > this.b.length) throw new Error('ViewState ends early');
     const v = (this.b[this.pos]! | (this.b[this.pos + 1]! << 8) | (this.b[this.pos + 2]! << 16) | (this.b[this.pos + 3]! << 24)) | 0;
     this.pos += 4;
     return v;
@@ -187,6 +197,15 @@ class Reader {
 
 /** Parse the ObjectStateFormatter token stream. Covers the tokens the page framework emits. */
 function readToken(r: Reader): unknown {
+  if (++r.depth > 200) throw new Error('ViewState nests too deep');
+  try {
+    return readOne(r);
+  } finally {
+    r.depth--;
+  }
+}
+
+function readOne(r: Reader): unknown {
   const t = r.u8();
   switch (t) {
     case 0x02: // IndexedString table ref (int-encoded)
@@ -202,15 +221,15 @@ function readToken(r: Reader): unknown {
       return { triplet: [readToken(r), readToken(r), readToken(r)] };
     }
     case 0x15: { // ArrayList / typed array of objects
-      const n = r.len7();
+      const n = r.count();
       return Array.from({ length: n }, () => readToken(r));
     }
     case 0x16: { // object array
-      const n = r.len7();
+      const n = r.count();
       return Array.from({ length: n }, () => readToken(r));
     }
     case 0x18: { // control state / Hashtable-like: count then key,value pairs
-      const n = r.len7();
+      const n = r.count();
       const o: Record<string, unknown> = {};
       for (let i = 0; i < n; i++) {
         const k = readToken(r);

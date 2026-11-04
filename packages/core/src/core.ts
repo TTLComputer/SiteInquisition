@@ -8,7 +8,10 @@ import { ProxyEngine, type ProxyOptions } from './proxy.js';
 import { DEFAULT_SCOPE, Scope, type ScopeConfig } from './scope.js';
 import { SeenHosts } from './seen.js';
 import { PowerTools } from './powertools.js';
+import { LanGate } from './lan.js';
+import { SecretBox, defaultKeyring, diskEncryption, type DiskEncryption, type Keyring } from './secrets.js';
 import { CaptureStore, type StoreOptions } from './store.js';
+import { newId } from './ids.js';
 
 export { VERSION } from './version.js';
 import { VERSION } from './version.js';
@@ -30,6 +33,8 @@ export interface CoreOptions {
   browserProxy?: boolean | { port?: number; http3?: boolean };
   /** Core API settings, or false to run without it. */
   api?: { port?: number; token?: string } | false;
+  /** Where the master key for secrets at rest lives. Defaults to the OS keyring; null stores secrets as plain, user-only files. */
+  keyring?: Keyring | null;
 }
 
 /** Connection details a running core writes into its project folder for local clients such as `siq`. */
@@ -41,6 +46,12 @@ export interface CoreRuntimeInfo {
 }
 
 export const RUNTIME_FILE = 'core.json';
+
+/** How much traffic a project keeps. Unset or 0 means no limit. */
+export interface RetentionSettings {
+  maxAgeDays?: number;
+  maxSizeMB?: number;
+}
 
 /**
  * Hosts the built-in browser sends to the HTTP/3 listener. Chromium reads
@@ -78,6 +89,8 @@ export function writeBrowserHttp3Hosts(projectDir: string, hosts: string[]): str
 
 export class Core {
   readonly projectDir: string;
+  /** Per-user folder: the CA and settings that belong to this computer, not the project. */
+  readonly dataDir: string;
   readonly store: CaptureStore;
   readonly scope: Scope;
   readonly proxy: ProxyEngine;
@@ -85,6 +98,11 @@ export class Core {
   readonly api?: CoreApiServer;
   readonly mqtt: MqttRelay[];
   readonly seen = new SeenHosts();
+  /** Who on the LAN may connect, and who is waiting to be let in. */
+  readonly lan: LanGate;
+  /** Encrypts saved credentials with the keyring's master key; undefined without a keyring. */
+  readonly secrets: SecretBox | undefined;
+  private disk?: DiskEncryption;
   readonly tools: PowerTools;
 
   private constructor(
@@ -92,14 +110,23 @@ export class Core {
     readonly ca: CertificateAuthority,
   ) {
     this.projectDir = resolve(opts.projectDir);
+    this.dataDir = resolve(opts.dataDir ?? defaultDataDir());
+    this.secrets = SecretBox.open(opts.keyring === undefined ? defaultKeyring() : opts.keyring);
     this.store = CaptureStore.openProject(this.projectDir, { ...opts.store, actor: opts.actor });
     this.scope = new Scope(this.store.getMeta<ScopeConfig>('scope') ?? DEFAULT_SCOPE);
-    this.proxy = new ProxyEngine(this.store, this.scope, ca, opts.proxy, this.seen);
+    const saved = this.store.getMeta<string[]>('lanAllow') ?? [];
+    this.lan = new LanGate(!!opts.proxy?.allowLan || !!opts.mqtt?.some((m) => m.allowLan), [...saved, ...(opts.proxy?.lanAllow ?? [])]);
+    this.lan.on('change', () => {
+      const now = this.lan.allowed;
+      if (JSON.stringify(now) !== JSON.stringify(this.store.getMeta<string[]>('lanAllow') ?? [])) this.store.setMeta('lanAllow', now);
+      this.tools?.live.emit('change', { id: newId(), actor: this.store.actor, at: Date.now(), kind: 'lan.changed', entity: 'lan', entityId: '*', data: this.lanState() });
+    });
+    this.proxy = new ProxyEngine(this.store, this.scope, ca, { ...opts.proxy, lanGate: this.lan }, this.seen);
     if (opts.browserProxy) {
       const b = opts.browserProxy === true ? {} : opts.browserProxy;
       this.browserProxy = new ProxyEngine(this.store, this.scope, ca, { ignoreUpstreamTlsErrors: opts.proxy?.ignoreUpstreamTlsErrors, source: 'browser', port: b.port, http3: b.http3 }, this.seen);
     }
-    this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg, this.seen));
+    this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg, this.seen, this.lan));
     this.tools = new PowerTools(this);
     this.proxy.setHooks(this.tools.hooks);
     this.browserProxy?.setHooks(this.tools.hooks);
@@ -107,11 +134,41 @@ export class Core {
   }
 
   static async open(opts: CoreOptions): Promise<Core> {
-    const ca = await loadOrCreateCA(opts.dataDir ?? defaultDataDir());
+    const ca = await loadOrCreateCA(opts.dataDir ?? defaultDataDir(), { keyring: opts.keyring });
     return new Core(opts, ca);
   }
 
+  private pruneTimer?: NodeJS.Timeout;
+
+  retention(): RetentionSettings {
+    return this.store.getMeta<RetentionSettings>('retention') ?? {};
+  }
+
+  setRetention(r: RetentionSettings): RetentionSettings {
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined);
+    const clean: RetentionSettings = { maxAgeDays: num(r.maxAgeDays), maxSizeMB: num(r.maxSizeMB) };
+    this.store.setMeta('retention', clean);
+    this.applyRetention();
+    return clean;
+  }
+
+  /** Delete traffic past the project's retention limits; returns how many exchanges went. */
+  applyRetention(): number {
+    const r = this.retention();
+    if (!r.maxAgeDays && !r.maxSizeMB) return 0;
+    return this.store.prune({ maxAgeDays: r.maxAgeDays, maxBytes: r.maxSizeMB ? r.maxSizeMB * 1024 * 1024 : undefined });
+  }
+
   async start(): Promise<{ proxyPort: number; apiPort?: number; browserProxyPort?: number }> {
+    this.applyRetention();
+    this.pruneTimer = setInterval(() => {
+      try {
+        this.applyRetention();
+      } catch {
+        // a busy database; the next round tries again
+      }
+    }, 60 * 60_000);
+    this.pruneTimer.unref();
     const proxyPort = await this.proxy.start();
     const browserProxyPort = this.browserProxy ? await this.browserProxy.start() : undefined;
     for (const relay of this.mqtt) await relay.start();
@@ -125,6 +182,7 @@ export class Core {
   }
 
   async close(): Promise<void> {
+    clearInterval(this.pruneTimer);
     this.tools.close();
     await this.api?.stop();
     await this.proxy.stop();
@@ -152,6 +210,21 @@ export class Core {
     });
   }
 
+  /** How data at rest is protected, for the Settings warning. */
+  protection() {
+    this.disk ??= diskEncryption(this.projectDir);
+    return {
+      caKey: this.ca.keyProtection,
+      secrets: this.secrets ? ('keyring' as const) : ('file' as const),
+      keyring: this.secrets?.keyring.name ?? null,
+      disk: this.disk,
+    };
+  }
+
+  lanState() {
+    return { enabled: this.lan.enabled, allowed: this.lan.allowed, pending: this.lan.pending() };
+  }
+
   info() {
     return {
       version: VERSION,
@@ -165,6 +238,7 @@ export class Core {
       ca: { certPath: this.ca.certPath, fingerprint: this.ca.fingerprint, expiresAt: this.ca.expiresAt.toISOString() },
       decryptHosts: this.scope.decryptHosts(),
       allowLan: !!this.opts.proxy?.allowLan,
+      protection: this.protection(),
       stats: this.store.stats(),
       mqtt: this.mqtt.map((m) => ({ port: safe(() => m.port), broker: m.brokerUrl, listenTls: !!m.config.listenTls })),
     };

@@ -1,6 +1,6 @@
 {
   "name": "@siteinquisition/core",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "SiteInquisition core: intercepting proxy, scope rules, capture database and core API.",
   "license": "MIT",
   "type": "module",

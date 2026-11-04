@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useUnsaved } from '../unsaved';
 import type { AwsProfile, Extractor, Macro, ParsedSigV4, VarValue } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -22,6 +23,7 @@ export function Macros() {
   const { client, notify, selectedId, select, setView } = useApp();
   const [list, setList] = useState<MacroDraft[]>([]);
   const [dirty, setDirty] = useState(false);
+  useUnsaved(dirty, 'login macros');
   const [runs, setRuns] = useState<Record<string, Array<{ step: number; exchangeId?: string; status: number | null; error?: string }>>>({});
   const load = useCallback(() => client.macros().then((m) => setList(m.map(toDraft)), () => undefined), [client]);
   useEffect(() => {
@@ -142,6 +144,7 @@ export function Variables() {
   const [vars, setVars] = useState<Record<string, VarValue>>({});
   const [ex, setEx] = useState<ExDraft[]>([]);
   const [dirty, setDirty] = useState(false);
+  useUnsaved(dirty, 'extractors');
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const load = useCallback(
@@ -283,6 +286,7 @@ export function Aws() {
   const [profiles, setProfiles] = useState<AwsProfile[]>([]);
   const [keys, setKeys] = useState<string[]>([]);
   const [dirty, setDirty] = useState(false);
+  useUnsaved(dirty, 'AWS profiles');
   const [entry, setEntry] = useState<{ name: string; accessKeyId: string; secretAccessKey: string; sessionToken: string } | null>(null);
   const [parsed, setParsed] = useState<ParsedSigV4 | null | undefined>(undefined);
   const load = useCallback(() => client.aws().then((a) => (setProfiles(a.profiles), setKeys(a.sessionKeys)), () => undefined), [client]);

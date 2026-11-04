@@ -45,7 +45,7 @@ const IGNORE: ScopeDecision = { decrypt: false, record: false, modify: false };
 
 export type ScopeRuleInput = Omit<ScopeRule, 'id'> & { id?: string };
 
-const globToRegExp = (glob: string): RegExp => {
+export const globToRegExp = (glob: string): RegExp => {
   const body = glob
     .trim()
     .toLowerCase()

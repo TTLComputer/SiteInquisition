@@ -5,10 +5,11 @@ const src = (pkg: string) => fileURLToPath(new URL(`./packages/${pkg}/src/index.
 
 export default defineConfig({
   resolve: {
-    alias: {
-      '@siteinquisition/codecs': src('codecs'),
-      '@siteinquisition/core': src('core'),
-    },
+    alias: [
+      { find: /^@siteinquisition\/codecs\/jsonpath$/, replacement: fileURLToPath(new URL('./packages/codecs/src/jsonpath.ts', import.meta.url)) },
+      { find: /^@siteinquisition\/codecs$/, replacement: src('codecs') },
+      { find: /^@siteinquisition\/core$/, replacement: src('core') },
+    ],
   },
   test: {
     include: ['packages/*/test/**/*.test.ts'],

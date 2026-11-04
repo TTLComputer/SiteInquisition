@@ -163,4 +163,29 @@ describe('MQTT relay', () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(core.store.search('scheme:mqtt').length).toBe(before);
   });
+
+  it('publishes into a live session in either direction', async () => {
+    await core.setScope({ defaultAction: 'ignore', rules: [{ action: 'include', host: '127.0.0.1' }] });
+    const client = await mqtt.connectAsync(`mqtt://127.0.0.1:${core.mqtt[0]!.port}`, { clientId: 'inject-me', reconnectPeriod: 0 });
+    await client.subscribeAsync('cmd/#', { qos: 0 });
+    let id: string | undefined;
+    for (let i = 0; i < 100 && !id; i++) {
+      id = core.tools.liveStreams().mqtt.find((x) => core.store.getExchange(x)?.requestHeaders.some(([k, v]) => k === 'client-id' && v === 'inject-me'));
+      if (!id) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(id).toBeTruthy();
+    const got = new Promise<[string, string]>((r) => client.once('message', (t, p) => r([t, p.toString()])));
+    expect(core.tools.mqttPublish(id!, { to: 'device', topic: 'cmd/reboot', payload: Buffer.from('now') })).toBe(true);
+    expect(await got).toEqual(['cmd/reboot', 'now']);
+    // To the broker as the device: the broker routes it back to this subscriber.
+    const echoed = new Promise<[string, string]>((r) => client.once('message', (t, p) => r([t, p.toString()])));
+    expect(core.tools.mqttPublish(id!, { to: 'broker', topic: 'cmd/echo', payload: Buffer.from('as-device') })).toBe(true);
+    expect(await echoed).toEqual(['cmd/echo', 'as-device']);
+    const injected = messages(id!).filter((m) => (m.meta as { injected?: boolean } | null)?.injected);
+    expect(injected.map((m) => [m.direction, (m.meta as { topic: string }).topic])).toEqual([
+      ['server', 'cmd/reboot'],
+      ['client', 'cmd/echo'],
+    ]);
+    await client.endAsync();
+  });
 });

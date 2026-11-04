@@ -438,6 +438,13 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   // ---------- exchanges ----------
 
+  /** Start a flow that several exchanges will join (a race run, a batch). */
+  createFlow(kind: string, at = Date.now()): string {
+    const id = newId();
+    this.q('INSERT INTO flow (id, kind, created_at) VALUES (?, ?, ?)').run(id, kind, at);
+    return id;
+  }
+
   addRequest(req: NewRequest): ExchangeSummary {
     const url = new URL(req.url);
     const id = req.id ?? newId();

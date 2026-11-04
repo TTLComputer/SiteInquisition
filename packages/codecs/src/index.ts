@@ -98,6 +98,42 @@ register({
   encode: (v) => enc.encode(JSON.stringify(v)),
 });
 
+register({
+  id: 'jwt',
+  label: 'JWT (header, payload, signature)',
+  terminal: true,
+  decode: (b) => {
+    const parts = bytesToString(b).trim().split('.');
+    if (parts.length !== 3) throw new Error('a JWT has three dot-separated parts');
+    const part = (p: string) => JSON.parse(Buffer.from(p, 'base64url').toString('utf8')) as unknown;
+    return { header: part(parts[0]!), payload: part(parts[1]!), signature: parts[2] };
+  },
+  // Re-encoding keeps the original signature: useful for testing servers that do not verify it.
+  encode: (v) => {
+    const o = v as { header: unknown; payload: unknown; signature?: string };
+    const part = (x: unknown) => Buffer.from(JSON.stringify(x)).toString('base64url');
+    return enc.encode(`${part(o.header)}.${part(o.payload)}.${o.signature ?? ''}`);
+  },
+});
+register({
+  id: 'form',
+  label: 'Form fields (a=1&b=2)',
+  terminal: true,
+  decode: (b) => {
+    const out: Record<string, string | string[]> = {};
+    for (const [k, v] of new URLSearchParams(bytesToString(b))) {
+      const cur = out[k];
+      out[k] = cur === undefined ? v : Array.isArray(cur) ? [...cur, v] : [cur, v];
+    }
+    return out;
+  },
+  encode: (v) => {
+    const p = new URLSearchParams();
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) for (const x of Array.isArray(val) ? val : [val]) p.append(k, String(x));
+    return enc.encode(p.toString());
+  },
+});
+
 /** Servers send "deflate" as either zlib-wrapped or raw deflate; accept both. */
 function inflateAny(b: Uint8Array): Buffer {
   try {
@@ -192,3 +228,187 @@ export const looksLikeText = (b: Uint8Array, sample = 4096): boolean => {
   }
   return bad / n < 0.05;
 };
+
+const isPrintable = (b: Uint8Array) => b.length > 0 && looksLikeText(b) && !bytesToString(b).includes('\uFFFD');
+const tryJson = (b: Uint8Array) => {
+  const t = bytesToString(b).trim();
+  if (!(t.startsWith('{') || t.startsWith('[') || t.startsWith('"'))) return false;
+  try {
+    JSON.parse(t);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Guess the chain that unwraps a value, e.g. url > base64 > gzip > json. Each
+ * step must decode cleanly and make progress; detection stops at the first
+ * terminal form or when nothing else applies.
+ */
+export function detectChain(input: Uint8Array | string, maxSteps = 8): string[] {
+  const chain: string[] = [];
+  let b = toBytes(input);
+  for (let i = 0; i < maxSteps; i++) {
+    const step = detectStep(b);
+    if (!step) break;
+    chain.push(step.id);
+    if (step.terminal) break;
+    b = step.out!;
+  }
+  return chain;
+}
+
+function detectStep(b: Uint8Array): { id: string; terminal?: boolean; out?: Uint8Array } | null {
+  if (b.length === 0) return null;
+  if (b[0] === 0x1f && b[1] === 0x8b) return attempt('gzip', b);
+  if (b[0] === 0x78 && (b[1] === 0x01 || b[1] === 0x5e || b[1] === 0x9c || b[1] === 0xda)) {
+    const r = attempt('deflate', b);
+    if (r) return r;
+  }
+  if (!isPrintable(b)) return null;
+  const s = bytesToString(b).trim();
+  if (tryJson(b)) return { id: 'json', terminal: true };
+  if (/^eyJ[\w-]*\.[\w-]+\.[\w-]*$/.test(s)) {
+    try {
+      getCodec('jwt').decode(b);
+      return { id: 'jwt', terminal: true };
+    } catch {
+      // not a JWT after all
+    }
+  }
+  if (/%[0-9a-f]{2}/i.test(s)) {
+    const r = attempt('url', b);
+    if (r && bytesToString(r.out!) !== s) return r;
+  }
+  if (s.length >= 16 && s.length % 2 === 0 && /^[0-9a-f]+$/i.test(s)) {
+    const r = attempt('hex', b);
+    if (r && (isPrintable(r.out!) || detectStep(r.out!))) return r;
+  }
+  if (s.length >= 8 && /^[A-Za-z0-9+/]+={0,2}$/.test(s) && s.length % 4 !== 1) {
+    const r = attempt('base64', b);
+    if (r && (isPrintable(r.out!) || detectStep(r.out!))) return r;
+  }
+  if (s.length >= 8 && /^[A-Za-z0-9_-]+={0,2}$/.test(s) && /[-_]/.test(s)) {
+    const r = attempt('base64url', b);
+    if (r && (isPrintable(r.out!) || detectStep(r.out!))) return r;
+  }
+  if (/^[\w.%+-]+=[^&]*(&[\w.%+-]+=[^&]*)+$/.test(s)) return { id: 'form', terminal: true };
+  return null;
+}
+
+function attempt(id: string, b: Uint8Array): { id: string; out: Uint8Array } | null {
+  if (!registry.has(id)) return null;
+  try {
+    const out = getCodec(id).decode(b) as Uint8Array;
+    return out.length ? { id, out } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Every intermediate value of a chain: index 0 is the input, the last is the innermost value. */
+export function decodeLayers(spec: string | string[], input: Uint8Array | string): unknown[] {
+  const layers: unknown[] = [toBytes(input)];
+  for (const c of parseChain(spec)) layers.push(c.decode(layers[layers.length - 1] as Uint8Array));
+  return layers;
+}
+
+export interface ReplaceOptions {
+  find: string;
+  replace: string;
+  regex?: boolean;
+  matchCase?: boolean;
+  /** JSON layers: also rename matching keys. Values are always searched. */
+  keys?: boolean;
+  /** "layer": only the innermost value. "all": every text layer, innermost first, re-encoding outward. */
+  scope?: 'layer' | 'all';
+}
+
+const makeMatcher = (o: ReplaceOptions): RegExp => {
+  const src = o.regex ? o.find : o.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(src, o.matchCase ? 'g' : 'gi');
+};
+
+function replaceInText(text: string, re: RegExp, replacement: string): { text: string; count: number } {
+  let count = 0;
+  const out = text.replace(re, (...m) => {
+    count++;
+    return replacement.replace(/\$(\d)/g, (_x, d: string) => String(m[Number(d)] ?? ''));
+  });
+  return { text: out, count };
+}
+
+/** Replace inside a JSON value: string values (and numbers/booleans when the whole value matches), and keys if asked. */
+function replaceInJson(v: unknown, re: RegExp, replacement: string, keys: boolean): { value: unknown; count: number } {
+  let count = 0;
+  const walk = (x: unknown): unknown => {
+    if (typeof x === 'string') {
+      const r = replaceInText(x, re, replacement);
+      count += r.count;
+      return r.text;
+    }
+    if (typeof x === 'number' || typeof x === 'boolean') {
+      const s = String(x);
+      const r = replaceInText(s, re, replacement);
+      if (!r.count) return x;
+      count += r.count;
+      try {
+        return JSON.parse(r.text) as unknown;
+      } catch {
+        return r.text;
+      }
+    }
+    if (Array.isArray(x)) return x.map(walk);
+    if (x && typeof x === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, val] of Object.entries(x)) {
+        let key = k;
+        if (keys) {
+          const r = replaceInText(k, re, replacement);
+          count += r.count;
+          key = r.text;
+        }
+        out[key] = walk(val);
+      }
+      return out;
+    }
+    return x;
+  };
+  return { value: walk(v), count };
+}
+
+/**
+ * Find and replace through a codec chain and re-encode the result. Returns the
+ * new outermost bytes and how many matches each layer had (index as in decodeLayers).
+ */
+export function replaceThroughChain(spec: string | string[], input: Uint8Array | string, o: ReplaceOptions): { output: Uint8Array; counts: number[] } {
+  const chain = parseChain(spec);
+  const layers = decodeLayers(chain.map((c) => c.id), input);
+  const counts = layers.map(() => 0);
+  const re = makeMatcher(o);
+  const n = layers.length - 1;
+  const replaceLayer = (v: unknown, i: number): unknown => {
+    re.lastIndex = 0;
+    if (v instanceof Uint8Array) {
+      if (!looksLikeText(v)) return v;
+      const r = replaceInText(bytesToString(v), re, o.replace);
+      counts[i] = r.count;
+      return r.count ? enc.encode(r.text) : v;
+    }
+    if (typeof v === 'string') {
+      const r = replaceInText(v, re, o.replace);
+      counts[i] = r.count;
+      return r.text;
+    }
+    const r = replaceInJson(v, re, o.replace, !!o.keys);
+    counts[i] = r.count;
+    return r.value;
+  };
+  let v = replaceLayer(layers[n], n);
+  for (let i = n - 1; i >= 0; i--) {
+    v = chain[i]!.encode(v);
+    if (o.scope === 'all') v = replaceLayer(v, i);
+  }
+  return { output: toBytes(v), counts };
+}

@@ -7,9 +7,11 @@ import { defaultDataDir } from './paths.js';
 import { ProxyEngine, type ProxyOptions } from './proxy.js';
 import { DEFAULT_SCOPE, Scope, type ScopeConfig } from './scope.js';
 import { SeenHosts } from './seen.js';
+import { PowerTools } from './powertools.js';
 import { CaptureStore, type StoreOptions } from './store.js';
 
-export const VERSION = '0.0.0';
+export { VERSION } from './version.js';
+import { VERSION } from './version.js';
 
 export interface CoreOptions {
   /** Folder holding project.sqlite. Created if missing. */
@@ -49,6 +51,7 @@ export class Core {
   readonly api?: CoreApiServer;
   readonly mqtt: MqttRelay[];
   readonly seen = new SeenHosts();
+  readonly tools: PowerTools;
 
   private constructor(
     private readonly opts: CoreOptions,
@@ -62,6 +65,9 @@ export class Core {
       this.browserProxy = new ProxyEngine(this.store, this.scope, ca, { ignoreUpstreamTlsErrors: opts.proxy?.ignoreUpstreamTlsErrors, source: 'browser' }, this.seen);
     }
     this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg, this.seen));
+    this.tools = new PowerTools(this);
+    this.proxy.setHooks(this.tools.hooks);
+    this.browserProxy?.setHooks(this.tools.hooks);
     if (opts.api !== false) this.api = new CoreApiServer(this, opts.api?.token);
   }
 
@@ -84,6 +90,7 @@ export class Core {
   }
 
   async close(): Promise<void> {
+    this.tools.close();
     await this.api?.stop();
     await this.proxy.stop();
     await this.browserProxy?.stop();

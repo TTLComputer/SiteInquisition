@@ -61,6 +61,9 @@ const payloadOf = (p: Packet): Uint8Array => {
 export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] }> {
   private server?: net.Server;
   private sockets = new Set<net.Socket>();
+  /** Live sessions by exchange id, for publishing into them. */
+  private sessions = new Map<string, { inject(direction: 'client' | 'server', packet: mqttPacket.IPublishPacket): void }>();
+  private nextPacketId = 65_000;
 
   constructor(
     private readonly store: CaptureStore,
@@ -207,6 +210,23 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
           });
           exchangeId = ex.id;
           streamId = this.store.openStream('mqtt', ex.id, startedAt);
+          const sessionId = ex.id;
+          const writeWhenIdle = (socket: net.Socket, parser: mqttPacket.Parser, bytes: Buffer, tries = 0) => {
+            // Only write between whole packets: a half-received packet in this direction means wait.
+            const pending = (parser as unknown as { _list?: { length: number } })._list?.length ?? 0;
+            if (pending && tries < 50) return void setTimeout(() => writeWhenIdle(socket, parser, bytes, tries + 1), 10);
+            socket.write(bytes);
+          };
+          this.sessions.set(sessionId, {
+            inject: (direction, packet) => {
+              const bytes = mqttPacket.generate(packet, { protocolVersion: version });
+              // "server" means sent by us to the broker as if the device sent it; "client" means to the device as if from the broker.
+              if (direction === 'server') writeWhenIdle(upstream, fromClient, bytes);
+              else writeWhenIdle(client, fromBroker, bytes);
+              if (streamId) this.store.addStreamMessage({ streamId, direction: direction === 'server' ? 'client' : 'server', opcode: 'publish', at: Date.now(), payload: payloadOf(packet), meta: { ...packetMeta(packet), injected: true } });
+            },
+          });
+          client.once('close', () => this.sessions.delete(sessionId));
           this.emit('session', ex.id);
         }
         if (!streamId) return;
@@ -236,5 +256,28 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
         streamId = undefined;
       }),
     );
+  }
+
+  /** Live MQTT sessions that can take a publish. */
+  liveSessions(): string[] {
+    return [...this.sessions.keys()];
+  }
+
+  /**
+   * Publish into a live session: to the broker as the device ("broker"), or to
+   * the device as if from the broker ("device"). QoS 1 uses packet ids from
+   * 65000 up so they do not collide with the device's own.
+   */
+  publish(exchangeId: string, msg: { to: 'broker' | 'device'; topic: string; payload: Uint8Array; qos?: 0 | 1; retain?: boolean }): boolean {
+    const session = this.sessions.get(exchangeId);
+    if (!session) return false;
+    const qos = msg.qos === 1 ? 1 : 0;
+    const packet: mqttPacket.IPublishPacket = { cmd: 'publish', topic: msg.topic, payload: Buffer.from(msg.payload), qos, retain: !!msg.retain, dup: false };
+    if (qos) {
+      packet.messageId = this.nextPacketId++;
+      if (this.nextPacketId > 65_535) this.nextPacketId = 65_000;
+    }
+    session.inject(msg.to === 'broker' ? 'server' : 'client', packet);
+    return true;
   }
 }

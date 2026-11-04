@@ -1128,7 +1128,12 @@ export class Connection {
     if (largest >= sp.nextPn) throw new QuicError(TransportError.PROTOCOL_VIOLATION, 'ACK for a packet never sent');
     const acked: SentPacket[] = [];
     for (const [low, high] of f.ranges) {
-      for (const [pn, p] of sp.sent) if (pn >= low && pn <= high) acked.push(p);
+      if (high - low < sp.sent.size) {
+        for (let pn = low; pn <= high; pn++) {
+          const p = sp.sent.get(pn);
+          if (p) acked.push(p);
+        }
+      } else for (const [pn, p] of sp.sent) if (pn >= low && pn <= high) acked.push(p);
     }
     if (!acked.length) return;
     if (largest > sp.largestAcked) sp.largestAcked = largest;
@@ -1650,7 +1655,8 @@ export class Connection {
     const e: PacketLogEntry = { t: now(), dir, space, type, pn, size, frames: frames.map(describeFrame) };
     this.log.push(e);
     const limit = this.opts.logLimit ?? 2000;
-    if (this.log.length > limit) this.log.splice(0, this.log.length - limit);
+    // Trim in batches: splicing one entry per packet is O(n) each time.
+    if (this.log.length > limit * 1.25) this.log.splice(0, this.log.length - limit);
     this.ev.packet?.(e);
   }
 }

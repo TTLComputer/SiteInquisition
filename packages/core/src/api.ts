@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { OPEN, serveWebSockets, type WsConnection as WebSocket } from './websocket.js';
 import { PRESETS, buildPlan, validatePlan } from './wsplan.js';
 import { cookieJar } from './cookies.js';
-import type { Core } from './core.js';
+import { readBrowserHttp3Hosts, writeBrowserHttp3Hosts, type Core } from './core.js';
 import { sendReplay } from './replay.js';
 import type { HeaderList } from './store.js';
 import type { Change } from './store.js';
@@ -145,7 +145,7 @@ export class CoreApiServer {
         const req = sendRequest(p);
         const options = (p.options as Record<string, unknown> | undefined) ?? {};
         // Without options this is a plain send, exactly as given, as before.
-        if (!p.options) return sendReplay(store, { ...req, ignoreTlsErrors: p.ignoreTlsErrors === true });
+        if (!p.options) return sendReplay(store, { ...req, ignoreTlsErrors: p.ignoreTlsErrors === true, protocol: p.protocol === 'h3' ? 'h3' : undefined });
         return core.tools.sender.send(req, { ...options, ignoreTlsErrors: p.ignoreTlsErrors === true || options.ignoreTlsErrors === true });
       },
       'replay.batch': (p) => {
@@ -242,6 +242,20 @@ export class CoreApiServer {
         });
         return core.tools.race(reqs, { sync: (p.sync as never) ?? 'last-byte', repeat: num(p, 'repeat'), jitterMs: num(p, 'jitterMs'), ignoreTlsErrors: p.ignoreTlsErrors === true });
       },
+      'h3.run': (p) => {
+        const rows = arr(p, 'requests').map((r) => {
+          const x = r as Record<string, unknown>;
+          return { ...x, ...sendRequest(x) };
+        });
+        return core.tools.h3Plan(rows as never, ((p.options as object) ?? {}) as never);
+      },
+      'h3.tickets': () => core.tools.h3Tickets(),
+      'h3.clearTickets': () => {
+        core.tools.clearH3Tickets();
+        return true;
+      },
+      'browser.http3': () => ({ hosts: readBrowserHttp3Hosts(core.projectDir), port: core.browserProxy?.http3Port ?? null }),
+      'browser.setHttp3Hosts': (p) => ({ hosts: writeBrowserHttp3Hosts(core.projectDir, arr(p, 'hosts').map(String)), restartNeeded: true }),
       'stream.live': () => core.tools.liveStreams(),
       'stream.connect': async (p) => {
         const id = str(p, 'exchangeId', false);

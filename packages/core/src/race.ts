@@ -3,6 +3,7 @@ import * as http2 from 'node:http2';
 import * as net from 'node:net';
 import * as tls from 'node:tls';
 import { newId } from './ids.js';
+import { runH3Plan } from './quic/plan.js';
 import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
 
 /**
@@ -16,6 +17,9 @@ import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
  *  - single-packet: HTTP/2. All streams open on one connection with their
  *                   bodies held back; at the gate every stream ends in the
  *                   same tick, so the final frames share one TCP write.
+ *  - h3-single-datagram: HTTP/3. Every stream is written except its last
+ *                   byte; at the gate the last bytes of all streams go out in
+ *                   one UDP datagram (as few as possible when they do not fit).
  *  - none:          plain sends at the offsets, for comparison.
  */
 export interface RaceRequest {
@@ -29,7 +33,7 @@ export interface RaceRequest {
 }
 
 export interface RaceOptions {
-  sync: 'last-byte' | 'single-packet' | 'none';
+  sync: 'last-byte' | 'single-packet' | 'h3-single-datagram' | 'none';
   repeat?: number;
   /** Random extra delay, 0 to jitterMs, added to each offset. */
   jitterMs?: number;
@@ -228,6 +232,7 @@ async function prepareNone(store: CaptureStore, r: RaceRequest, index: number, p
 
 export async function runRace(store: CaptureStore, requests: RaceRequest[], opts: RaceOptions): Promise<RaceResult> {
   if (!requests.length) throw new Error('a race needs at least one request');
+  if (opts.sync === 'h3-single-datagram') return raceH3(store, requests, opts);
   if (requests.length > 100) throw new Error('a race can have at most 100 requests');
   for (const r of requests) {
     const u = new URL(r.url);
@@ -309,3 +314,45 @@ export async function runRace(store: CaptureStore, requests: RaceRequest[], opts
 }
 
 export type { ExchangeSummary };
+
+/** HTTP/3 race: a stream plan where every row holds its last byte and the gate releases them together. */
+async function raceH3(store: CaptureStore, requests: RaceRequest[], opts: RaceOptions): Promise<RaceResult> {
+  if (requests.length > 100) throw new Error('a race can have at most 100 requests');
+  const repeat = Math.max(1, Math.min(opts.repeat ?? 1, 50));
+  const id = newId();
+  const runs: RaceRun[] = [];
+  for (let run = 0; run < repeat; run++) {
+    const offsets = requests.map((r) => Math.max(0, r.offsetMs) + (opts.jitterMs ? Math.random() * opts.jitterMs : 0));
+    const base = Math.min(...offsets);
+    const plan = await runH3Plan(
+      store,
+      requests.map((r, i) => ({
+        method: r.method,
+        url: r.url,
+        headers: r.headers,
+        body: r.body,
+        replayOf: r.replayOf,
+        hold: 'last-byte' as const,
+        // Equal offsets release together through the gate. With offsets, every
+        // row is held first and released 50 ms in, plus its offset.
+        releaseAtMs: offsets.some((o) => o - base > 0.05) ? 50 + Math.round((offsets[i]! - base) * 1000) / 1000 : undefined,
+      })),
+      { gate: 'single-datagram', ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs },
+    );
+    const p = plan.runs[0]!;
+    for (const r of p.rows) store.tagExchange(r.exchangeId, [...(store.getSummary(r.exchangeId)?.tags ?? []), `race:${id}`]);
+    const fired = p.rows.map((r) => r.timings.released ?? r.timings.finSent ?? NaN);
+    const gate = Math.min(...fired.filter(Number.isFinite));
+    const sends: RaceSendResult[] = p.rows.map((r, i) => ({
+      index: r.index,
+      exchangeId: r.exchangeId,
+      plannedMs: round(offsets[i]! - base),
+      actualMs: Number.isFinite(fired[i]!) ? round(fired[i]! - gate) : NaN,
+      status: r.status,
+      durationMs: r.timings.complete !== undefined && Number.isFinite(fired[i]!) ? round(r.timings.complete - fired[i]!) : null,
+      error: r.error,
+    }));
+    runs.push({ run, flowId: p.flowId, sends, spreadMs: p.spreadMs, statuses: [...new Set(sends.map((s) => s.status))] });
+  }
+  return { id, sync: opts.sync, runs };
+}

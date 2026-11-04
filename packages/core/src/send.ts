@@ -24,6 +24,8 @@ export interface SendOptions {
   loginMacro?: boolean;
   ignoreTlsErrors?: boolean;
   timeoutMs?: number;
+  /** Send over HTTP/3 ('h3') instead of HTTP/1.1. */
+  protocol?: 'h1' | 'h3';
 }
 
 export interface SendRequest {
@@ -159,7 +161,7 @@ export class Sender {
 
   async send(req: SendRequest, opts: SendOptions = {}, batch?: Map<string, string>): Promise<ExchangeSummary> {
     const { req: r, applied } = this.prepare(req, opts, batch);
-    let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+    let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
     this.addTags(res.id, applied);
 
     if (opts.loginMacro && res.status !== null) {
@@ -169,7 +171,7 @@ export class Sender {
         await this.runMacro(macro.id);
         // Resend with fresh tokens and cookies; the macro's responses have updated both.
         const again = this.prepare(req, { ...opts, refreshCookies: opts.refreshCookies ?? true }, batch);
-        res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+        res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
         this.addTags(res.id, [...again.applied, `after-login:${macro.name}`]);
       }
     }
@@ -194,6 +196,7 @@ export class Sender {
         replayOf: r.replayOf,
         ignoreTlsErrors: opts.ignoreTlsErrors,
         timeoutMs: opts.timeoutMs,
+        protocol: opts.protocol,
       });
       this.addTags(current.id, [`redirect-of:${flowRoot.id}`]);
     }

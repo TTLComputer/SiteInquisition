@@ -18,6 +18,9 @@ import type {
   ParsedSigV4,
   Paused,
   RaceResult,
+  H3PlanOptions,
+  H3PlanRequest,
+  H3PlanResult,
   ReplaceRule,
   RunResult,
   ScopeConfig,
@@ -45,6 +48,9 @@ export type {
   ParsedSigV4,
   Paused,
   RaceResult,
+  H3PlanOptions,
+  H3PlanRequest,
+  H3PlanResult,
   ReplaceRule,
   RunResult,
   Script,
@@ -314,8 +320,14 @@ export class CoreClient {
   setAws = (profiles: AwsProfile[]) => this.call<AwsProfile[]>('aws.set', { profiles });
   setAwsKeys = (k: { name: string; accessKeyId: string; secretAccessKey: string; sessionToken?: string }) => this.call<boolean>('aws.setKeys', k);
   parseSigV4 = (id: string) => this.call<ParsedSigV4 | null>('aws.parse', { id });
-  race = (requests: Array<WireRequest & { offsetMs: number }>, opts: { sync: 'last-byte' | 'single-packet' | 'none'; repeat?: number; jitterMs?: number; ignoreTlsErrors?: boolean }) =>
+  race = (requests: Array<WireRequest & { offsetMs: number }>, opts: { sync: 'last-byte' | 'single-packet' | 'h3-single-datagram' | 'none'; repeat?: number; jitterMs?: number; ignoreTlsErrors?: boolean }) =>
     this.call<RaceResult>('race.run', { requests: requests.map((r) => ({ ...wire(r), offsetMs: r.offsetMs })), ...opts });
+  h3Run = (requests: Array<Omit<H3PlanRequest, 'body'> & WireRequest>, options: H3PlanOptions) =>
+    this.call<H3PlanResult>('h3.run', { requests: requests.map((r) => ({ ...r, ...wire(r), body: undefined })), options });
+  h3Tickets = () => this.call<Array<{ origin: string; receivedAt: number; maxEarlyData: number; lifetimeSec: number }>>('h3.tickets');
+  h3ClearTickets = () => this.call<boolean>('h3.clearTickets');
+  browserHttp3 = () => this.call<{ hosts: string[]; port: number | null }>('browser.http3');
+  setBrowserHttp3Hosts = (hosts: string[]) => this.call<{ hosts: string[]; restartNeeded: boolean }>('browser.setHttp3Hosts', { hosts });
   liveStreams = () => this.call<{ mqtt: string[]; ws: string[]; wsProxied: string[] }>('stream.live');
   streamConnect = (exchangeId: string, ignoreTlsErrors = false, headers?: Array<[string, string]>) => this.call<{ exchangeId: string }>('stream.connect', { exchangeId, ignoreTlsErrors, ...(headers ? { headers } : {}) });
   framePresets = () => this.call<FramePreset[]>('stream.presets');

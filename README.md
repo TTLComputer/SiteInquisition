@@ -1,8 +1,26 @@
 # SiteInquisition
 
-An intercepting proxy, built-in browser and replay toolkit for testing websites, APIs and IoT devices before they are finished. It runs on Windows and Linux and is MIT licensed.
+An intercepting proxy, built-in browser and replay toolkit for testing websites, APIs and IoT devices before they are finished. Version 1 runs on Linux (x64); Windows comes later. It is MIT licensed.
 
-> **Status:** early development, feature complete for v1 on Linux. This repository contains the core engine, the `siq` CLI and the desktop app with the power tools (codecs, match and replace, mocks, breakpoints, race, Streams composer, scripts, login macros, variables, SigV4 and an MCP server). The full design is in the [design spec](https://claude.ai/artifact/HyHcJe2h7r7iCqLT3PmyEM).
+This repository contains the core engine, the `siq` CLI and the desktop app. The full design is in the [design spec](https://claude.ai/artifact/HyHcJe2h7r7iCqLT3PmyEM). Before you use it on anything sensitive, read [Security and data](#security-and-data).
+
+## Install
+
+Download a release from the [Releases page](https://github.com/TTLComputer/SiteInquisition/releases):
+
+```sh
+# Debian, Ubuntu and derivatives
+sudo apt install ./siteinquisition_1.0.0_amd64.deb     # installs to /opt/siteinquisition, with siteinquisition and siq on PATH
+
+# Anything else: unpack anywhere and run it from there
+tar xzf siteinquisition-1.0.0-linux-x64.tar.gz
+./siteinquisition-1.0.0-linux-x64/siteinquisition
+./siteinquisition-1.0.0-linux-x64/bin/siq --help
+```
+
+The tarball's Chromium sandbox helper (`chrome-sandbox`) needs to be owned by root and setuid to work; the .deb sets that up. Without it, run with `--no-sandbox` only on a machine you trust.
+
+To uninstall: `sudo apt remove siteinquisition`, or delete the unpacked folder. Your projects and the CA stay behind: remove the CA from every device that trusts it first ([CA trust and removal](docs/ca-trust.md)), then run `siq ca remove` and delete `~/.config/siteinquisition` and your project folders.
 
 ## What works today
 
@@ -15,7 +33,7 @@ An intercepting proxy, built-in browser and replay toolkit for testing websites,
 - A capture database in SQLite (`node:sqlite`) with full-text search over URLs, headers and decoded bodies (gzip, deflate, brotli, zstd).
 - An append-only change log with ULID ids on every row, ready for the planned multi-user and replication work.
 - A core API (JSON-RPC 2.0 over a token-protected local WebSocket) with live change notifications.
-- By default only loopback clients may connect. Pass `--lan` to accept phones and IoT devices.
+- By default the proxy and MQTT listeners bind to 127.0.0.1. With `--lan` they listen on every interface, but each new device is refused until you allow it (title bar chip, Settings, `siq lan allow 192.168.1.42`, or `--lan-allow 192.168.1.0/24`).
 - **Desktop app** (Electron): History with the search syntax, quick filters, saved views, site map and live follow; an inspector for requests, responses, WebSocket frames and MQTT packets; replay tabs with a raw editor, send history and a diff against the original; one-click replay from any row (Replay pill, Ctrl R, double click, right-click menu, or drag onto the tab bar) and "Resend now" (Ctrl Shift Enter); a scope editor with "seen but not in scope" hosts and certificate pinning warnings; theme that follows the system.
 - **Built-in browser**: Chromium tabs inside the app on their own proxy listener (traffic recorded as source `browser`, localhost included), trusting the project CA only for intercepted hosts; address bar scope badge, one-click "add this host to scope", DevTools, and a live traffic feed with replay links.
 - **Timeline**: exchanges on a time axis grouped by host, flow or client connection, with WebSocket and MQTT messages as ticks and replays dashed; drag a range to filter History (`since:` / `until:`).
@@ -31,9 +49,9 @@ An intercepting proxy, built-in browser and replay toolkit for testing websites,
 - **Match and replace** on requests and responses (URL, header, body through a codec chain or a JSONPath, status), with hit counts and a test against the selected exchange; **mocks** made from any recorded response; **breakpoints** that pause requests or responses for editing, shown in the title bar wherever you are.
 - **Race**: line up requests with millisecond offsets and fire them with last-byte sync (HTTP/1.1), single-packet (HTTP/2) or plain timers, repeated, with per-run spreads and differing outcomes highlighted.
 - **Streams**: WebSocket and MQTT connections with a composer. WebSocket messages go out on a replay connection that copies the captured one's URL, cookies and headers; MQTT messages are injected into a live session towards the broker or the device.
-- **Scripts**: hooks on live traffic (with a time budget and stats), test suites with `test()` and `expect()`, one-off scripts and a console, all with the `siq` SDK (search, send, resend, race, cookies, variables, tags, macros).
+- **Scripts**: hooks on live traffic (with a time budget and stats), test suites with `test()` and `expect()`, one-off scripts and a console, all with the `siq` SDK (search, send, resend, race, cookies, variables, tags, macros). Scripts run in a separate process that the app can kill, so a stuck script cannot freeze the proxy. By default that process is sandboxed with Node's permission model (no files, no programs, no native code). Each script has a Sandbox switch; turning it off gives the script `require` and `process` with your rights, and is trusted only on the computer where you turned it off. A project from someone else asks again. SDK calls are synchronous (`siq.search(...)`), except those that go to the network, which return promises (`await siq.send(...)`).
 - **Login macros, variables and extractors**: record the login requests once; extractors keep variables such as a CSRF token or access token current from responses.
-- **MCP server** for agents such as Claude Code: search and read traffic, endpoint coverage, decode, cookies, scope, and (with approval) replay, resend, tag, add scope hosts and run scripts. Approvals appear in the title bar: approve once, for 10 minutes, deny, or open the request in Replay instead. Connect with `claude mcp add siteinquisition -- siq mcp --project <dir>` or over HTTP at `/mcp` on the core API port.
+- **MCP server** for agents such as Claude Code: search and read traffic, endpoint coverage, decode, cookies, scope, and (with approval) replay, resend, tag, add scope hosts and run scripts. Approvals appear in the title bar: approve once, for 10 minutes, deny, or open the request in Replay instead. Agents' scripts always run sandboxed, and running one always asks. Connect with `claude mcp add siteinquisition -- siq mcp --project <dir>` or over HTTP at `/mcp` on the core API port.
 - **API understanding** (API view):
   - **Values** lists every field the API hands out in JSON, by endpoint and JSONPath, with ids and numbers first and sample values. Copy `{{pick:GET /api/products $.items[*].sku}}` to always use the newest recorded value, or `{{each:...}}` to send once per value.
   - **Where from?** on a selected value (the Inspector, or Values) finds the earlier response that first handed it out.
@@ -104,7 +122,17 @@ siq show <exchange-id>          # every packet, with topics and payloads
 
 The spec format is `PORT=BROKER[:PORT][,tls][,listen-tls][,insecure]`. `tls` connects to the broker over TLS, `listen-tls` accepts TLS from devices, and `insecure` skips broker certificate checks. Scope rules apply to the broker host, as they do for HTTP. DNS-based and transparent redirection of MQTT come later; for now, point devices at the relay.
 
-Projects live in `./.siq` by default; use `-p <dir>` to choose another folder. The CA is stored per user in `~/.config/siteinquisition/ca` on Linux or `%APPDATA%\SiteInquisition\ca` on Windows. You can override this with `SIQ_DATA_DIR`.
+Projects live in `./.siq` by default; use `-p <dir>` to choose another folder. The CA is stored per user in `~/.config/siteinquisition/ca`. You can override this with `SIQ_DATA_DIR`.
+
+### Storage and retention
+
+```sh
+siq delete host:ads.example.com          # delete what a search matches
+siq clear --yes                          # delete all recorded traffic (scope, rules and scripts stay)
+siq prune --older-than 30 --max-size 2000 --keep   # delete now, and keep doing it every hour
+```
+
+In the app: right-click a row (or press Delete), *Delete matching* in History, and Settings, Storage.
 
 ### Search syntax
 
@@ -137,6 +165,13 @@ siq scope                                    # list rules
 
 TLS interception is decided per connection, before the path is known. A host is decrypted when any include rule for it asks for decryption. Changing the set of decrypted hosts restarts the proxy listener on the same port.
 
+## Security and data
+
+- **Captured traffic is sensitive.** It holds cookies, tokens and passwords as they were sent. Project folders are created readable only by you (0700, database 0600). The database itself is not encrypted, so keep projects on an encrypted disk; Settings, Storage warns when the project folder is not on one (LUKS/dm-crypt, also under LVM, or eCryptfs).
+- **Secrets at rest.** With an OS keyring (GNOME Keyring or KWallet through `secret-tool`, package `libsecret-tools`), the CA's private key and saved identities are encrypted with a master key kept in the keyring. Without one they are files only you can read, and Settings says so.
+- **The CA** can sign a certificate for any site, for every device that trusts it. New CAs last two years. Install it only where you need it, and remove it when you are done: [CA trust and removal](docs/ca-trust.md). `siq ca rotate` replaces it.
+- **Scripts and agents**: see the Scripts and MCP notes above, and [SECURITY.md](SECURITY.md) for what the sandbox does and does not stop.
+
 ## Repository layout
 
 ```
@@ -162,6 +197,6 @@ To work on the renderer in a normal browser, start a proxy with `siq proxy`, rea
 
 The test runner and the renderer bundler are in `packages/devkit`. Tests use the vitest API (`describe`, `it`, `expect`, hooks, `.each`, `.skipIf`, `expect.poll`), imported from `@siteinquisition/devkit/test`. Each test file runs in its own process, and TypeScript is compiled with `transpileModule`, so tests are not type-checked.
 
-Electron smoke test (Linux, headless): `SIQ_SMOKE_SCREENSHOT=/tmp/siq.png xvfb-run -a pnpm app` waits until the window is connected to the core, saves a screenshot and exits.
+Packaging: `pnpm package` writes the unpacked app, a .tar.gz and a .deb to `release/`, without electron-builder. `pnpm smoke release/linux-unpacked/siteinquisition` starts the packaged app headless under `xvfb-run`, checks that a script runs and the sandbox holds, loads a page in the built-in browser, and exits. `SIQ_SMOKE_SCREENSHOT=/tmp/siq.png` saves a screenshot. `node scripts/notices.mjs` regenerates THIRD_PARTY_NOTICES.md after a dependency change.
 
-CI runs only for release tags (`v*`) or when started by hand from the Actions tab, to conserve Actions minutes. Run the build and tests locally before pushing.
+CI runs only for release tags (`v*`) or when started by hand from the Actions tab, to conserve Actions minutes. A tag builds, tests, packages and smoke-tests, then publishes a GitHub release with the notes from CHANGELOG.md. Run the build and tests locally before pushing.

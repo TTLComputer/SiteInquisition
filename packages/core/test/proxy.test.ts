@@ -7,7 +7,7 @@ import { connect } from 'node:net';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { generateCACertificate } from 'mockttp';
+import { generateCA } from '../src/x509.js';
 import { ProxyClient, TunnelAgent } from './proxy-client.js';
 import { WebSocket, WebSocketServer } from 'ws';
 import { Core, sendReplay, type ExchangeSummary } from '@siteinquisition/core';
@@ -60,7 +60,7 @@ beforeAll(async () => {
   const wss = new WebSocketServer({ server: httpTarget });
   wss.on('connection', (ws) => ws.on('message', (data, isBinary) => ws.send(isBinary ? data : `echo:${data.toString()}`)));
   httpPort = await listen(httpTarget);
-  const targetCert = await generateCACertificate({ subject: { commonName: 'localhost' } });
+  const targetCert = generateCA({ commonName: 'localhost' });
   httpsTarget = createHttpsServer({ key: targetCert.key, cert: targetCert.cert }, handler);
   httpsPort = await listen(httpsTarget);
 

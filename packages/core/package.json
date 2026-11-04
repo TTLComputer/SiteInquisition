@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@siteinquisition/codecs": "workspace:*",
-    "mockttp": "^4.2.1",
     "ws": "^8.18.3"
   },
   "devDependencies": {

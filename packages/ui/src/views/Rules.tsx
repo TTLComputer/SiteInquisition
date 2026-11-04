@@ -12,7 +12,7 @@ let nextKey = 1;
 const draftOf = (r: ScopeRule): RuleDraft => ({ ...r, key: r.id });
 const newRule = (host: string, extra: Partial<RuleDraft> = {}): RuleDraft => ({ key: `new-${nextKey++}`, action: 'include', host, decrypt: true, record: true, modify: true, enabled: true, ...extra });
 
-/** mockttp's TLS failure causes that usually mean the client refuses our CA, e.g. certificate pinning. */
+/** TLS handshake failure causes (from the core's interceptor) that usually mean the client refuses our CA, e.g. certificate pinning. */
 const PINNING_CAUSES = new Set(['cert-rejected', 'closed', 'reset']);
 
 function Flag({ value, onChange, label, disabled }: { value: boolean; onChange(v: boolean): void; label: string; disabled?: boolean }) {

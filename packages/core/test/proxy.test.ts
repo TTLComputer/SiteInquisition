@@ -11,7 +11,7 @@ import { generateCACertificate } from 'mockttp';
 import { ProxyAgent, fetch } from 'undici';
 import { WebSocket, WebSocketServer } from 'ws';
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import { Core, type ExchangeSummary } from '@siteinquisition/core';
+import { Core, sendReplay, type ExchangeSummary } from '@siteinquisition/core';
 
 let tmp: string;
 let core: Core;
@@ -175,6 +175,36 @@ describe('proxy capture', () => {
     await plain.close();
     await new Promise((r) => setTimeout(r, 100));
     expect(core.store.search('host:localhost').length).toBe(before);
+    expect(core.seenNotInScope()).toEqual(expect.arrayContaining([expect.objectContaining({ host: 'localhost', kinds: ['tls'] })]));
+  });
+});
+
+describe('replay', () => {
+  it('sends an edited request, fixes Content-Length and links it to the original', async () => {
+    const [orig] = await waitFor('path:/hello?q=plain');
+    const res = await sendReplay(core.store, {
+      method: 'POST',
+      url: `http://127.0.0.1:${httpPort}/echo`,
+      headers: [['X-Test', 'Kept-Case'], ['Content-Length', '999'], ['Connection', 'keep-alive']],
+      body: Buffer.from('edited body'),
+      replayOf: orig!.id,
+    });
+    expect(res).toMatchObject({ source: 'replay', status: 201, state: 'complete', replayOf: orig!.id });
+    const full = core.store.getExchange(res.id)!;
+    expect(full.requestHeaders).toEqual([['Host', `127.0.0.1:${httpPort}`], ['X-Test', 'Kept-Case'], ['Content-Length', '11']]);
+    expect(Buffer.from(core.store.getBody(res.id, 'response')!).toString()).toBe('edited body');
+    expect(core.store.search(`replayof:${orig!.id}`).map((e) => e.id)).toEqual([res.id]);
+  });
+
+  it('replays HTTPS, optionally ignoring certificate errors', async () => {
+    const req = { method: 'GET', url: `https://localhost:${httpsPort}/hello?q=replayed`, headers: [] as Array<[string, string]> };
+    expect(await sendReplay(core.store, req)).toMatchObject({ state: 'error' });
+    expect(await sendReplay(core.store, { ...req, ignoreTlsErrors: true })).toMatchObject({ state: 'complete', status: 200 });
+  });
+
+  it('records connection failures as errors', async () => {
+    const res = await sendReplay(core.store, { method: 'GET', url: 'http://127.0.0.1:1/', headers: [] });
+    expect(core.store.getExchange(res.id)).toMatchObject({ state: 'error', error: expect.stringMatching(/ECONNREFUSED/) });
   });
 });
 

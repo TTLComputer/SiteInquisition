@@ -37,6 +37,7 @@ export interface ExchangeSummary {
   status: number | null;
   state: ExchangeState;
   isWebSocket: boolean;
+  replayOf: string | null;
   reqBodySize: number;
   resBodySize: number | null;
   durationMs: number | null;
@@ -69,6 +70,8 @@ export interface NewRequest {
   headers: HeaderList;
   body?: Uint8Array;
   isWebSocket?: boolean;
+  /** The exchange this one is a replay of. */
+  replayOf?: string | null;
   tags?: string[];
 }
 
@@ -119,7 +122,7 @@ export interface StoreOptions {
   maxIndexBytes?: number;
 }
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -156,6 +159,7 @@ CREATE TABLE IF NOT EXISTS exchange (
   error TEXT,
   timings TEXT NOT NULL DEFAULT '{}',
   is_websocket INTEGER NOT NULL DEFAULT 0,
+  replay_of TEXT,
   tags TEXT NOT NULL DEFAULT '[]',
   notes TEXT,
   created_by TEXT NOT NULL
@@ -240,6 +244,7 @@ interface ExchangeRow {
   error: string | null;
   timings: string;
   is_websocket: number;
+  replay_of: string | null;
   tags: string;
   notes: string | null;
   created_by: string;
@@ -271,6 +276,7 @@ const toSummary = (r: ExchangeRow): ExchangeSummary => ({
   status: r.status,
   state: r.state,
   isWebSocket: !!r.is_websocket,
+  replayOf: r.replay_of ?? null,
   reqBodySize: r.req_body_size,
   resBodySize: r.res_body_size,
   durationMs: (JSON.parse(r.timings) as Timings).total ?? null,
@@ -332,10 +338,11 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     const row = this.q("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string } | undefined;
     const version = row ? Number(row.value) : SCHEMA_VERSION;
     if (version > SCHEMA_VERSION) throw new Error(`project was created by a newer SiteInquisition (schema ${row!.value})`);
-    if (version < 2) {
-      const cols = this.q('PRAGMA table_info(stream_message)').all() as Array<{ name: string }>;
-      if (!cols.some((c) => c.name === 'meta')) this.db.exec('ALTER TABLE stream_message ADD COLUMN meta TEXT');
-    }
+    const hasColumn = (table: string, col: string) =>
+      (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === col);
+    if (version < 2 && !hasColumn('stream_message', 'meta')) this.db.exec('ALTER TABLE stream_message ADD COLUMN meta TEXT');
+    if (version < 3 && !hasColumn('exchange', 'replay_of')) this.db.exec('ALTER TABLE exchange ADD COLUMN replay_of TEXT');
+    this.db.exec('CREATE INDEX IF NOT EXISTS exchange_replay_of ON exchange(replay_of)');
     this.db
       .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run(String(SCHEMA_VERSION));
@@ -446,8 +453,8 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       this.db
         .prepare(
           `INSERT INTO exchange (id, flow_id, parent_id, source, client_addr, started_at, method, url, scheme, host, port, path,
-             http_version, req_headers, req_body, req_body_size, req_truncated, state, is_websocket, tags, created_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+             http_version, req_headers, req_body, req_body_size, req_truncated, state, is_websocket, replay_of, tags, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -468,6 +475,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
           body?.size ?? 0,
           body?.truncated ? 1 : 0,
           req.isWebSocket ? 1 : 0,
+          req.replayOf ?? null,
           JSON.stringify(req.tags ?? []),
           this.actor,
         );
@@ -604,6 +612,24 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   /** Every exchange in a flow (a redirect chain or a replay batch), in order. */
   getFlow(flowId: string): ExchangeSummary[] {
     return (this.q('SELECT * FROM exchange WHERE flow_id = ? ORDER BY id').all(flowId) as unknown as ExchangeRow[]).map(toSummary);
+  }
+
+  /** Hosts with their exchange counts and top first path segments, for the site map. */
+  siteMap(limit = 200, segmentsPerHost = 12): Array<{ host: string; count: number; paths: Array<{ segment: string; count: number }> }> {
+    const hosts = this.q('SELECT host, COUNT(*) AS count FROM exchange GROUP BY host ORDER BY count DESC LIMIT ?').all(limit) as unknown as Array<{ host: string; count: number }>;
+    const seg = this.q(
+      `SELECT CASE WHEN instr(substr(p, 2), '/') > 0 THEN substr(p, 1, instr(substr(p, 2), '/')) ELSE p END AS segment, COUNT(*) AS count
+       FROM (SELECT CASE WHEN instr(path, '?') > 0 THEN substr(path, 1, instr(path, '?') - 1) ELSE path END AS p FROM exchange WHERE host = ?)
+       GROUP BY segment ORDER BY count DESC LIMIT ?`,
+    );
+    return hosts.map((h) => ({ ...h, paths: seg.all(h.host, segmentsPerHost) as unknown as Array<{ segment: string; count: number }> }));
+  }
+
+  stats(): { exchanges: number; databaseBytes: number } {
+    const n = this.q('SELECT COUNT(*) AS n FROM exchange').get() as unknown as { n: number };
+    const pages = this.q('PRAGMA page_count').get() as unknown as { page_count: number };
+    const size = this.q('PRAGMA page_size').get() as unknown as { page_size: number };
+    return { exchanges: n.n, databaseBytes: pages.page_count * size.page_size };
   }
 
   // ---------- streams (WebSocket, later MQTT) ----------

@@ -5,6 +5,8 @@ export * from './ids.js';
 export * from './mqtt.js';
 export * from './paths.js';
 export * from './proxy.js';
+export * from './replay.js';
 export * from './scope.js';
 export * from './search.js';
+export * from './seen.js';
 export * from './store.js';

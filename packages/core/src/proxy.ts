@@ -3,6 +3,7 @@ import { createServer, type AddressInfo, type Server, type Socket } from 'node:n
 import * as mockttp from 'mockttp';
 import type { CertificateAuthority } from './ca.js';
 import type { Scope } from './scope.js';
+import type { SeenHosts } from './seen.js';
 import type { CaptureStore, ExchangeSource, ExchangeSummary, HeaderList, Timings } from './store.js';
 
 export interface ProxyOptions {
@@ -93,6 +94,7 @@ export class ProxyEngine extends EventEmitter<{
     private readonly scope: Scope,
     private readonly ca: CertificateAuthority,
     private readonly opts: ProxyOptions = {},
+    private readonly seen?: SeenHosts,
   ) {
     super();
   }
@@ -189,7 +191,10 @@ export class ProxyEngine extends EventEmitter<{
 
   private recordRequest(req: mockttp.CompletedRequest, isWebSocket: boolean): void {
     const url = isWebSocket ? req.url.replace(/^http/, 'ws') : req.url;
-    if (!this.scope.evaluate(url).record) return;
+    if (!this.scope.evaluate(url).record) {
+      this.seen?.add(req.destination?.hostname ?? new URL(req.url).hostname, 'http');
+      return;
+    }
     const clientAddr = req.remoteIpAddress ?? null;
     const redirect = this.takeRedirect(clientAddr, req.url);
     const ex = this.store.addRequest({
@@ -287,6 +292,11 @@ export class ProxyEngine extends EventEmitter<{
           this.store.closeStream(streamId, undefined, req.error?.message ?? 'aborted');
         }
       }),
+    );
+
+    await server.on(
+      'tls-passthrough-opened',
+      this.guard((t) => this.seen?.add(t.tlsMetadata?.sniHostname ?? t.destination.hostname, 'tls')),
     );
 
     await server.on(

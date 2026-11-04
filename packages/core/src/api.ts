@@ -3,6 +3,8 @@ import type { IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Core } from './core.js';
+import { sendReplay } from './replay.js';
+import type { HeaderList } from './store.js';
 import type { Change } from './store.js';
 
 /**
@@ -81,6 +83,8 @@ export class CoreApiServer {
         return { size: body.byteLength, base64: b64(body) };
       },
       'traffic.flow': (p) => store.getFlow(str(p, 'flowId')!),
+      'traffic.siteMap': (p) => store.siteMap(num(p, 'limit')),
+      'traffic.stats': () => store.stats(),
       'traffic.streamMessages': (p) => {
         const stream = store.getStreamForExchange(str(p, 'exchangeId')!);
         if (!stream) return [];
@@ -97,7 +101,23 @@ export class CoreApiServer {
         store.setNotes(str(p, 'id')!, (str(p, 'notes', false) ?? null) as string | null);
         return true;
       },
+      'replay.send': async (p) => {
+        const headers = p.headers;
+        if (!Array.isArray(headers) || !headers.every((h) => Array.isArray(h) && h.length === 2 && h.every((x) => typeof x === 'string'))) {
+          throw new RpcError(-32602, 'headers must be [name, value] string pairs');
+        }
+        return sendReplay(store, {
+          method: str(p, 'method')!,
+          url: str(p, 'url')!,
+          headers: headers as HeaderList,
+          body: p.bodyBase64 === undefined ? undefined : Buffer.from(str(p, 'bodyBase64')!, 'base64'),
+          replayOf: str(p, 'replayOf', false) ?? null,
+          ignoreTlsErrors: p.ignoreTlsErrors === true,
+        });
+      },
+      'replay.history': (p) => store.search(`replayof:${JSON.stringify(str(p, 'of')!)}`, { limit: num(p, 'limit') ?? 100 }),
       'scope.get': () => core.scope.get(),
+      'scope.seen': () => core.seenNotInScope(),
       'scope.set': async (p) => {
         await core.setScope(p.config as never);
         return core.scope.get();

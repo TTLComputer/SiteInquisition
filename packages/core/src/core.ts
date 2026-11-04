@@ -6,6 +6,7 @@ import { MqttRelay, type MqttListenerConfig } from './mqtt.js';
 import { defaultDataDir } from './paths.js';
 import { ProxyEngine, type ProxyOptions } from './proxy.js';
 import { DEFAULT_SCOPE, Scope, type ScopeConfig } from './scope.js';
+import { SeenHosts } from './seen.js';
 import { CaptureStore, type StoreOptions } from './store.js';
 
 export const VERSION = '0.0.0';
@@ -41,6 +42,7 @@ export class Core {
   readonly proxy: ProxyEngine;
   readonly api?: CoreApiServer;
   readonly mqtt: MqttRelay[];
+  readonly seen = new SeenHosts();
 
   private constructor(
     private readonly opts: CoreOptions,
@@ -49,8 +51,8 @@ export class Core {
     this.projectDir = resolve(opts.projectDir);
     this.store = CaptureStore.openProject(this.projectDir, { ...opts.store, actor: opts.actor });
     this.scope = new Scope(this.store.getMeta<ScopeConfig>('scope') ?? DEFAULT_SCOPE);
-    this.proxy = new ProxyEngine(this.store, this.scope, ca, opts.proxy);
-    this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg));
+    this.proxy = new ProxyEngine(this.store, this.scope, ca, opts.proxy, this.seen);
+    this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg, this.seen));
     if (opts.api !== false) this.api = new CoreApiServer(this, opts.api?.token);
   }
 
@@ -87,6 +89,14 @@ export class Core {
     if (this.proxy.running && before !== this.scope.decryptHosts().join('\n')) await this.proxy.restart();
   }
 
+  /** Hosts seen recently that the current scope does not record. */
+  seenNotInScope() {
+    return this.seen.list().filter((h) => {
+      const scheme = h.kinds.includes('mqtt') ? 'mqtt' : h.kinds.includes('tls') ? 'https' : 'http';
+      return !this.scope.evaluate(`${scheme}://${h.host.includes(':') && !h.host.startsWith('[') ? `[${h.host}]` : h.host}/`).record;
+    });
+  }
+
   info() {
     return {
       version: VERSION,
@@ -96,6 +106,8 @@ export class Core {
       apiPort: this.api ? safe(() => this.api!.port) : null,
       ca: { certPath: this.ca.certPath, fingerprint: this.ca.fingerprint, expiresAt: this.ca.expiresAt.toISOString() },
       decryptHosts: this.scope.decryptHosts(),
+      allowLan: !!this.opts.proxy?.allowLan,
+      stats: this.store.stats(),
       mqtt: this.mqtt.map((m) => ({ port: safe(() => m.port), broker: m.brokerUrl, listenTls: !!m.config.listenTls })),
     };
   }

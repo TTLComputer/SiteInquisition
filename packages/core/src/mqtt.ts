@@ -5,6 +5,7 @@ import mqttPacket from 'mqtt-packet';
 import { getCA } from 'mockttp/dist/util/certificates';
 import type { CertificateAuthority } from './ca.js';
 import type { Scope } from './scope.js';
+import type { SeenHosts } from './seen.js';
 import type { CaptureStore, ExchangeSource, HeaderList } from './store.js';
 
 /**
@@ -66,6 +67,7 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
     private readonly scope: Scope,
     private readonly ca: CertificateAuthority,
     readonly config: MqttListenerConfig,
+    private readonly seen?: SeenHosts,
   ) {
     super();
   }
@@ -166,7 +168,10 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
       teardown();
     });
 
-    if (!this.scope.evaluate(this.brokerUrl).record) return;
+    if (!this.scope.evaluate(this.brokerUrl).record) {
+      this.seen?.add(this.config.upstreamHost, 'mqtt');
+      return;
+    }
 
     // Parse copies of both directions. Parsing problems stop recording for this
     // session but never touch the relayed bytes.

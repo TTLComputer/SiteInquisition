@@ -1,6 +1,6 @@
 # SiteInquisition UI design
 
-Status: draft for review (2026-11-04). This is the plan for milestone 2 (main UI) and the screens milestone 3 and 4 features will plug into.
+Status: draft for review (2026-11-04), with Nick's first round of feedback applied. This is the plan for milestone 2 (main UI) and the screens milestone 3 and 4 features will plug into.
 
 Clickable mockups of every screen are on the design canvas: <https://claude.ai/artifact/QJcBw4vBWTVWNdYk8BXi7j>. The product spec is at <https://claude.ai/artifact/HyHcJe2h7r7iCqLT3PmyEM>.
 
@@ -9,8 +9,9 @@ Clickable mockups of every screen are on the design canvas: <https://claude.ai/a
 1. **One selection, many views.** Selecting an exchange anywhere (History, Timeline, Browser feed, Race results) makes it the current exchange. The inspector, "Send to replay", "Add to race" and "Make rule" all act on it.
 2. **Everything is a core API call.** The renderer holds no traffic state of its own. Views query the core and redraw from the `change` event stream. That is also what makes 2 to 3 person sharing cheap later: another person's actions arrive as the same events.
 3. **Raw first, decoded on top.** Every body view shows a codec layer breadcrumb (`body › json .cart › base64 › json`). Editing an inner layer re-encodes outward. Rules, replays and scripts address the same layers.
-4. **Keyboard first.** Ctrl K palette, Ctrl R send to replay, Ctrl Enter send, Ctrl Shift R add to race, Ctrl D decode selection, F8 forward a paused request.
-5. **Dense but legible.** Dark theme by default (light and follow-system offered), 13px Inter for UI, 12px JetBrains Mono for anything that is traffic. Colour is never the only signal: status codes also show the number, methods show the verb.
+4. **Replay is always one action away.** See [Sending to replay](#sending-to-replay).
+5. **Keyboard first.** Ctrl K palette, Ctrl R send to replay, Ctrl Enter send, Ctrl Shift Enter resend without opening the editor, Ctrl Shift R add to race, Ctrl D decode selection, F8 forward a paused request.
+6. **Dense but legible.** The theme follows the system setting by default (dark and light can be forced in Settings), 13px Inter for UI, 12px JetBrains Mono for anything that is traffic. Colour is never the only signal: status codes also show the number, methods show the verb.
 
 ## App shell
 
@@ -51,7 +52,7 @@ Clickable mockups of every screen are on the design canvas: <https://claude.ai/a
 | Replay | Replay editor | Target and protocol, Send with history (send N of N), cookies "keep as captured" vs "refresh from jar", login macro on 401, apply rules, follow redirects, SigV4 state; editor modes Raw, Fields, Decoded body (JSON tree); placeholders like `{{var:csrf}}` highlighted; response and diff with original or previous send | new: `replay.send`, `replay.history` |
 | Race | Race-timed replay | Sync method (single packet HTTP/2, last-byte HTTP/1.1, none), repeat and jitter, per-request offset lane with draggable marker and ms input, presets, results summary, planned vs actual table, run strip highlighting anomalous runs | new: `race.run`, `race.results` |
 | Rules and scope | Rules and scope | Scope: ordered include/exclude list with decrypt, record, modify flags, "seen but not in scope" list with one-click add, certificate pinning warning with pass-through. Match and replace: rule list with switches and hit counts, editor (conditions, codec layer, action), live test against the selected exchange. Mocks and breakpoints tabs | `scope.get`, `scope.set`, `tls.failures`; new: `rules.*`, `mocks.*`, `breakpoints.*` |
-| Codec workbench | Codec workbench and JSON editor | Input, auto-detected chain, step list with per-step preview, save or bind a chain to a host and parameter, re-encoded output; JSON tree or text with JSONPath bulk operations (set, increment, swap type, flip booleans, append) | `codecs` package runs in the renderer directly; new: `codecs.saveChain` |
+| Codec workbench | Codec workbench and JSON editor | Find and replace (regex, match case, keys too) scoped to this layer, all layers or the whole request, with a live match count; a Token button on JSON values that opens a picker of cookie jar values, variables and generators; input, auto-detected chain, step list with per-step preview, save or bind a chain to a host and parameter, re-encoded output; JSON tree or text with JSONPath bulk operations (set, increment, swap type, flip booleans, append) | `codecs` package runs in the renderer directly; new: `codecs.saveChain` |
 | Cookies and auth | Cookie jar and auth | Domain list, cookie table with decoded-chain hint, expiry highlighting, link to the exchange that set it; login macros with trigger conditions and run log; token extraction variables; AWS SigV4 credentials (named profile or encrypted key) and parsed signature of the selected request | new: `cookies.*`, `macros.*`, `vars.*`, `aws.*` |
 | WebSocket and MQTT | WebSocket and MQTT | Connection list (kind, state, client), message table (direction, time, opcode or packet type, topic/QoS/retain, size, preview), decoded payload, composer: WS frame to server or client, MQTT publish as the original client with topic, QoS, retain | `traffic.streamMessages`; new: `stream.send`, `mqtt.publish` |
 | Scripts and console | Scripts and console | Script list (live hooks with enabled dot, test suites, one-off scripts), editor with budget stats, console REPL against the SDK, test results | new: `scripts.*`, `console.eval` |
@@ -76,9 +77,35 @@ Clickable mockups of every screen are on the design canvas: <https://claude.ai/a
 | `stream` | `#6FD3D0` | 3xx, WebSocket and MQTT |
 | `script` | `#C3A6FF` / `#D8C6FF` | Tags, variables, scripts, MCP source |
 
-A light theme maps the same token names; it is not mocked yet.
+The light theme maps every token to a light value (for example `bg/app` `#F6F7F9`, `bg/panel` `#FFFFFF`, `text` `#1B1F27`, `accent` `#2F5FCC`, `warn` `#A2560A`). The canvas has History, the title bar and the nav rail in light. The app follows `prefers-color-scheme` (Electron `nativeTheme`) and switches live; Settings › Appearance can force dark or light.
 
 ## Interaction notes
+
+### Sending to replay
+
+Every place an exchange appears can send it to replay in one action:
+
+- A **Replay** pill on every History row (always visible, not hover-only).
+- **Ctrl R** on the current selection in any view, and the right-click menu on any row, timeline bar, browser feed entry or stream message.
+- **Drag** a row onto the Replay tab, or onto an open replay to replace its request.
+- The right-click menu also offers "Send to replay, cookies from jar" and "Resend now", which sends a copy without opening the editor and puts the result in History.
+- Replay tabs are workspace tabs (confirmed); a new send opens a new tab unless the exchange is already open.
+
+### Tokens
+
+Tokens are placeholders resolved when a request is sent. They can sit anywhere: URL, header, cookie, or inside any decoded layer, including JSON values in the codec workbench and in the replay editor.
+
+| Token | Value at send time |
+| --- | --- |
+| `{{cookie:session}}` | Cookie from the jar for the request's host |
+| `{{cookie:session@shop.example.com}}` | Cookie from a named domain |
+| `{{var:csrf}}` | Variable from a token extraction rule or a script |
+| `{{uuid}}`, `{{now:iso}}` | Generators |
+| `{{counter:1..100}}`, `{{list:ids.txt}}` | Batch generators: one send per value |
+
+In the JSON tree a value holding a token shows as a purple pill with its current resolved value underneath. The Token button and the find and replace field both accept tokens, so "replace every `3b9a0c11` with `{{var:csrf}}`" works across layers. Codec chains re-encode with the resolved value at send time; the workbench output shows the current value.
+
+### Other notes
 
 - **Approval for agent writes** appears in two places: a chip in the title bar (visible from every screen) and a full card in Settings › MCP. Approving runs the request immediately and the result appears in History with source `mcp`.
 - **Breakpoints** pause inside the Browser view when the paused request came from a browser tab, and in Rules › Breakpoints otherwise. A queued count shows on "Forward all".
@@ -90,9 +117,12 @@ A light theme maps the same token names; it is not mocked yet.
 
 The shell already reserves space for it: people in the title bar, a "Work together" settings page, and a presence ring on selected rows and shared replay tabs. Nothing in v1 renders other people, but every view must redraw from the event stream rather than from local optimistic state, so a second client works without UI changes.
 
+## Decisions
+
+- Theme follows the system by default (2026-11-04).
+- Replay and Race are workspace tabs, as mocked (2026-11-04).
+
 ## Open questions for review
 
-1. Dark by default, or follow the system theme?
-2. Should Replay and Race be workspace tabs (as mocked) or dockable panels beside History?
-3. Is a per-browser-tab traffic feed worth the space, or should the Browser view be full width with History one click away?
-4. MCP approvals: is "approve for 10 minutes" the right middle option, or should it be "approve this tool for this session"?
+1. Is a per-browser-tab traffic feed worth the space, or should the Browser view be full width with History one click away?
+2. MCP approvals: is "approve for 10 minutes" the right middle option, or should it be "approve this tool for this session"?

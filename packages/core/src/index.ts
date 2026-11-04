@@ -22,6 +22,7 @@ export * from './rules.js';
 export * from './scripts.js';
 export * from './send.js';
 export * from './sigv4.js';
+export * from './tech.js';
 export * from './tokens.js';
 export * from './vars.js';
 export * from './version.js';

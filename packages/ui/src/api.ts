@@ -61,6 +61,20 @@ export type {
 
 export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage };
 export type { ScopeRule } from '@siteinquisition/core';
+export type { CookieOverride, CsrfBinding, CsrfFinding, EffectiveTech, HostTechReport, Signature, TechCategory, TechCheck, TechHit, TechOverride } from '@siteinquisition/core';
+import type { CookieOverride, CsrfBinding, CsrfFinding, HostTechReport, Signature, TechHit, TechOverride, EffectiveTech } from '@siteinquisition/core';
+
+/** A jar cookie, with why it belongs to the platform rather than the app (null when it is the app's). */
+export type JarCookieInfo = JarCookie & { infra?: string | null };
+
+export interface ExchangeTech {
+  hits: Array<TechHit & { name: string }>;
+  host: HostTechReport;
+  csrf: CsrfFinding[];
+  cookies: Array<{ name: string; value: string; set: boolean; infra: string | null }>;
+}
+
+export type HostTechSummary = { host: string; tech: Array<Pick<EffectiveTech, 'id' | 'name' | 'category' | 'status'>> };
 
 export interface CoreInfo {
   version: string;
@@ -278,7 +292,22 @@ export class CoreClient {
       replayOf: req.replayOf,
       ignoreTlsErrors: req.ignoreTlsErrors,
     });
-  cookies = () => this.call<JarCookie[]>('cookies.list');
+  cookies = () => this.call<JarCookieInfo[]>('cookies.list');
+  techSignatures = () => this.call<{ builtIn: Signature[]; custom: Signature[]; disabled: string[] }>('tech.signatures');
+  setTechSignatures = (signatures: unknown[]) => this.call<Signature[]>('tech.setSignatures', { signatures });
+  setTechDisabled = (ids: string[]) => this.call<string[]>('tech.setDisabled', { ids });
+  techHosts = () => this.call<HostTechSummary[]>('tech.hosts');
+  techHost = (host: string) => this.call<HostTechReport>('tech.host', { host });
+  techExchange = (id: string) => this.call<ExchangeTech>('tech.exchange', { id });
+  techOverrides = () => this.call<TechOverride[]>('tech.overrides');
+  setTechOverrides = (overrides: Array<Partial<TechOverride>>) => this.call<TechOverride[]>('tech.setOverrides', { overrides });
+  techOverride = (host: string, tech: string, action: 'pin' | 'reject' | 'clear', note?: string) => this.call<TechOverride[]>('tech.override', { host, tech, action, ...(note ? { note } : {}) });
+  cookieOverrides = () => this.call<CookieOverride[]>('tech.cookieOverrides');
+  setCookieOverrides = (overrides: Array<Partial<CookieOverride>>) => this.call<CookieOverride[]>('tech.setCookieOverrides', { overrides });
+  techRescan = () => this.call<{ exchanges: number; hosts: number }>('tech.rescan');
+  techCheck = (host: string, tech: string, index: number, scheme: string) => this.call<ExchangeSummary>('tech.check', { host, tech, index, scheme });
+  csrfBindings = () => this.call<CsrfBinding[]>('csrf.bindings');
+  setCsrfBindings = (bindings: Array<Partial<CsrfBinding>>) => this.call<CsrfBinding[]>('csrf.setBindings', { bindings });
   evaluate = (url: string) => this.call<ScopeDecision>('scope.evaluate', { url });
   replayWith = (req: WireRequest, options: SendOptions) =>
     this.call<ExchangeSummary>('replay.send', { ...wire(req), options });

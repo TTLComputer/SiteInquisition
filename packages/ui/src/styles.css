@@ -459,6 +459,24 @@ textarea.editor.composer-text { min-height: 90px; height: 110px; width: 100%; bo
 .frame-table .input { padding: 2px 4px; font-size: 12px; }
 .frame-table input[type='checkbox'] { margin: 0 2px; }
 
+/* Technologies */
+.tech-panel { display: flex; flex-direction: column; gap: 4px; padding-bottom: 12px; }
+.tech-list { list-style: none; margin: 0; padding: 0; }
+.tech-list > li { padding: 6px 12px; border-bottom: 1px solid var(--line-soft); }
+.tech-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.tech-evidence { font-size: 11px; color: var(--text-faint); margin-top: 2px; word-break: break-all; }
+.tech-check { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; margin-top: 4px; }
+.tech-note { padding: 8px 12px; font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.tech-pin { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 12px; font-size: 12px; }
+.tech-pin .input { max-width: 240px; }
+.tech-sig-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 12px; max-height: 280px; overflow: auto; }
+.settings-block { padding: 10px 14px; border-top: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.sitemap .sitemap-tech { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 6px 4px 18px; }
+.sitemap .sitemap-tech .pill { width: auto; font-family: inherit; font-size: 11px; padding: 1px 8px; }
+.tech-group { border: 1px solid var(--line-soft); border-radius: 6px; margin-top: 6px; }
+.tech-group > summary { display: flex; gap: 8px; align-items: center; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+.tech-group > .tech-sig-grid { padding: 4px 10px 8px 26px; max-height: none; }
+
 /* HTTP/3 lab */
 .h3-presets { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 12px; font-size: 12px; }
 .h3-conn { margin: 4px 12px 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }

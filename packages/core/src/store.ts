@@ -211,6 +211,17 @@ CREATE TABLE IF NOT EXISTS change (
   entity_id TEXT NOT NULL,
   data TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS host_tech (
+  host TEXT NOT NULL,
+  tech TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  evidence TEXT NOT NULL DEFAULT '[]',
+  hits INTEGER NOT NULL DEFAULT 1,
+  first_at INTEGER NOT NULL,
+  last_at INTEGER NOT NULL,
+  sample_id TEXT,
+  PRIMARY KEY (host, tech)
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS exchange_fts USING fts5(
   exchange_id UNINDEXED, url, headers, body, tokenize = 'unicode61'
 );
@@ -598,8 +609,11 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     return decodeContentEncoding(raw, header(headers, 'content-encoding')) ?? raw;
   }
 
+  /** Hosts running a technology, for the `tech:` search filter. Set by the tech service. */
+  techHosts?: (tech: string) => string[];
+
   search(query = '', opts: SearchOptions = {}): ExchangeSummary[] {
-    const q = compileQuery(query);
+    const q = compileQuery(query, { techHosts: this.techHosts });
     const where = [...q.where];
     const params = [...q.params];
     if (q.match) {
@@ -630,6 +644,65 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
        GROUP BY segment ORDER BY count DESC LIMIT ?`,
     );
     return hosts.map((h) => ({ ...h, paths: seg.all(h.host, segmentsPerHost) as unknown as Array<{ segment: string; count: number }> }));
+  }
+
+  /** Every distinct host with recorded traffic. */
+  hosts(): string[] {
+    return (this.q('SELECT DISTINCT host FROM exchange').all() as unknown as Array<{ host: string }>).map((r) => r.host);
+  }
+
+  // ---------- detected technologies ----------
+
+  /**
+   * Record a detection. Keeps the best confidence and a few distinct pieces
+   * of evidence per host and technology. A change is logged only when a
+   * technology is new for the host or its confidence rose, so steady traffic
+   * does not flood the change log.
+   */
+  recordHostTech(host: string, tech: string, confidence: number, evidence: string[], exchangeId: string, at = Date.now()): boolean {
+    return this.tx(() => {
+      const row = this.q('SELECT confidence, evidence FROM host_tech WHERE host = ? AND tech = ?').get(host, tech) as unknown as { confidence: number; evidence: string } | undefined;
+      if (!row) {
+        this.q('INSERT INTO host_tech (host, tech, confidence, evidence, hits, first_at, last_at, sample_id) VALUES (?, ?, ?, ?, 1, ?, ?, ?)').run(host, tech, confidence, JSON.stringify(evidence.slice(0, 6)), at, at, exchangeId);
+        this.recordChange('tech.detected', 'host', host, { tech, confidence });
+        return true;
+      }
+      const old = JSON.parse(row.evidence) as string[];
+      const merged = [...old, ...evidence.filter((e) => !old.includes(e))].slice(0, 6);
+      const rose = confidence > row.confidence + 0.001;
+      this.q('UPDATE host_tech SET confidence = max(confidence, ?), evidence = ?, hits = hits + 1, last_at = ?, sample_id = CASE WHEN ? THEN ? ELSE sample_id END WHERE host = ? AND tech = ?').run(
+        confidence,
+        JSON.stringify(merged),
+        at,
+        rose ? 1 : 0,
+        exchangeId,
+        host,
+        tech,
+      );
+      if (rose) this.recordChange('tech.detected', 'host', host, { tech, confidence });
+      return rose;
+    });
+  }
+
+  hostTech(host?: string): Array<{ host: string; tech: string; confidence: number; evidence: string[]; hits: number; firstAt: number; lastAt: number; sampleId: string | null }> {
+    const rows = (host ? this.q('SELECT * FROM host_tech WHERE host = ?').all(host) : this.q('SELECT * FROM host_tech').all()) as unknown as Array<{
+      host: string;
+      tech: string;
+      confidence: number;
+      evidence: string;
+      hits: number;
+      first_at: number;
+      last_at: number;
+      sample_id: string | null;
+    }>;
+    return rows.map((r) => ({ host: r.host, tech: r.tech, confidence: r.confidence, evidence: JSON.parse(r.evidence) as string[], hits: r.hits, firstAt: r.first_at, lastAt: r.last_at, sampleId: r.sample_id }));
+  }
+
+  clearHostTech(): void {
+    this.tx(() => {
+      this.q('DELETE FROM host_tech').run();
+      this.recordChange('tech.cleared', 'host', '*', null);
+    });
   }
 
   stats(): { exchanges: number; databaseBytes: number } {

@@ -5,6 +5,7 @@
  *   host:api.example.com method:POST status:>=400 "session expired"
  *   host:*.example.com path:/api/ body:token ws:true -status:304
  *   since:2026-11-04T09:00 until:1762246800000   (ISO time or epoch ms)
+ *   tech:django tech:aws                          (hosts running a technology)
  *
  * A leading `-` negates a filter. Quoted text is matched as a phrase.
  */
@@ -16,7 +17,7 @@ export interface CompiledQuery {
   match?: string;
 }
 
-const FILTER_KEYS = new Set(['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'body', 'header', 'state', 'flow', 'scheme', 'replayof', 'since', 'until']);
+const FILTER_KEYS = new Set(['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'body', 'header', 'state', 'flow', 'scheme', 'replayof', 'since', 'until', 'tech']);
 
 interface Token {
   key?: string;
@@ -67,7 +68,12 @@ function timeValue(value: string): number {
   return t;
 }
 
-export function compileQuery(input: string): CompiledQuery {
+export interface CompileContext {
+  /** Hosts running a technology; without it `tech:` matches nothing. */
+  techHosts?: (tech: string) => string[];
+}
+
+export function compileQuery(input: string, ctx: CompileContext = {}): CompiledQuery {
   const where: string[] = [];
   const params: unknown[] = [];
   const fts: string[] = [];
@@ -126,6 +132,11 @@ export function compileQuery(input: string): CompiledQuery {
       case 'until':
         add(t, 'e.started_at < ?', [timeValue(t.value)]);
         break;
+      case 'tech': {
+        const hosts = ctx.techHosts?.(t.value.toLowerCase()) ?? [];
+        add(t, hosts.length ? `e.host IN (${hosts.map(() => '?').join(', ')})` : '0', hosts);
+        break;
+      }
       case 'tag':
         add(t, 'EXISTS (SELECT 1 FROM json_each(e.tags) WHERE json_each.value = ?)', [t.value]);
         break;

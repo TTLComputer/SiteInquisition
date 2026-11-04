@@ -61,8 +61,8 @@ export type {
 
 export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage };
 export type { ScopeRule } from '@siteinquisition/core';
-export type { ErrorCause, ErrorFinding, ParsedJwt, JwtFlag, AwsRequestInfo, KeyInfo } from '@siteinquisition/core';
-import type { ParsedJwt, AwsRequestInfo, KeyInfo } from '@siteinquisition/core';
+export type { ErrorCause, ErrorFinding, ParsedJwt, JwtFlag, AwsRequestInfo, KeyInfo, SessionCookie, SessionFramework, SessionStructure } from '@siteinquisition/core';
+import type { ParsedJwt, AwsRequestInfo, KeyInfo, SessionCookie } from '@siteinquisition/core';
 export type { CookieOverride, CsrfBinding, CsrfFinding, EffectiveTech, HostTechReport, Signature, TechCategory, TechCheck, TechHit, TechOverride } from '@siteinquisition/core';
 import type { CookieOverride, CsrfBinding, CsrfFinding, ErrorFinding, HostTechReport, Signature, TechHit, TechOverride, EffectiveTech } from '@siteinquisition/core';
 
@@ -317,6 +317,9 @@ export class CoreClient {
   setKeyPem = (name: string, pem: string, passphrase?: string) => this.call<KeyInfo[]>('keys.setPem', { name, pem, ...(passphrase ? { passphrase } : {}) });
   deleteKey = (name: string) => this.call<KeyInfo[]>('keys.delete', { name });
   awsRequestInfo = (id: string) => this.call<AwsRequestInfo>('aws.requestInfo', { id });
+  decodeSessionCookie = (name: string, value: string) => this.call<SessionCookie>('cookies.decodeSession', { name, value });
+  flaskTrySecrets = (value: string, secrets: string[]) => this.call<string | null>('cookies.flaskTrySecrets', { value, secrets });
+  signFlaskCookie = (p: { payload: unknown; keyName?: string; secret?: string; compress?: boolean }) => this.call<string>('cookies.flaskSign', p);
   errorCounts = () => this.call<Array<{ kind: string; severity: string; count: number }>>('errors.counts');
   csrfBindings = () => this.call<CsrfBinding[]>('csrf.bindings');
   setCsrfBindings = (bindings: Array<Partial<CsrfBinding>>) => this.call<CsrfBinding[]>('csrf.setBindings', { bindings });

@@ -10,6 +10,7 @@ import { PRESETS, buildPlan, validatePlan } from './wsplan.js';
 import { cookieJar } from './cookies.js';
 import { awsRequestInfo } from './awsinfo.js';
 import { parseJwt as parseJwtApi } from './jwt.js';
+import { decodeSessionCookie, verifyFlaskCookie } from './sessioncookies.js';
 import { exchangeCookies } from './tech.js';
 import { readBrowserHttp3Hosts, writeBrowserHttp3Hosts, type Core } from './core.js';
 import { sendReplay } from './replay.js';
@@ -217,6 +218,10 @@ export class CoreApiServer {
       'jwt.parse': (p) => core.tools.keys && parseJwtApi(str(p, 'token')!),
       'jwt.sign': (p) => core.tools.resignJwt(p.header as Record<string, unknown>, p.payload as Record<string, unknown>, { keyName: str(p, 'keyName', false), secret: str(p, 'secret', false) }, str(p, 'alg', false)),
       'jwt.trySecrets': (p) => core.tools.jwtSecret(str(p, 'token')!, (p.secrets as string[]) ?? []),
+      'cookies.decodeSession': (p) => decodeSessionCookie(str(p, 'name')!, str(p, 'value')!),
+      'cookies.flaskVerify': (p) => verifyFlaskCookie(str(p, 'value')!, str(p, 'secret')!),
+      'cookies.flaskTrySecrets': (p) => core.tools.flaskSecret(str(p, 'value')!, (p.secrets as string[]) ?? []),
+      'cookies.flaskSign': (p) => core.tools.resignFlaskCookie(p.payload, { keyName: str(p, 'keyName', false), secret: str(p, 'secret', false) }, { compress: p.compress === true }),
       'keys.list': () => core.tools.keys.list(),
       'keys.setSecret': (p) => (core.tools.keys.setSecret(str(p, 'name')!, str(p, 'secret')!), core.tools.keys.list()),
       'keys.setPem': (p) => (core.tools.keys.setPem(str(p, 'name')!, str(p, 'pem')!, str(p, 'passphrase', false)), core.tools.keys.list()),

@@ -18,6 +18,10 @@
     "./protocols": {
       "types": "./dist/protocols.d.ts",
       "default": "./dist/protocols.js"
+    },
+    "./protobuf": {
+      "types": "./dist/protobuf.d.ts",
+      "default": "./dist/protobuf.js"
     }
   },
   "files": [

@@ -19,6 +19,7 @@ import { ErrorService } from './errors.js';
 import { awsRequestInfo, parsePresignedUrl } from './awsinfo.js';
 import { EXAMPLE_SECRETS, parseJwt, signJwt, tryHmacSecrets, verifyJwt, type SigningKey } from './jwt.js';
 import { SessionKeyStore } from './keys.js';
+import { decodeSessionCookie, signFlaskCookie, tryFlaskSecrets, verifyFlaskCookie } from './sessioncookies.js';
 import { TechService } from './tech.js';
 import { Vars } from './vars.js';
 import { WsReplays } from './wsreplay.js';
@@ -312,6 +313,7 @@ export class PowerTools {
       errors: (id: string) => this.errors.findings(String(id)),
       jwt: (token: string) => parseJwt(String(token)),
       signJwt: (header: Record<string, unknown>, payload: Record<string, unknown>, key: SigningKey, alg?: string) => signJwt(header, payload, key, alg),
+      sessionCookie: (name: string, value: string) => decodeSessionCookie(String(name), String(value)),
       aws: (id: string) => {
         const ex = this.core.store.getExchange(String(id));
         if (!ex) throw new Error(`no exchange ${id}`);
@@ -395,7 +397,36 @@ export class PowerTools {
 
   /** Confirm a token is signed with one of the given secrets (plus a few framework placeholders). */
   jwtSecret(token: string, extra: string[] = []): string | null {
-    return tryHmacSecrets(token, [...extra, ...EXAMPLE_SECRETS]);
+    return tryHmacSecrets(token, [...extra, ...this.hmacSecrets(), ...EXAMPLE_SECRETS]);
+  }
+
+  // ---------- Session cookies ----------
+
+  /** The HMAC secrets held in the key store, for confirming a signed cookie or token. */
+  private hmacSecrets(): string[] {
+    return this.keys
+      .names()
+      .map((n) => this.keys.resolve(n))
+      .filter((k): k is { kind: 'hmac'; secret: string | Buffer } => k?.kind === 'hmac')
+      .map((k) => (typeof k.secret === 'string' ? k.secret : k.secret.toString('utf8')));
+  }
+
+  /** Confirm a Flask session cookie is signed with a held or supplied secret. */
+  flaskSecret(value: string, extra: string[] = []): string | null {
+    return tryFlaskSecrets(value, [...extra, ...this.hmacSecrets(), ...EXAMPLE_SECRETS]);
+  }
+
+  /** Re-sign a Flask session cookie after the user edited it, with a key they hold. */
+  resignFlaskCookie(payload: unknown, keyRef: { keyName?: string; secret?: string }, opts: { compress?: boolean } = {}): string {
+    let secret: string;
+    if (keyRef.secret !== undefined) secret = keyRef.secret;
+    else if (keyRef.keyName) {
+      const resolved = this.keys.resolve(keyRef.keyName);
+      if (!resolved) throw new Error(`no signing key "${keyRef.keyName}"`);
+      if (resolved.kind !== 'hmac') throw new Error('a Flask cookie needs an HMAC secret, not a PEM key');
+      secret = typeof resolved.secret === 'string' ? resolved.secret : resolved.secret.toString('utf8');
+    } else throw new Error('a secret or a key name is required');
+    return signFlaskCookie(payload, secret, opts);
   }
 
   // ---------- MCP tools ----------
@@ -492,6 +523,13 @@ export class PowerTools {
         inputSchema: { type: 'object', properties: { token: str, id: str } },
         write: false,
         run: (a) => parseJwt(a.token ? String(a.token) : this.bearerOf(String(a.id))),
+      },
+      {
+        name: 'decode_session_cookie',
+        description: 'Decode a framework session cookie (Flask, Django, Rails, Laravel, Express): name the framework, split the parts, and show the payload when it is signed-but-readable. Pass the cookie name and value.',
+        inputSchema: { type: 'object', properties: { name: str, value: str }, required: ['name', 'value'] },
+        write: false,
+        run: (a) => decodeSessionCookie(String(a.name), String(a.value)),
       },
       {
         name: 'aws_request_info',

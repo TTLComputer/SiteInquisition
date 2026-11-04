@@ -416,3 +416,7 @@ export function replaceThroughChain(spec: string | string[], input: Uint8Array |
 import { PROTOCOL_CODEC_DEFS } from './protocols.js';
 for (const c of PROTOCOL_CODEC_DEFS) register(c);
 export * from './protocols.js';
+
+import { PROTOBUF_CODEC_DEFS } from './protobuf.js';
+for (const c of PROTOBUF_CODEC_DEFS) register(c);
+export * from './protobuf.js';

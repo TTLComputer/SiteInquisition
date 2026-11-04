@@ -1,10 +1,53 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { JarCookie, JarCookieInfo } from '../api';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import type { JarCookie, JarCookieInfo, SessionCookie } from '../api';
 import { CookieToggle } from './Tech';
 import { useApp } from '../state';
 import { fmtTime } from '../format';
 
 type Tab = 'jar' | 'macros' | 'vars' | 'aws';
+
+/** Decode a framework session cookie (Flask, Django, Rails, Laravel, Express) on demand. */
+function SessionDecode({ name, value }: { name: string; value: string }) {
+  const { client } = useApp();
+  const [info, setInfo] = useState<SessionCookie | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    client.decodeSessionCookie(name, value).then(
+      (i) => live && setInfo(i),
+      (e: Error) => live && setErr(e.message),
+    );
+    return () => {
+      live = false;
+    };
+  }, [client, name, value]);
+  if (err) return <div className="faint">Could not decode: {err}</div>;
+  if (!info) return <div className="faint">Decoding…</div>;
+  if (info.framework === 'unknown') return <div className="faint">Not a recognized framework session cookie.</div>;
+  return (
+    <div className="session-decode" style={{ padding: '4px 0' }}>
+      <div style={{ marginBottom: 6, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span className="badge">{info.framework}</span>
+        <span className="badge">{info.structure}</span>
+        {info.compressed && <span className="pill faint">compressed</span>}
+        {info.flags.map((f) => (
+          <span key={f} className="pill faint">
+            {f}
+          </span>
+        ))}
+      </div>
+      <dl className="kv">
+        {info.parts.map((p) => (
+          <div key={p.label} style={{ display: 'contents' }}>
+            <dt>{p.label}</dt>
+            <dd className="mono wrap">{p.value.length > 160 ? `${p.value.slice(0, 160)}…` : p.value}</dd>
+          </div>
+        ))}
+      </dl>
+      {info.payload !== undefined && <pre className="raw" style={{ marginTop: 6 }}>{JSON.stringify(info.payload, null, 2)}</pre>}
+    </div>
+  );
+}
 
 /** A short hint at what a cookie value decodes to, e.g. "url › base64 › json". */
 export function decodeHint(value: string): string | null {
@@ -61,6 +104,7 @@ function Jar() {
   const [domain, setDomain] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [showExpired, setShowExpired] = useState(true);
+  const [openSession, setOpenSession] = useState<string | null>(null);
   const load = useCallback(() => client.cookies().then(setCookies, (e: Error) => notify(e.message)), [client, notify]);
   useEffect(() => {
     void load();
@@ -133,8 +177,10 @@ function Jar() {
                   const exp = expiryText(c, now);
                   const hint = decodeHint(c.value);
                   const token = `{{cookie:${c.name}@${c.domain}}}`;
+                  const key = `${c.domain}${c.path}${c.name}`;
                   return (
-                    <tr key={`${c.domain}${c.path}${c.name}`} data-testid="cookie-row">
+                    <Fragment key={key}>
+                    <tr data-testid="cookie-row">
                       <td>
                         {c.name}
                         {c.infra && (
@@ -171,9 +217,20 @@ function Jar() {
                         <button className="btn small" title={`Copy ${token} for use in replays`} onClick={() => navigator.clipboard.writeText(token).then(() => notify(`Copied ${token}`), () => notify(token))}>
                           Copy token
                         </button>{' '}
+                        <button className="btn small" aria-expanded={openSession === key} title="Decode as a framework session cookie (Flask, Django, Rails, Laravel, Express)" onClick={() => setOpenSession(openSession === key ? null : key)}>
+                          Decode
+                        </button>{' '}
                         <CookieToggle name={c.name} infra={!!c.infra} onDone={() => void load()} />
                       </td>
                     </tr>
+                    {openSession === key && (
+                      <tr className="session-row">
+                        <td colSpan={7}>
+                          <SessionDecode name={c.name} value={c.value} />
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })}
               </tbody>

@@ -133,8 +133,14 @@ describe.skipIf(!ready)('renderer against a real core', () => {
     const session = page.getByTestId('cookie-row').filter({ hasText: 'session' });
     expect(await session.textContent()).toContain('base64 › json');
     expect(await session.textContent()).toContain('HttpOnly');
+    // Decode it as a framework session cookie: the payload is readable without a key.
+    await session.getByRole('button', { name: 'Decode' }).click();
+    const decoded = page.locator('.session-row');
+    await expect.poll(() => decoded.textContent()).toContain('express');
+    expect(await decoded.textContent()).toContain('nick');
     await shot('cookies');
-    await session.locator('.pill').click();
+    await session.getByRole('button', { name: 'Decode' }).click();
+    await session.locator('.pill').first().click();
     await expect.poll(() => page.getByLabel('Inspector', { exact: true }).textContent()).toContain('/api/cart');
   });
 

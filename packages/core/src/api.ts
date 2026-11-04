@@ -202,6 +202,7 @@ export class CoreApiServer {
       'vars.extractors': (p) => core.tools.vars.setExtractors(arr(p, 'extractors') as never),
       'rules.get': () => ({ rules: core.tools.replaceRules(), mocks: core.tools.mocks(), breakpoints: core.tools.breakpoints(), hits: core.tools.ruleHits() }),
       'rules.set': (p) => core.tools.setReplaceRules(arr(p, 'rules') as never),
+      'rules.test': (p) => core.tools.testRule(p.rule as never, str(p, 'exchangeId')!),
       'mocks.set': (p) => core.tools.setMocks(arr(p, 'mocks') as never),
       'breakpoints.set': (p) => core.tools.setBreakpoints(arr(p, 'breakpoints') as never),
       'intercept.list': () => core.tools.intercept.list(),
@@ -240,7 +241,7 @@ export class CoreApiServer {
         });
         return core.tools.race(reqs, { sync: (p.sync as never) ?? 'last-byte', repeat: num(p, 'repeat'), jitterMs: num(p, 'jitterMs'), ignoreTlsErrors: p.ignoreTlsErrors === true });
       },
-      'stream.live': () => ({ ...core.tools.liveStreams(), ws: [] }),
+      'stream.live': () => core.tools.liveStreams(),
       'stream.connect': async (p) => {
         const id = str(p, 'exchangeId', false);
         const ex = id ? store.getExchange(id) : undefined;

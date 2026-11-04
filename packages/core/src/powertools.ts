@@ -174,6 +174,30 @@ export class PowerTools {
     return applied;
   }
 
+  /** Try a rule (saved or not) against a recorded exchange without changing anything. */
+  testRule(input: RuleInput<ReplaceRule>, exchangeId: string): { matched: boolean; count: number; before: string; after: string } {
+    const rule = normalizeReplaceRule(input);
+    const store = this.core.store;
+    const ex = store.getExchange(exchangeId);
+    if (!ex) throw new Error('no such exchange');
+    const req = rule.phase === 'request';
+    const msg: HookMessage = {
+      method: ex.method,
+      url: ex.url,
+      headers: [...((req ? ex.requestHeaders : ex.responseHeaders) ?? [])],
+      body: store.getBody(exchangeId, req ? 'request' : 'response', true) ?? new Uint8Array(),
+      status: req ? undefined : (ex.status ?? undefined),
+    };
+    const render = (m: HookMessage) => {
+      const first = req ? `${m.method} ${m.url}` : `${m.status ?? ''}`;
+      return [first, ...m.headers.map(([k, v]) => `${k}: ${v}`), '', bytesToString(m.body.subarray(0, 64 * 1024))].join('\n');
+    };
+    const before = render(msg);
+    const matched = conditionsMatch(rule, { method: ex.method, url: ex.url, status: ex.status ?? undefined });
+    const count = matched ? applyRule(rule, msg, this.resolver(ex.url)) : 0;
+    return { matched, count, before, after: render(msg) };
+  }
+
   readonly hooks: ProxyHooks = {
     request: async (msg, ctx) => {
       const applied: string[] = [];
@@ -271,7 +295,7 @@ export class PowerTools {
   }
 
   liveStreams(): { mqtt: string[]; ws: string[] } {
-    return { mqtt: this.core.mqtt.flatMap((m) => m.liveSessions()), ws: [] };
+    return { mqtt: this.core.mqtt.flatMap((m) => m.liveSessions()), ws: this.ws.openIds() };
   }
 
   // ---------- MCP tools ----------

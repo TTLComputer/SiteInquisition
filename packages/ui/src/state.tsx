@@ -1,13 +1,43 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { CoreClient, CoreInfo, ExchangeSummary, ScopeConfig } from './api';
+import type { Approval, CoreClient, CoreInfo, ExchangeSummary, HeaderList, Paused, ScopeConfig } from './api';
 
 export type ViewId = 'browser' | 'history' | 'timeline' | 'replay' | 'race' | 'rules' | 'codecs' | 'cookies' | 'streams' | 'scripts' | 'settings';
 
+/** A request built somewhere other than History (Codecs, an agent, a script) and opened in Replay. */
+export interface Draft {
+  method: string;
+  url: string;
+  headers: HeaderList;
+  body?: string;
+}
+
 export interface ReplayTab {
   id: string;
+  /** The exchange this tab replays; empty for a tab opened from a draft. */
   exchangeId: string;
   label: string;
   method: string;
+  draft?: Draft;
+  /** Send options to start with, e.g. fresh cookies from the jar. */
+  options?: { refreshCookies?: boolean };
+}
+
+/** One request lined up in the Race view. */
+export interface RaceItem {
+  key: string;
+  label: string;
+  raw: string;
+  offsetMs: number;
+  replayOf?: string;
+}
+
+/** Text handed to the Codecs workbench from another screen. */
+export interface CodecInput {
+  text: string;
+  label: string;
+  nonce: number;
+  /** Where "Put back" sends the result, e.g. the selection in a Replay editor. */
+  returnTo?: (text: string) => void;
 }
 
 export interface SavedView {
@@ -25,7 +55,7 @@ interface AppState {
   activeTab: string;
   setActiveTab(id: string): void;
   replayTabs: ReplayTab[];
-  openReplay(e: Pick<ExchangeSummary, 'id' | 'method' | 'path'>): void;
+  openReplay(e: Pick<ExchangeSummary, 'id' | 'method' | 'path'>, options?: ReplayTab['options']): void;
   closeReplay(id: string): void;
   resendNow(id: string): Promise<void>;
   selectedId: string | null;
@@ -40,6 +70,24 @@ interface AppState {
   openReplayById(id: string): Promise<void>;
   toast: string | null;
   notify(msg: string): void;
+  /** Open a Replay tab on a request that was never recorded. */
+  openDraft(draft: Draft, label?: string): void;
+  codecInput: CodecInput | null;
+  /** Send text (a selection, a body, a header value) to the Codecs workbench. */
+  sendToCodecs(text: string, label: string, returnTo?: (text: string) => void): void;
+  raceItems: RaceItem[];
+  setRaceItems(items: RaceItem[]): void;
+  sendToRace(items: Array<Omit<RaceItem, 'key' | 'offsetMs'> & { offsetMs?: number }>): void;
+  /** The connection the Streams view should show. */
+  streamId: string | null;
+  /** A message to start the composer with, e.g. one picked in the inspector. */
+  streamPrefill: { text: string; topic?: string; nonce: number } | null;
+  openStream(exchangeId: string, prefill?: { text: string; topic?: string }): void;
+  paused: Paused[];
+  approvals: Approval[];
+  /** Open a view at one of its tabs (Rules > Breakpoints, Cookies > Variables...). */
+  subTab: Partial<Record<ViewId, string>>;
+  openAt(view: ViewId, tab: string): void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -68,6 +116,17 @@ export function AppProvider({ client, children }: { client: CoreClient; children
   const [toast, setToast] = useState<string | null>(null);
   const [scope, setScope] = useState<ScopeConfig | null>(null);
   const toastTimer = useRef<number>();
+  const [codecInput, setCodecInput] = useState<CodecInput | null>(null);
+  const [raceItems, setRaceItems] = useState<RaceItem[]>([]);
+  const [streamId, setStreamId] = useState<string | null>(null);
+  const [streamPrefill, setStreamPrefill] = useState<AppState['streamPrefill']>(null);
+  const [paused, setPaused] = useState<Paused[]>([]);
+  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [subTab, setSubTab] = useState<Partial<Record<ViewId, string>>>({});
+  const openAt = useCallback((v: ViewId, tab: string) => {
+    setSubTab((s) => ({ ...s, [v]: tab }));
+    setViewState(v);
+  }, []);
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
@@ -83,10 +142,16 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     refreshInfo();
     client.call<SavedView[]>('views.get').then(setSavedViews, () => undefined);
     client.scope().then(setScope, () => undefined);
+    const loadLive = () => {
+      client.paused().then(setPaused, () => undefined);
+      client.approvals().then(setApprovals, () => undefined);
+    };
+    loadLive();
     const offStatus = client.onStatus((s) => {
       setConnected(s === 'open');
       if (s === 'open') {
         refreshInfo();
+        loadLive();
         client.scope().then(setScope, () => undefined);
       }
     });
@@ -95,6 +160,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     const offChange = client.onChange((c) => {
       if (c.kind === 'meta.set' && c.entityId === 'savedViews') setSavedViews(c.data as SavedView[]);
       if (c.kind === 'meta.set' && c.entityId === 'scope') setScope(c.data as ScopeConfig);
+      if (c.kind.startsWith('intercept.') || c.kind === 'mcp.approval' || c.kind === 'mcp.decided') loadLive();
       if (c.entity !== 'exchange' && c.entity !== 'meta') return;
       if (timer === undefined) timer = window.setTimeout(() => ((timer = undefined), refreshInfo()), 1000);
     });
@@ -110,11 +176,42 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     if (v === 'history') setActiveTab('history');
   }, []);
 
-  const openReplay = useCallback((e: Pick<ExchangeSummary, 'id' | 'method' | 'path'>) => {
+  const openReplay = useCallback((e: Pick<ExchangeSummary, 'id' | 'method' | 'path'>, options?: ReplayTab['options']) => {
     const id = `replay-${e.id}`;
-    setReplayTabs((tabs) => (tabs.some((t) => t.id === id) ? tabs : [...tabs, { id, exchangeId: e.id, label: replayLabel(e.path), method: e.method }]));
+    setReplayTabs((tabs) => (tabs.some((t) => t.id === id) ? tabs : [...tabs, { id, exchangeId: e.id, label: replayLabel(e.path), method: e.method, options }]));
     setActiveTab(id);
     setViewState('replay');
+  }, []);
+
+  const openDraft = useCallback((draft: Draft, label?: string) => {
+    const id = `draft-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    let name = label;
+    if (!name) {
+      try {
+        name = replayLabel(new URL(draft.url).pathname);
+      } catch {
+        name = 'draft';
+      }
+    }
+    setReplayTabs((tabs) => [...tabs, { id, exchangeId: '', label: name!, method: draft.method, draft }]);
+    setActiveTab(id);
+    setViewState('replay');
+  }, []);
+
+  const sendToCodecs = useCallback((text: string, label: string, returnTo?: (text: string) => void) => {
+    setCodecInput({ text, label, nonce: Date.now(), returnTo });
+    setViewState('codecs');
+  }, []);
+
+  const sendToRace = useCallback((items: Array<Omit<RaceItem, 'key' | 'offsetMs'> & { offsetMs?: number }>) => {
+    setRaceItems((cur) => [...cur, ...items.map((it, i) => ({ ...it, offsetMs: it.offsetMs ?? 0, key: `${Date.now().toString(36)}-${cur.length + i}` }))]);
+    setViewState('race');
+  }, []);
+
+  const openStream = useCallback((exchangeId: string, prefill?: { text: string; topic?: string }) => {
+    setStreamId(exchangeId);
+    setStreamPrefill(prefill ? { ...prefill, nonce: Date.now() } : null);
+    setViewState('streams');
   }, []);
 
   const openReplayById = useCallback(
@@ -141,7 +238,8 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     async (id: string) => {
       const ex = await client.get(id);
       if (ex.isWebSocket || ex.scheme.startsWith('mqtt')) {
-        notify('Resending WebSocket and MQTT sessions comes with the Streams view.');
+        setStreamId(id);
+        setViewState('streams');
         return;
       }
       const body = ex.reqBodySize ? await client.body(id, 'request', false) : undefined;
@@ -184,8 +282,21 @@ export function AppProvider({ client, children }: { client: CoreClient; children
       openReplayById,
       toast,
       notify,
+      openDraft,
+      codecInput,
+      sendToCodecs,
+      raceItems,
+      setRaceItems,
+      sendToRace,
+      streamId,
+      streamPrefill,
+      openStream,
+      paused,
+      approvals,
+      subTab,
+      openAt,
     }),
-    [client, info, connected, view, setView, activeTab, replayTabs, openReplay, closeReplay, resendNow, selectedId, query, savedViews, saveView, refreshInfo, scope, openReplayById, toast, notify],
+    [client, info, connected, view, setView, activeTab, replayTabs, openReplay, closeReplay, resendNow, selectedId, query, savedViews, saveView, refreshInfo, scope, openReplayById, toast, notify, openDraft, codecInput, sendToCodecs, raceItems, sendToRace, streamId, streamPrefill, openStream, paused, approvals, subTab, openAt],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

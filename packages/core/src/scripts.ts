@@ -193,6 +193,28 @@ interface CompiledHook {
   onResponse?: (req: SandboxMsg, res: SandboxMsg, ctx: unknown) => unknown;
 }
 
+/**
+ * Compile a script as an async function whose value is its last expression,
+ * like a console: try returning the final statement, and fall back to running
+ * it as written when that does not parse.
+ */
+function compileWithResult(code: string, name: string): vm.Script {
+  const filename = `${name}.js`;
+  const lines = code.replace(/\s+$/, '').split('\n');
+  let i = lines.length - 1;
+  while (i >= 0 && (!lines[i]!.trim() || lines[i]!.trim().startsWith('//'))) i--;
+  const last = lines[i]?.trim() ?? '';
+  if (i >= 0 && !/^(return|const|let|var|if|for|while|function|class|throw|try|\}|test\()/.test(last)) {
+    const withReturn = [...lines.slice(0, i), `return ${lines[i]!.replace(/;\s*$/, '')}`, ...lines.slice(i + 1)].join('\n');
+    try {
+      return new vm.Script(`(async () => {\n${withReturn}\n})()`, { filename });
+    } catch {
+      // not a single expression on that line; run as written
+    }
+  }
+  return new vm.Script(`(async () => {\n${code}\n})()`, { filename });
+}
+
 export class ScriptEngine {
   private hooks: CompiledHook[] = [];
   readonly stats = new Map<string, ScriptStats>();
@@ -290,8 +312,7 @@ export class ScriptEngine {
     const results: TestResult[] = [];
     try {
       // Wrap so top-level await and a final expression value both work.
-      const wrapped = `(async () => {\n${script.code}\n})()`;
-      const value = await withTimeout(Promise.resolve(new vm.Script(wrapped, { filename: `${script.name}.js` }).runInContext(context, { timeout: 2000 })), RUN_TIMEOUT_MS);
+      const value = await withTimeout(Promise.resolve(compileWithResult(script.code, script.name).runInContext(context, { timeout: 2000 })), RUN_TIMEOUT_MS);
       for (const t of tests) {
         const s = performance.now();
         try {

@@ -61,6 +61,10 @@ export class WsReplays {
     return { exchangeId: ex.id };
   }
 
+  openIds(): string[] {
+    return [...this.open.keys()];
+  }
+
   isOpen(exchangeId: string): boolean {
     return this.open.has(exchangeId);
   }

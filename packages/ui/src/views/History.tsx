@@ -2,8 +2,15 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import type { ExchangeSummary, SiteMapHost } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
-import { fmtMs, fmtSize, fmtTime, statusClass, statusText } from '../format';
+import { fmtMs, fmtSize, fmtTime, statusClass, statusText, toRawRequest } from '../format';
+import { bodyText, breakOn, mockFromExchange } from '../actions';
+import { Coverage } from './Coverage';
 import { Inspector } from './Inspector';
+
+const replayName = (path: string) => {
+  const last = (path.split('?')[0] ?? path).split('/').filter(Boolean).pop();
+  return last ? decodeURIComponent(last).slice(0, 32) : '/';
+};
 
 export const ROW_HEIGHT = 28;
 const PAGE = 300;
@@ -83,7 +90,7 @@ interface MenuState {
 }
 
 function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): void; setQuery(q: string): void; query: string }) {
-  const { openReplay, resendNow, notify } = useApp();
+  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select } = useApp();
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.querySelector('button')?.focus();
@@ -104,23 +111,67 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
   };
   const { row } = menu;
   const x = Math.min(menu.x, window.innerWidth - 280);
-  const y = Math.min(menu.y, window.innerHeight - 260);
+  const y = Math.max(8, Math.min(menu.y, window.innerHeight - 480));
   return (
     <div ref={ref} className="context-menu" role="menu" style={{ left: x, top: y }}>
       <button role="menuitem" onClick={run(() => openReplay(row))}>
         Send to replay <kbd>Ctrl R</kbd>
       </button>
-      <button
-        role="menuitem"
-        onClick={run(() => {
-          openReplay(row);
-          notify('Refreshing cookies from the jar comes with the Cookies view. Opened with cookies as captured.');
-        })}
-      >
+      <button role="menuitem" onClick={run(() => openReplay(row, { refreshCookies: true }))}>
         Send to replay, cookies from jar
       </button>
       <button role="menuitem" onClick={run(() => resendNow(row.id))}>
-        Resend now <kbd>Ctrl Shift Enter</kbd>
+        {row.isWebSocket || row.scheme.startsWith('mqtt') ? 'Open in Streams' : 'Resend now'} <kbd>Ctrl Shift Enter</kbd>
+      </button>
+      {!row.isWebSocket && !row.scheme.startsWith('mqtt') && (
+        <button
+          role="menuitem"
+          onClick={run(async () => {
+            const ex = await client.get(row.id);
+            const body = ex.reqBodySize ? await bodyText(client, row.id, 'request').catch(() => '') : '';
+            sendToRace([{ label: replayName(row.path), raw: toRawRequest(ex.method, ex.url, ex.requestHeaders, body), replayOf: row.id }]);
+          })}
+        >
+          Send to Race
+        </button>
+      )}
+      {(row.isWebSocket || row.scheme.startsWith('mqtt')) && (
+        <button role="menuitem" onClick={run(() => openStream(row.id))}>
+          Open in Streams composer
+        </button>
+      )}
+      <button role="menuitem" onClick={run(async () => sendToCodecs(await bodyText(client, row.id, 'response'), `${row.method} ${replayName(row.path)} response`))}>
+        Decode response body <kbd>Ctrl D</kbd>
+      </button>
+      <button role="menuitem" onClick={run(async () => sendToCodecs(await bodyText(client, row.id, 'request'), `${row.method} ${replayName(row.path)} request`))}>
+        Decode request body
+      </button>
+      <button
+        role="menuitem"
+        onClick={run(async () => {
+          const name = await mockFromExchange(client, await client.get(row.id));
+          notify(`Mock "${name}" added. Edit it in Rules, Mocks.`);
+        })}
+      >
+        Mock this response
+      </button>
+      <button
+        role="menuitem"
+        onClick={run(async () => {
+          await breakOn(client, row);
+          notify('Breakpoint added: the next matching request will pause.');
+        })}
+      >
+        Break on this endpoint
+      </button>
+      <button
+        role="menuitem"
+        onClick={run(() => {
+          select(row.id);
+          setView('timeline');
+        })}
+      >
+        Show in Timeline
       </button>
       <button role="menuitem" onClick={run(() => navigator.clipboard.writeText(row.url).then(() => notify('URL copied')))}>
         Copy URL
@@ -210,6 +261,7 @@ export function History() {
   const [mapVersion, setMapVersion] = useState(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [inspectorHeight, setInspectorHeight] = useState<number | null>(null);
+  const [mode, setMode] = useState<'requests' | 'coverage'>('requests');
   const listRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewport, setViewport] = useState(600);
@@ -219,6 +271,8 @@ export function History() {
   queryRef.current = query;
 
   useEffect(() => setDraft(query), [query]);
+  // A new filter (from Coverage's "Calls" or anywhere else) means: show the matching requests.
+  useEffect(() => setMode('requests'), [query]);
 
   // Apply typed filters after a short pause, so the table follows typing without a query per key.
   useEffect(() => {
@@ -357,6 +411,14 @@ export function History() {
   return (
     <div className="history">
       <div className="filterbar">
+        <div className="segmented" role="group" aria-label="History mode">
+          <button className="seg" aria-pressed={mode === 'requests'} onClick={() => setMode('requests')}>
+            Requests
+          </button>
+          <button className="seg" aria-pressed={mode === 'coverage'} onClick={() => setMode('coverage')} title="Endpoints seen per host, and paths referenced but never requested">
+            Coverage
+          </button>
+        </div>
         <button className="icon-btn" aria-pressed={showMap} title={showMap ? 'Hide site map' : 'Show site map'} onClick={() => setShowMap((s) => !s)}>
           <Icon name="filter" size={14} />
         </button>
@@ -415,7 +477,10 @@ export function History() {
       <div className="split">
         {showMap && <SiteMap query={query} setQuery={setQuery} version={mapVersion} />}
         <div className="table-wrap" style={{ display: 'flex', flexDirection: 'column' }}>
-          <div className="grid-row grid-head" role="row">
+          {mode === 'coverage' && (
+            <Coverage initialHost={rows.find((r) => r.id === selectedId)?.host ?? /(?:^|\s)host:(\S+)/.exec(query)?.[1]?.replace(/^\*\./, '') ?? null} />
+          )}
+          <div className="grid-row grid-head" role="row" style={mode === 'coverage' ? { display: 'none' } : undefined}>
             <span>Time</span>
             <span>Source</span>
             <span>Method</span>
@@ -429,6 +494,7 @@ export function History() {
           </div>
           <div
             className="vlist"
+            style={mode === 'coverage' ? { display: 'none' } : undefined}
             ref={listRef}
             role="grid"
             aria-label="Recorded exchanges"

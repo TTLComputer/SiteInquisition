@@ -176,7 +176,8 @@ export class ProxyEngine extends EventEmitter<{
               return {
                 method: msg.method,
                 url: msg.url,
-                headers: toHeaderObject(msg.headers.filter(([k]) => !k.startsWith(':'))),
+                // With a new body mockttp sets the length itself; a stale Content-Length makes the upstream reject it.
+                headers: toHeaderObject(msg.headers.filter(([k]) => !k.startsWith(':') && !(changedBody && /^(content-length|transfer-encoding)$/i.test(k)))),
                 ...(changedBody ? { body: msg.body } : {}),
               };
             } catch (err) {
@@ -205,7 +206,7 @@ export class ProxyEngine extends EventEmitter<{
               if (out.drop) return 'close';
               const changedBody = !beforeBody.equals(Buffer.from(msg.body));
               if (before === JSON.stringify([msg.status, msg.statusMessage, msg.headers]) && !changedBody) return;
-              return { statusCode: msg.status, statusMessage: msg.statusMessage, headers: toHeaderObject(msg.headers), ...(changedBody ? { body: msg.body } : {}) };
+              return { statusCode: msg.status, statusMessage: msg.statusMessage, headers: toHeaderObject(changedBody ? msg.headers.filter(([k]) => !/^(content-length|transfer-encoding)$/i.test(k)) : msg.headers), ...(changedBody ? { body: msg.body } : {}) };
             } catch (err) {
               this.emit('error', err instanceof Error ? err : new Error(String(err)));
               return;

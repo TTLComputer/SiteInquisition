@@ -171,7 +171,11 @@ function Jar() {
 }
 
 export function Cookies({ macros, vars, aws }: { macros?: React.ReactNode; vars?: React.ReactNode; aws?: React.ReactNode }) {
-  const [tab, setTab] = useState<Tab>('jar');
+  const { subTab } = useApp();
+  const [tab, setTab] = useState<Tab>((subTab.cookies as Tab) ?? 'jar');
+  useEffect(() => {
+    if (subTab.cookies) setTab(subTab.cookies as Tab);
+  }, [subTab]);
   const labels: Record<Tab, string> = { jar: 'Cookie jar', macros: 'Login macros', vars: 'Variables', aws: 'AWS SigV4' };
   const body: Record<Tab, React.ReactNode> = {
     jar: <Jar />,

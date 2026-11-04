@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ExchangeDetail, ExchangeSummary } from '../api';
+import type { AwsProfile, ExchangeDetail, ExchangeSummary, SendOptions } from '../api';
 import { useApp, type ReplayTab } from '../state';
 import { Icon } from '../components/icons';
 import { asText, fmtMs, fmtSize, hexDump, parseRawRequest, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { diffLines } from '../diff';
+import { TokenPicker } from './TokenPicker';
+
+interface Options {
+  refreshCookies: boolean;
+  applyRules: boolean;
+  loginMacro: boolean;
+  followRedirects: boolean;
+  sigv4: string;
+  ignoreTls: boolean;
+}
+const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, sigv4: '', ignoreTls: false };
 
 const binaryMarker = (n: number) => `<binary body: ${n} bytes, sent as captured>`;
 
@@ -47,13 +58,16 @@ function ResponsePane({ shown, original, compare }: { shown: Shown | null; origi
 }
 
 export function Replay({ tab }: { tab: ReplayTab }) {
-  const { client, notify, select, setView, setQuery } = useApp();
+  const { client, notify, select, setView, setQuery, sendToCodecs, sendToRace } = useApp();
   const [original, setOriginal] = useState<Shown | null>(null);
   const [originalReqBody, setOriginalReqBody] = useState<Uint8Array | null>(null);
   const [raw, setRaw] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [ignoreTls, setIgnoreTls] = useState(false);
+  const [opts, setOpts] = useState<Options>({ ...DEFAULT_OPTIONS, ...tab.options });
+  const [profiles, setProfiles] = useState<AwsProfile[]>([]);
+  const [preview, setPreview] = useState<{ sends: number; url: string | null; error: string | null } | null>(null);
+  const [draftSends, setDraftSends] = useState<ExchangeSummary[]>([]);
   const [sends, setSends] = useState<ExchangeSummary[]>([]);
   const [shownId, setShownId] = useState<string | null>(null);
   const [shown, setShown] = useState<Shown | null>(null);
@@ -61,6 +75,12 @@ export function Replay({ tab }: { tab: ReplayTab }) {
   const editorRef = useRef<HTMLTextAreaElement>(null);
 
   const reset = useCallback(async () => {
+    if (tab.draft) {
+      setOriginal(null);
+      setOriginalReqBody(null);
+      setRaw(toRawRequest(tab.draft.method, tab.draft.url, tab.draft.headers, tab.draft.body ?? ''));
+      return;
+    }
     const ex = await client.get(tab.exchangeId);
     const reqBody = ex.reqBodySize ? await client.body(ex.id, 'request', false) : new Uint8Array();
     const resBody = ex.state === 'pending' ? new Uint8Array() : await client.body(ex.id, 'response');
@@ -68,13 +88,37 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     setOriginalReqBody(reqBody);
     const text = asText(reqBody);
     setRaw(toRawRequest(ex.method, ex.url, ex.requestHeaders, text === null ? binaryMarker(reqBody.length) : text));
-  }, [client, tab.exchangeId]);
+  }, [client, tab.exchangeId, tab.draft]);
+
+  useEffect(() => {
+    client.aws().then((a) => setProfiles(a.profiles), () => undefined);
+  }, [client]);
+
+  // Token preview: how many sends, and the first one's URL, or the error a token gives.
+  useEffect(() => {
+    if (!/\{\{/.test(raw)) return setPreview(null);
+    const t = window.setTimeout(() => {
+      let parsed;
+      try {
+        parsed = parseRawRequest(raw);
+      } catch {
+        return;
+      }
+      client
+        .previewTokens([parsed.url, ...parsed.headers.map(([, v]) => v), parsed.body ?? ''], parsed.url)
+        .then((r) => setPreview({ sends: r.sends, url: r.resolved[0]?.text ?? null, error: r.resolved.find((x) => !x.ok)?.error ?? null }), () => setPreview(null));
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [client, raw]);
 
   useEffect(() => {
     reset().catch((e: Error) => setError(`Could not load the original request: ${e.message}`));
   }, [reset]);
 
-  const loadSends = useCallback(() => client.replayHistory(tab.exchangeId).then(setSends, () => undefined), [client, tab.exchangeId]);
+  const loadSends = useCallback(
+    () => (tab.exchangeId ? client.replayHistory(tab.exchangeId).then(setSends, () => undefined) : Promise.resolve()),
+    [client, tab.exchangeId],
+  );
   useEffect(() => {
     void loadSends();
   }, [loadSends]);
@@ -105,7 +149,26 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     try {
       const marker = originalReqBody && parsed.body === binaryMarker(originalReqBody.length);
       const body = marker ? originalReqBody! : parsed.body ? new TextEncoder().encode(parsed.body) : undefined;
-      const res = await client.replay({ method: parsed.method, url: parsed.url, headers: parsed.headers, body, replayOf: tab.exchangeId, ignoreTlsErrors: ignoreTls });
+      const req = { method: parsed.method, url: parsed.url, headers: parsed.headers, body, replayOf: tab.exchangeId || null };
+      const options: SendOptions = {
+        tokens: true,
+        refreshCookies: opts.refreshCookies,
+        applyRules: opts.applyRules,
+        loginMacro: opts.loginMacro,
+        followRedirects: opts.followRedirects ? 10 : 0,
+        sigv4: opts.sigv4 || undefined,
+        ignoreTlsErrors: opts.ignoreTls,
+      };
+      if (preview && preview.sends > 1) {
+        const out = await client.replayBatch(req, { ...options, concurrency: 4 });
+        notify(`Sent ${out.sends.length} of ${preview.sends}${out.errors.length ? `, ${out.errors.length} failed: ${out.errors[0]}` : ''}`);
+        if (!tab.exchangeId) setDraftSends((d) => [...d, ...out.sends]);
+        setShownId(out.sends[out.sends.length - 1]?.id ?? null);
+        await loadSends();
+        return;
+      }
+      const res = await client.replayWith(req, options);
+      if (!tab.exchangeId) setDraftSends((d) => [...d, res]);
       setShownId(res.id);
       await loadSends();
       if (res.state !== 'complete') setError(`The request failed (${res.state}). Details are in the response pane.`);
@@ -114,9 +177,51 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     } finally {
       setSending(false);
     }
-  }, [raw, originalReqBody, client, tab.exchangeId, ignoreTls, loadSends]);
+  }, [raw, originalReqBody, client, tab.exchangeId, opts, preview, loadSends, notify]);
+
+  const decodeSelection = () => {
+    const el = editorRef.current;
+    if (!el) return;
+    let s = el.selectionStart;
+    let e = el.selectionEnd;
+    if (s === e) {
+      // No selection: take the body.
+      const at = raw.search(/\r?\n\r?\n/);
+      if (at === -1) return notify('Select some text to decode, or add a body.');
+      s = raw.indexOf('\n', raw.indexOf('\n', at) + 1) + 1;
+      e = raw.length;
+    }
+    const before = raw;
+    sendToCodecs(raw.slice(s, e), `Replay ${tab.label}`, (text) => {
+      setRaw((cur) => (cur === before ? cur.slice(0, s) + text + cur.slice(e) : cur.slice(0, s) + text + cur.slice(e)));
+      setView('replay');
+    });
+  };
+
+  const insertToken = (token: string) => {
+    const el = editorRef.current;
+    const s = el?.selectionStart ?? raw.length;
+    const e = el?.selectionEnd ?? raw.length;
+    setRaw(raw.slice(0, s) + token + raw.slice(e));
+    window.setTimeout(() => {
+      el?.focus();
+      el?.setSelectionRange(s + token.length, s + token.length);
+    }, 0);
+  };
+
+  const opt = (k: keyof Options, label: string, title: string) => (
+    <label className="check" title={title}>
+      <input type="checkbox" checked={opts[k] as boolean} onChange={(e) => setOpts({ ...opts, [k]: e.target.checked })} /> {label}
+    </label>
+  );
 
   const onKey = (e: React.KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd' && e.target === editorRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      decodeSelection();
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
@@ -124,7 +229,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     }
   };
 
-  const ordered = useMemo(() => [...sends].sort((a, b) => (a.id < b.id ? -1 : 1)), [sends]);
+  const ordered = useMemo(() => [...(tab.exchangeId ? sends : draftSends)].sort((a, b) => (a.id < b.id ? -1 : 1)), [sends, draftSends, tab.exchangeId]);
   const index = ordered.findIndex((s) => s.id === shownId);
   const showOriginal = !shownId;
 
@@ -135,10 +240,10 @@ export function Replay({ tab }: { tab: ReplayTab }) {
           <span className={`mono m-${tab.method}`}>{tab.method}</span> {tab.label}
         </span>
         <button className="btn primary" onClick={() => void send()} disabled={sending || !raw} title="Ctrl Enter">
-          <Icon name="replay" size={13} /> {sending ? 'Sending...' : 'Send'}
+          <Icon name="replay" size={13} /> {sending ? 'Sending...' : preview && preview.sends > 1 ? `Send ${preview.sends}` : 'Send'}
         </button>
         <div className="segmented" role="group" aria-label="Sends">
-          <button className="seg" aria-pressed={showOriginal} onClick={() => setShownId(null)}>
+          <button className="seg" aria-pressed={showOriginal} onClick={() => setShownId(null)} disabled={!tab.exchangeId}>
             Original
           </button>
           <button className="seg" disabled={ordered.length === 0 || index <= 0} aria-label="Previous send" onClick={() => setShownId(ordered[index - 1]?.id ?? null)}>
@@ -157,24 +262,54 @@ export function Replay({ tab }: { tab: ReplayTab }) {
           </button>
         </div>
         <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-          <input type="checkbox" checked={ignoreTls} onChange={(e) => setIgnoreTls(e.target.checked)} /> Ignore TLS errors
-        </label>
-        <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
           <input type="checkbox" checked={compare} onChange={(e) => setCompare(e.target.checked)} disabled={showOriginal} /> Diff with original
         </label>
         <span style={{ flex: 1 }} />
-        <button className="btn small" onClick={() => reset().catch((e: Error) => notify(e.message))}>
-          Reset to original
+        <button className="btn small" onClick={decodeSelection} title="Decode the selection (or the body) in Codecs, then put the result back. Ctrl D">
+          Decode selection
         </button>
         <button
           className="btn small"
-          onClick={() => {
-            setQuery(`replayof:${tab.exchangeId}`);
-            setView('history');
-          }}
+          onClick={() => sendToRace([{ label: tab.label, raw, replayOf: tab.exchangeId || undefined }])}
+          title="Add this request, as edited, to the Race view"
         >
-          All sends in History
+          <Icon name="race" size={12} /> Send to Race
         </button>
+        <button className="btn small" onClick={() => reset().catch((e: Error) => notify(e.message))}>
+          {tab.draft ? 'Reset draft' : 'Reset to original'}
+        </button>
+        {tab.exchangeId && (
+          <button
+            className="btn small"
+            onClick={() => {
+              setQuery(`replayof:${tab.exchangeId}`);
+              setView('history');
+            }}
+          >
+            All sends in History
+          </button>
+        )}
+      </div>
+      <div className="replay-options" aria-label="Send options">
+        {opt('refreshCookies', 'Fresh cookies', 'Replace the Cookie header with the current cookie jar')}
+        {opt('applyRules', 'Apply rules', 'Run enabled request match and replace rules')}
+        {opt('loginMacro', 'Log in on 401/403', 'Run the login macro for this host and send again')}
+        {opt('followRedirects', 'Follow redirects', 'Follow up to 10 redirects; each hop is recorded')}
+        {opt('ignoreTls', 'Ignore TLS errors', 'Accept any upstream certificate')}
+        <label className="check" title="Sign with AWS SigV4">
+          SigV4
+          <select className="input" value={opts.sigv4} onChange={(e) => setOpts({ ...opts, sigv4: e.target.value })} aria-label="SigV4 profile">
+            <option value="">off</option>
+            {profiles.length > 0 && <option value="auto">auto (by host or captured signature)</option>}
+            {profiles.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span style={{ flex: 1 }} />
+        <TokenPicker onPick={insertToken} />
       </div>
       {error && (
         <div className="banner" role="alert" style={{ margin: 8 }}>
@@ -187,6 +322,11 @@ export function Replay({ tab }: { tab: ReplayTab }) {
             <b style={{ color: 'var(--text)' }}>Request</b>
             <span>Raw. Edit anything; Content-Length is recalculated on send.</span>
           </div>
+          {preview && (
+            <div className={`token-preview${preview.error ? ' bad' : ''}`} aria-live="polite" data-testid="token-preview">
+              {preview.error ? `Token problem: ${preview.error}` : `${preview.sends === 1 ? 'Tokens resolve to' : `${preview.sends} sends, first is`} ${preview.url ?? ''}`}
+            </div>
+          )}
           <textarea ref={editorRef} className="editor" aria-label="Raw request" spellCheck={false} value={raw} onChange={(e) => setRaw(e.target.value)} />
         </section>
         <section>

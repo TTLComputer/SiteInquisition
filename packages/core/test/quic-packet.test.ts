@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from '@siteinquisition/devkit/test';
 import { Reader, Writer } from '../src/quic/bytes.js';
 import { initialKeys, PacketKeys, SUITES } from '../src/quic/keys.js';
 import { buildPacket, decodePacketNumber, openPacket, parseHeader } from '../src/quic/packet.js';

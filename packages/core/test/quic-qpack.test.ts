@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from '@siteinquisition/devkit/test';
 import { huffmanDecode, huffmanEncode } from '../src/quic/huffman.js';
 import { QpackDecoder, QpackEncoder, STATIC_TABLE, type Field } from '../src/quic/qpack.js';
 

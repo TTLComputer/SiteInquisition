@@ -90,8 +90,10 @@ interface MenuState {
 }
 
 function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): void; setQuery(q: string): void; query: string }) {
-  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select } = useApp();
+  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select, flowPicks, setFlowPicks, openAt } = useApp();
   const ref = useRef<HTMLDivElement>(null);
+  const [tagging, setTagging] = useState(false);
+  const [tagName, setTagName] = useState('');
   useEffect(() => {
     ref.current?.querySelector('button')?.focus();
     const onDown = (e: MouseEvent) => {
@@ -173,6 +175,44 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
       >
         Show in Timeline
       </button>
+      <button
+        role="menuitem"
+        onClick={run(() => {
+          if (flowPicks.includes(row.id)) return notify('Already picked for the flow');
+          setFlowPicks([...flowPicks, row.id]);
+          notify(`${flowPicks.length + 1} picked. Make the flow in API, Flows.`);
+        })}
+      >
+        Add to flow {flowPicks.length > 0 && <span className="faint">({flowPicks.length} picked)</span>}
+      </button>
+      {flowPicks.length > 0 && (
+        <button role="menuitem" onClick={run(() => openAt('api', 'flows'))}>
+          Make a flow from the {flowPicks.length} picked
+        </button>
+      )}
+      {tagging ? (
+        <form
+          className="menu-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const t = tagName.trim();
+            if (!t) return;
+            run(async () => {
+              const moved = await client.moveTag(t, row.id);
+              notify(`Tag "${t}" is now on this request${moved.length ? `, moved from ${moved.length} other` : ''}. Use {{$${t}.field}} in requests.`);
+            })();
+          }}
+        >
+          <input className="input mono" autoFocus placeholder="tag name" value={tagName} onChange={(e) => setTagName(e.target.value)} aria-label="Reference tag" onKeyDown={(e) => e.stopPropagation()} />
+          <button className="btn small primary" type="submit">
+            Move here
+          </button>
+        </form>
+      ) : (
+        <button role="menuitem" onClick={() => setTagging(true)} title="Put a tag on this request only; {{$tag.field}} tokens then read from it">
+          Move a reference tag here...
+        </button>
+      )}
       <button role="menuitem" onClick={run(() => navigator.clipboard.writeText(row.url).then(() => notify('URL copied')))}>
         Copy URL
       </button>

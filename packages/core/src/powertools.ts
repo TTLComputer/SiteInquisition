@@ -189,6 +189,20 @@ export class PowerTools {
     if (!spec || !ep) throw new Error('no such endpoint');
     // Fill path parameters with real recorded values where a field of the same name exists.
     const values: Record<string, string> = { ...(opts.values ?? {}) };
+    // First choice: a recorded call to this very endpoint, with its path segments.
+    const names = [...ep.path.matchAll(/\{([^}]+)\}/g)].map((m) => m[1]!);
+    if (names.some((n) => values[n] === undefined)) {
+      const literal = `${spec.basePath}${ep.path.split('{')[0]}`;
+      const re = new RegExp(`^${spec.basePath.replace(/[.*+?^$()|[\]\\]/g, '\\$&')}${ep.path.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace(/\\?\{[^}]+\\?\}|\{[^}]+\}/g, '([^/]+)')}/?$`);
+      for (const e of this.core.store.search(`path:${literal} method:${ep.method}`, { limit: 200 })) {
+        const m = re.exec(e.path.split('?')[0]!);
+        if (!m) continue;
+        names.forEach((n, i) => {
+          if (values[n] === undefined && m[i + 1]) values[n] = decodeURIComponent(m[i + 1]!);
+        });
+        break;
+      }
+    }
     const fields = ep.params.some((p) => p.in === 'path' && values[p.name] === undefined) ? valueCatalog(this.core.store, { limit: 800 }) : [];
     for (const p of ep.params.filter((x) => x.in === 'path' && values[x.name] === undefined)) {
       const want = p.name.toLowerCase().replace(/[_-]/g, '');

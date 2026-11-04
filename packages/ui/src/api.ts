@@ -1,5 +1,13 @@
 import type {
   ActivityEntry,
+  ApiFlow,
+  ApiSpec,
+  FlowDraft,
+  FlowRunResult,
+  HarImport,
+  SpecCoverage,
+  ValueField,
+  ValueOrigin,
   Approval,
   AwsProfile,
   Breakpoint,
@@ -32,6 +40,14 @@ import type {
 
 export type {
   ActivityEntry,
+  ApiFlow,
+  ApiSpec,
+  FlowDraft,
+  FlowRunResult,
+  HarImport,
+  SpecCoverage,
+  ValueField,
+  ValueOrigin,
   Approval,
   AwsProfile,
   Breakpoint,
@@ -335,6 +351,22 @@ export class CoreClient {
   decide = (id: string, decision: Decision) => this.call<boolean>('mcp.decide', { id, decision });
   mcpActivity = () => this.call<ActivityEntry[]>('mcp.activity');
   replayHistory = (of: string) => this.call<ExchangeSummary[]>('replay.history', { of });
+  flows = () => this.call<ApiFlow[]>('flows.list');
+  setFlows = (flows: Array<Partial<ApiFlow>>) => this.call<ApiFlow[]>('flows.set', { flows });
+  saveFlow = (flow: Partial<ApiFlow>) => this.call<ApiFlow>('flows.save', { flow });
+  runFlow = (name: string, inputs?: Record<string, string>) => this.call<FlowRunResult>('flows.run', { name, inputs });
+  draftFlow = (ids: string[], name?: string) => this.call<FlowDraft>('flows.draft', { ids, name });
+  specs = () => this.call<ApiSpec[]>('specs.list');
+  importSpec = (text: string, name?: string) => this.call<ApiSpec>('specs.import', { text, name });
+  deleteSpec = (id: string) => this.call<boolean>('specs.delete', { id });
+  specCoverage = (host: string) => this.call<SpecCoverage>('specs.coverage', { host });
+  specRequest = (specId: string, key: string, baseUrl?: string) => this.call<{ method: string; url: string; headers: HeaderList; body: string }>('specs.request', { specId, key, baseUrl });
+  importHar = (text: string, tag?: string) => this.call<HarImport>('har.import', { text, tag });
+  exportOpenApi = (host: string) => this.call<Record<string, unknown>>('openapi.export', { host });
+  values = (p: { host?: string; query?: string; limit?: number } = {}) => this.call<ValueField[]>('values.catalog', p);
+  valueOrigin = (value: string, beforeId?: string) => this.call<ValueOrigin[]>('values.origin', { value, beforeId });
+  moveTag = (tag: string, id: string) => this.call<string[]>('tags.move', { tag, id });
+  tagValue = (ref: string) => this.call<string>('tags.value', { ref });
 }
 
 export interface SavedChain {

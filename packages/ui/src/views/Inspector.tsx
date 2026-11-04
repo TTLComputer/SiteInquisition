@@ -38,7 +38,7 @@ function BodyView({ bytes, headers, mode, truncated }: { bytes: Uint8Array | nul
   );
 }
 
-function Side({ title, first, headers, bytes, truncated, extra, onDecode }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void }) {
+function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrace }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void; onTrace?(text: string): void }) {
   const [mode, setMode] = useState<BodyMode>('pretty');
   return (
     <section>
@@ -56,6 +56,18 @@ function Side({ title, first, headers, bytes, truncated, extra, onDecode }: { ti
             }}
           >
             Decode
+          </button>
+        )}
+        {onTrace && (
+          <button
+            className="btn small"
+            title="Select a value (an id, a token) and find the earlier response that handed it out"
+            onClick={() => {
+              const sel = window.getSelection()?.toString().trim();
+              onTrace(sel ?? '');
+            }}
+          >
+            Where from?
           </button>
         )}
         <div className="segmented" role="group" aria-label={`${title} body view`}>
@@ -248,7 +260,7 @@ function Notes({ ex }: { ex: ExchangeDetail }) {
 }
 
 export function Inspector({ id, height, onClose }: { id: string; height: number | null; onClose(): void }) {
-  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream } = useApp();
+  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, traceValue } = useApp();
   const [sig, setSig] = useState<{ accessKeyId: string; region: string; service: string; date: string; signedHeaders: string[] } | null>(null);
   const [ex, setEx] = useState<ExchangeDetail | null>(null);
   const [reqBody, setReqBody] = useState<Uint8Array | null>(null);
@@ -379,6 +391,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
                 </>
               }
               onDecode={(t) => sendToCodecs(t, `${ex.method} ${ex.path.split('?')[0]} request`)}
+              onTrace={(t) => (t ? traceValue(t, ex.id) : notify('Select a value in the request first, such as an id in the path or body.'))}
             />
             <Side
               title="Response"

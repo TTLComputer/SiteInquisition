@@ -554,7 +554,7 @@ export function exportOpenApi(store: CaptureStore, host: string, opts: { title?:
       counts[kind] = (counts[kind] ?? 0) + 1;
       return `${kind}${counts[kind]! > 1 ? counts[kind] : ''}`;
     };
-    const oaPath = ep.template.replace(/\{(n|uuid|hex|ulid|token|email)\}/g, (_w, k: string) => `{${name(k === 'n' ? 'id' : k)}}`);
+    const oaPath = ep.template.replace(/\{(n|uuid|hex|ulid|token|email|ref)\}/g, (_w, k: string) => `{${name(k === 'n' ? 'id' : k)}}`);
     const reqSamples: unknown[] = [];
     const resSamples = new Map<string, unknown[]>();
     let reqType: string | undefined;

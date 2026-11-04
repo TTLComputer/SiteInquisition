@@ -137,6 +137,19 @@ export class CoreApiServer {
         return { deleted: store.deleteMatching(q!) };
       },
       'traffic.clear': () => ({ deleted: store.clearTraffic() }),
+      'lan.get': () => core.lanState(),
+      'lan.allow': (p) => {
+        core.lan.allow(str(p, 'address')!);
+        return core.lanState();
+      },
+      'lan.remove': (p) => {
+        core.lan.remove(str(p, 'address')!);
+        return core.lanState();
+      },
+      'lan.deny': (p) => {
+        core.lan.deny(str(p, 'address')!);
+        return core.lanState();
+      },
       'retention.get': () => core.retention(),
       'retention.set': (p) => core.setRetention((p.retention as never) ?? {}),
       'retention.apply': () => ({ deleted: core.applyRetention() }),

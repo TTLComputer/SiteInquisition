@@ -18,6 +18,7 @@ import { Scripts } from './views/Scripts';
 import { Api } from './views/Api';
 import { Aws, Macros, Variables } from './views/CookiesTools';
 import { ApprovalChip } from './views/Mcp';
+import { LanChip } from './views/Lan';
 import { bodyText } from './actions';
 import { toRawRequest } from './format';
 
@@ -55,7 +56,7 @@ function TitleBar() {
       )}
       <span className="chip-btn" title={connected ? 'Proxy listening' : 'Core not connected'} data-testid="listener">
         <span className="dot" style={{ background: connected && info?.proxyPort ? 'var(--ok)' : 'var(--error)' }} />
-        <span className="mono">{info?.proxyPort ? `127.0.0.1:${info.proxyPort}` : 'not listening'}</span>
+        <span className="mono">{info?.proxyPort ? `${info.allowLan ? '0.0.0.0' : '127.0.0.1'}:${info.proxyPort}` : 'not listening'}</span>
         <span className="muted">{connected ? 'Recording in scope' : 'Disconnected'}</span>
       </span>
       <button className="chip-btn" onClick={() => setView('rules')} title="Edit scope">
@@ -68,6 +69,7 @@ function TitleBar() {
         </button>
       )}
       <ApprovalChip />
+      <LanChip />
       <button
         className="chip-btn search"
         onClick={() => {

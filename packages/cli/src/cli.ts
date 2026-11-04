@@ -9,6 +9,7 @@ import {
   defaultDataDir,
   loadOrCreateCA,
   normalizeRule,
+  parseRange,
   readRuntimeInfo,
   type ExchangeSummary,
   type MqttListenerConfig,
@@ -79,15 +80,16 @@ program
   .description('run the capture proxy headless and print traffic as it happens')
   .option('--port <n>', 'proxy port (0 = any free port)', '8080')
   .option('--api-port <n>', 'core API port (0 = pick a free port)', '0')
-  .option('--lan', 'accept connections from other machines, e.g. IoT devices', false)
+  .option('--lan', 'listen on all interfaces so other machines (phones, IoT devices) can connect once allowed', false)
+  .option('--lan-allow <cidr...>', 'with --lan, let these addresses or ranges in without asking, e.g. 192.168.1.0/24')
   .option('--include <host...>', 'add include rules for these host globs before starting')
   .option('--insecure-upstream', 'skip certificate checks on upstream servers', false)
   .option('--mqtt <spec...>', 'relay MQTT: PORT=BROKER[:PORT][,tls][,listen-tls][,insecure], e.g. 1883=broker.local')
   .addOption(new Option('--quiet', 'do not print each exchange'))
-  .action(async (o: { port: string; apiPort: string; lan: boolean; include?: string[]; insecureUpstream: boolean; mqtt?: string[]; quiet?: boolean }) => {
+  .action(async (o: { port: string; apiPort: string; lan: boolean; lanAllow?: string[]; include?: string[]; insecureUpstream: boolean; mqtt?: string[]; quiet?: boolean }) => {
     const core = await Core.open({
       projectDir: projectDir(),
-      proxy: { port: Number(o.port), allowLan: o.lan, ignoreUpstreamTlsErrors: o.insecureUpstream },
+      proxy: { port: Number(o.port), allowLan: o.lan, lanAllow: o.lanAllow, ignoreUpstreamTlsErrors: o.insecureUpstream },
       mqtt: (o.mqtt ?? []).map((spec) => parseMqttSpec(spec, o.lan)),
       api: { port: Number(o.apiPort) },
     });
@@ -105,6 +107,7 @@ program
     console.error(`  core API    ws://127.0.0.1:${apiPort} (token in ${core.projectDir}/core.json)`);
     console.error(`  CA          ${info.ca.certPath}`);
     for (const m of info.mqtt) console.error(`  mqtt        ${o.lan ? '0.0.0.0' : '127.0.0.1'}:${m.port}${m.listenTls ? ' (TLS)' : ''} -> ${m.broker}`);
+    if (o.lan) console.error(`  LAN         ${core.lan.allowed.length ? `allowed: ${core.lan.allowed.join(', ')}` : 'no devices allowed yet'}; others are refused until you run \`siq lan allow ADDRESS\``);
     console.error(`  decrypting  ${info.decryptHosts.length ? info.decryptHosts.join(', ') : 'nothing yet: add hosts with --include or `siq scope add`'}`);
     if (!o.quiet) {
       core.proxy.on('response', (e) => console.log(line(e)));
@@ -119,6 +122,7 @@ program
     core.tools.mcp.on('approval', (a) =>
       console.error(paint(33, `agent wants to ${a.tool}: ${a.summary}. Approve it in the app, or run \`siq agent-writes allow\` to stop asking. It is denied in 5 minutes.`)),
     );
+    core.lan.on('pending', (p) => console.error(paint(33, `refused ${p.address} (${p.via}): not on the LAN allow list. Run \`siq lan allow ${p.address}\` to let it in.`)));
     core.proxy.on('error', (err) => console.error(paint(31, `capture error: ${err.message}`)));
     for (const relay of core.mqtt) relay.on('error', (err) => console.error(paint(31, `mqtt: ${err.message}`)));
     let closing = false;
@@ -380,6 +384,52 @@ async function confirm(question: string): Promise<boolean> {
     rl.close();
   }
 }
+
+const lan = program.command('lan').description('which other machines may connect when the proxy runs with --lan');
+
+type LanState = { enabled: boolean; allowed: string[]; pending: Array<{ address: string; via: string; attempts: number; lastSeen: number }> };
+
+lan
+  .command('list', { isDefault: true })
+  .description('show the allow list and, while the proxy runs, devices waiting to be let in')
+  .action(async () => {
+    const running = readRuntimeInfo(projectDir());
+    const state: LanState = running
+      ? ((await callRunningCore(running, 'lan.get', {})) as LanState)
+      : { enabled: false, allowed: withStore((s) => s.getMeta<string[]>('lanAllow') ?? []), pending: [] };
+    if (running && !state.enabled) console.log('LAN access is off: only this computer can connect (start with --lan to change that)');
+    console.log(state.allowed.length ? `allowed  ${state.allowed.join('\n         ')}` : 'allowed  nothing yet');
+    for (const p of state.pending) console.log(`waiting  ${p.address}  via ${p.via}, ${p.attempts} attempt${p.attempts === 1 ? '' : 's'}, last ${new Date(p.lastSeen).toTimeString().slice(0, 8)}`);
+  });
+
+const editLan = async (method: 'lan.allow' | 'lan.remove', spec: string) => {
+  parseRange(spec);
+  const running = readRuntimeInfo(projectDir());
+  if (running) await callRunningCore(running, method, { address: spec });
+  else
+    withStore((s) => {
+      const now = s.getMeta<string[]>('lanAllow') ?? [];
+      s.setMeta('lanAllow', method === 'lan.allow' ? [...new Set([...now, spec])] : now.filter((x) => x !== spec));
+    });
+};
+
+lan
+  .command('allow')
+  .description('let an address or CIDR range connect (saved in the project)')
+  .argument('<address>', 'e.g. 192.168.1.42 or 192.168.1.0/24')
+  .action(async (spec: string) => {
+    await editLan('lan.allow', spec);
+    console.log(`allowed ${spec}`);
+  });
+
+lan
+  .command('remove')
+  .description('take an address or range off the allow list (open connections stay up)')
+  .argument('<address>')
+  .action(async (spec: string) => {
+    await editLan('lan.remove', spec);
+    console.log(`removed ${spec}`);
+  });
 
 program
   .command('ca')

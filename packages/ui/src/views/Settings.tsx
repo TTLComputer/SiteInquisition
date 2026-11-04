@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useApp } from '../state';
 import { applyTheme, storedTheme, type ThemeChoice } from '../theme';
 import { McpSection } from './Mcp';
+import { LanSettings } from './Lan';
 import { StorageSettings } from './Storage';
 import { KeySettings, TechSettings } from './Tech';
 
@@ -108,10 +109,12 @@ export function Settings() {
               {info && (
                 <>
                   <Row label="Proxy listener">
-                    <span className="mono">{info.proxyPort ? `127.0.0.1:${info.proxyPort}` : 'not running'}</span>
+                    <span className="mono">{info.proxyPort ? `${info.allowLan ? '0.0.0.0' : '127.0.0.1'}:${info.proxyPort}` : 'not running'}</span>
                     <span className="muted"> · HTTP, HTTPS (CONNECT) and SOCKS on one port</span>
                   </Row>
-                  <Row label="Other devices on the LAN">{info.allowLan ? 'Allowed' : 'Refused (start with --lan to accept IoT devices)'}</Row>
+                  <Row label="Other devices on the LAN">
+                    <LanSettings />
+                  </Row>
                   <Row label="CA certificate">
                     <span className="mono">{info.ca.certPath}</span>
                   </Row>

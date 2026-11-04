@@ -220,6 +220,12 @@ type Status = 'connecting' | 'open' | 'closed';
  * JSON-RPC client for the core API. Reconnects with backoff and re-subscribes
  * to change events, so views can simply redraw from what the core says.
  */
+export interface LanState {
+  enabled: boolean;
+  allowed: string[];
+  pending: Array<{ address: string; firstSeen: number; lastSeen: number; attempts: number; via: string }>;
+}
+
 export class CoreClient {
   private ws?: WebSocket;
   private nextId = 1;
@@ -457,6 +463,10 @@ export class CoreClient {
   graphqlDrift = (targetUrl: string) => this.call<Array<{ field: string; type: string; count: number; exampleId: string }>>('graphql.drift', { targetUrl });
   curl = (id: string) => this.call<string>('export.curl', { id });
   deleteTraffic = (p: { ids: string[] } | { query: string }) => this.call<{ deleted: number }>('traffic.delete', p);
+  lan = () => this.call<LanState>('lan.get');
+  lanAllow = (address: string) => this.call<LanState>('lan.allow', { address });
+  lanRemove = (address: string) => this.call<LanState>('lan.remove', { address });
+  lanDeny = (address: string) => this.call<LanState>('lan.deny', { address });
   clearTraffic = () => this.call<{ deleted: number }>('traffic.clear');
   retention = () => this.call<{ maxAgeDays?: number; maxSizeMB?: number }>('retention.get');
   setRetention = (retention: { maxAgeDays?: number; maxSizeMB?: number }) => this.call<{ maxAgeDays?: number; maxSizeMB?: number }>('retention.set', { retention });

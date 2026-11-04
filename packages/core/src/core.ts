@@ -8,7 +8,9 @@ import { ProxyEngine, type ProxyOptions } from './proxy.js';
 import { DEFAULT_SCOPE, Scope, type ScopeConfig } from './scope.js';
 import { SeenHosts } from './seen.js';
 import { PowerTools } from './powertools.js';
+import { LanGate } from './lan.js';
 import { CaptureStore, type StoreOptions } from './store.js';
+import { newId } from './ids.js';
 
 export { VERSION } from './version.js';
 import { VERSION } from './version.js';
@@ -93,6 +95,8 @@ export class Core {
   readonly api?: CoreApiServer;
   readonly mqtt: MqttRelay[];
   readonly seen = new SeenHosts();
+  /** Who on the LAN may connect, and who is waiting to be let in. */
+  readonly lan: LanGate;
   readonly tools: PowerTools;
 
   private constructor(
@@ -103,12 +107,19 @@ export class Core {
     this.dataDir = resolve(opts.dataDir ?? defaultDataDir());
     this.store = CaptureStore.openProject(this.projectDir, { ...opts.store, actor: opts.actor });
     this.scope = new Scope(this.store.getMeta<ScopeConfig>('scope') ?? DEFAULT_SCOPE);
-    this.proxy = new ProxyEngine(this.store, this.scope, ca, opts.proxy, this.seen);
+    const saved = this.store.getMeta<string[]>('lanAllow') ?? [];
+    this.lan = new LanGate(!!opts.proxy?.allowLan || !!opts.mqtt?.some((m) => m.allowLan), [...saved, ...(opts.proxy?.lanAllow ?? [])]);
+    this.lan.on('change', () => {
+      const now = this.lan.allowed;
+      if (JSON.stringify(now) !== JSON.stringify(this.store.getMeta<string[]>('lanAllow') ?? [])) this.store.setMeta('lanAllow', now);
+      this.tools?.live.emit('change', { id: newId(), actor: this.store.actor, at: Date.now(), kind: 'lan.changed', entity: 'lan', entityId: '*', data: this.lanState() });
+    });
+    this.proxy = new ProxyEngine(this.store, this.scope, ca, { ...opts.proxy, lanGate: this.lan }, this.seen);
     if (opts.browserProxy) {
       const b = opts.browserProxy === true ? {} : opts.browserProxy;
       this.browserProxy = new ProxyEngine(this.store, this.scope, ca, { ignoreUpstreamTlsErrors: opts.proxy?.ignoreUpstreamTlsErrors, source: 'browser', port: b.port, http3: b.http3 }, this.seen);
     }
-    this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg, this.seen));
+    this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg, this.seen, this.lan));
     this.tools = new PowerTools(this);
     this.proxy.setHooks(this.tools.hooks);
     this.browserProxy?.setHooks(this.tools.hooks);
@@ -190,6 +201,10 @@ export class Core {
       const scheme = h.kinds.includes('mqtt') ? 'mqtt' : h.kinds.includes('tls') ? 'https' : 'http';
       return !this.scope.evaluate(`${scheme}://${h.host.includes(':') && !h.host.startsWith('[') ? `[${h.host}]` : h.host}/`).record;
     });
+  }
+
+  lanState() {
+    return { enabled: this.lan.enabled, allowed: this.lan.allowed, pending: this.lan.pending() };
   }
 
   info() {

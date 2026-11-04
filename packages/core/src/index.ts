@@ -43,3 +43,4 @@ export * from './exporters.js';
 export * from './graphql.js';
 export * from './insight.js';
 export * from './probes.js';
+export { LanGate, parseRange, type LanPending } from './lan.js';

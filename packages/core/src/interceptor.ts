@@ -492,10 +492,11 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
     return (this.net.address() as AddressInfo).port;
   }
 
-  listen(port: number): Promise<void> {
+  /** Listen on `host` (all interfaces when undefined). */
+  listen(port: number, host?: string): Promise<void> {
     return new Promise((resolve, reject) => {
       this.net.once('error', reject);
-      this.net.listen(port, () => {
+      this.net.listen(port, host, () => {
         this.net.off('error', reject);
         resolve();
       });

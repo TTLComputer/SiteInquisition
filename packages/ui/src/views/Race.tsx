@@ -18,7 +18,7 @@ const SYNC: Array<{ id: Sync; label: string; hint: string }> = [
  * pick how to synchronise them, and see what came back for each run.
  */
 export function Race() {
-  const { client, raceItems, setRaceItems, selectedId, notify, select, setView, setQuery } = useApp();
+  const { client, raceItems, setRaceItems, selectedId, notify, select, setView, setQuery, openReplayById } = useApp();
   const [sync, setSync] = useState<Sync>('last-byte');
   const [repeat, setRepeat] = useState(1);
   const [jitter, setJitter] = useState(0);
@@ -202,6 +202,9 @@ export function Race() {
                               }}
                             >
                               Inspect
+                            </button>{' '}
+                            <button className="btn small" title="Open this send in a replay tab, to edit and send it again" onClick={() => openReplayById(s.exchangeId).catch((e: Error) => notify(e.message))}>
+                              Replay
                             </button>
                           </td>
                         </tr>

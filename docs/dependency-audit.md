@@ -54,7 +54,7 @@ It also has costs beyond the count: the MQTT relay imports `mockttp/dist/util/ce
 
 ## Round 2: mockttp replaced
 
-The proxy is now `core/src/interceptor.ts` (about 900 lines) on `node:net`, `node:tls`, `node:http` and `node:http2`, plus `core/src/x509.ts` (about 250 lines) for the CA and leaf certificates. The shipped tree is 8 packages: react, react-dom and their 3 helpers, ws, and the two font packages.
+The proxy is now `core/src/interceptor.ts` (about 1,100 lines) on `node:net`, `node:tls`, `node:http` and `node:http2`, plus `core/src/x509.ts` (about 250 lines) for the CA and leaf certificates. The shipped tree is 8 packages: react, react-dom and their 3 helpers, ws, and the two font packages.
 
 What it does:
 
@@ -101,6 +101,16 @@ The script is 445 kB against Vite's 320 kB, because our own code is not minified
 The whole tree, dev tools included, went from 160 packages to 27. The shipped tree is still 7. What remains is React, the fonts, Electron with its downloader, TypeScript and type definitions.
 
 Tests: 166 pass. New ones cover the matchers, the runner's hook order, skipping, `.each`, timeouts, failing `beforeAll`, diff output and name filters, plus the bundler (TSX, ES and CommonJS packages, conditional exports, JSON, CSS with `@import` and fonts, branch folding, missing imports). The renderer suites pass against the new bundle, and the Electron smoke test loads it from `file://`.
+
+## Round 5: Playwright replaced
+
+The renderer suites used Playwright, which was never in `package.json`: the tests loaded a global install when one was there and skipped otherwise. `@siteinquisition/devkit/browser` (about 1,100 lines) replaces it. It launches Chromium with `--remote-debugging-pipe` and speaks the DevTools protocol over the pipe, so there is no port and no WebSocket. It offers the part of the Playwright API the tests use, so they only changed their import and launch lines: `getByRole`, `getByLabel`, `getByText`, `getByTestId`, `locator` with `hasText`, `filter`, `first`, `nth`, then `click` (with right button and position), `fill`, `press`, `check`, `selectOption`, `textContent`, `inputValue`, `boundingBox`, the keyboard and mouse, screenshots, viewport, colour scheme, clipboard permissions and page errors.
+
+Actions keep Playwright's rules: they wait for one visible, enabled element that would receive the click, and fail at once when a locator matches more than one. Roles and accessible names are computed in the page with a short version of the ARIA rules, enough for the app's markup.
+
+It finds a browser through `SIQ_CHROMIUM` or `CHROME_PATH`, then `chromium`, `google-chrome` and similar on `PATH`, then browsers other tools downloaded. The package count does not change, since Playwright was never installed by the repo, but the UI tests no longer need anything outside it apart from a browser.
+
+Tests: 172 pass. New ones cover the driver against a fixture page: role, label and text matching, strict mode, waiting for enabled, fill, check, select, key chords, right click, dragging, screenshots and page errors. All 22 renderer tests pass on it.
 
 ## Kept, and why
 

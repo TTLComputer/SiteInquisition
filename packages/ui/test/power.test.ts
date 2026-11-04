@@ -1,25 +1,18 @@
 import { existsSync, mkdirSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
+import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
 import { readRuntimeInfo } from '@siteinquisition/core';
 import { DIST, startHarness, type Harness } from './harness';
 
 // The power tools, driven through the built renderer against a real core.
-type PW = typeof import('playwright');
-let pw: PW | null = null;
-try {
-  pw = createRequire(import.meta.url)('playwright') as PW;
-} catch {
-  pw = null;
-}
 const SHOTS = process.env.SIQ_SCREENSHOTS;
-const ready = pw !== null && existsSync(join(DIST, 'index.html'));
+const ready = findChromium() !== null && existsSync(join(DIST, 'index.html'));
 
 describe.skipIf(!ready)('power tools in the renderer', () => {
   let h: Harness;
-  let browser: import('playwright').Browser;
-  let page: import('playwright').Page;
+  let browser: Browser;
+  let page: Page;
 
   const shot = async (name: string) => {
     if (!SHOTS) return;
@@ -30,7 +23,7 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
 
   beforeAll(async () => {
     h = await startHarness();
-    browser = await pw!.chromium.launch();
+    browser = await launch();
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
     await ctx.grantPermissions(['clipboard-read', 'clipboard-write']);
     page = await ctx.newPage();

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useUnsaved } from '../unsaved';
 import type { RunResult, Script, ScriptStats } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -156,6 +157,7 @@ export function Scripts() {
   const [sel, setSel] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [dirty, setDirty] = useState(false);
+  useUnsaved(dirty, 'a script');
   const [result, setResult] = useState<RunResult | null>(null);
   const [running, setRunning] = useState(false);
   const [help, setHelp] = useState(false);

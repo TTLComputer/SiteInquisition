@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useUnsaved } from '../unsaved';
 import type { Breakpoint, MockRule, Paused, ReplaceRule } from '../api';
 import { base64ToBytes, bytesToBase64 } from '../api';
 import { useApp } from '../state';
@@ -51,6 +52,7 @@ function Conditions({ r, set, withStatus }: { r: Cond; set(p: { host?: string; m
 }
 
 function SaveBar({ dirty, save, revert, add, addLabel }: { dirty: boolean; save(): void; revert(): void; add(): void; addLabel: string }) {
+  useUnsaved(dirty, addLabel.replace(/^Add (a |an )?/i, '').toLowerCase() + ' edits');
   return (
     <div className="replay-bar">
       <button className="btn small" onClick={add}>

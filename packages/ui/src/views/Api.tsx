@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { confirmLeave } from '../unsaved';
 import type { ApiFlow, ApiSpec, FlowDraft, FlowRunResult, HeaderList, SiteMapHost, ValueField, ValueOrigin } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -746,7 +747,7 @@ export function Api() {
     <div className="page" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div className="tabs" role="tablist" aria-label="API">
         {(Object.keys(labels) as ApiTab[]).map((t) => (
-          <button key={t} role="tab" className="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
+          <button key={t} role="tab" className="tab" aria-selected={tab === t} onClick={() => confirmLeave() && setTab(t)}>
             {labels[t]}
           </button>
         ))}

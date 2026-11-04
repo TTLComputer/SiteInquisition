@@ -19,6 +19,7 @@ export const SHORTCUTS: Array<[string, string]> = [
   ['Double click', 'Open a row in replay'],
   ['Ctrl D', 'Decode the selected text (or the selected exchange\'s response body) in Codecs'],
   ['Ctrl Shift R', 'Send the selected exchange to Race'],
+  ['Esc', 'Close a menu or dialog; in the filter, undo typing'],
 ];
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {

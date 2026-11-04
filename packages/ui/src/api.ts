@@ -1,5 +1,22 @@
 import type {
+  ContractResult,
+  ContractSummary,
+  Identity,
+  AuthRow,
+  NegativeResult,
+  ExchangeDiff,
+  Resource,
+  GlossaryEntry,
+  SeenOperation,
   ActivityEntry,
+  ApiFlow,
+  ApiSpec,
+  FlowDraft,
+  FlowRunResult,
+  HarImport,
+  SpecCoverage,
+  ValueField,
+  ValueOrigin,
   Approval,
   AwsProfile,
   Breakpoint,
@@ -34,7 +51,24 @@ import type {
 } from '@siteinquisition/core';
 
 export type {
+  ContractResult,
+  ContractSummary,
+  Identity,
+  AuthRow,
+  NegativeResult,
+  ExchangeDiff,
+  Resource,
+  GlossaryEntry,
+  SeenOperation,
   ActivityEntry,
+  ApiFlow,
+  ApiSpec,
+  FlowDraft,
+  FlowRunResult,
+  HarImport,
+  SpecCoverage,
+  ValueField,
+  ValueOrigin,
   Approval,
   AwsProfile,
   Breakpoint,
@@ -376,6 +410,42 @@ export class CoreClient {
   decide = (id: string, decision: Decision) => this.call<boolean>('mcp.decide', { id, decision });
   mcpActivity = () => this.call<ActivityEntry[]>('mcp.activity');
   replayHistory = (of: string) => this.call<ExchangeSummary[]>('replay.history', { of });
+  flows = () => this.call<ApiFlow[]>('flows.list');
+  setFlows = (flows: Array<Partial<ApiFlow>>) => this.call<ApiFlow[]>('flows.set', { flows });
+  saveFlow = (flow: Partial<ApiFlow>) => this.call<ApiFlow>('flows.save', { flow });
+  runFlow = (name: string, inputs?: Record<string, string>) => this.call<FlowRunResult>('flows.run', { name, inputs });
+  draftFlow = (ids: string[], name?: string) => this.call<FlowDraft>('flows.draft', { ids, name });
+  specs = () => this.call<ApiSpec[]>('specs.list');
+  importSpec = (text: string, name?: string) => this.call<ApiSpec>('specs.import', { text, name });
+  deleteSpec = (id: string) => this.call<boolean>('specs.delete', { id });
+  specCoverage = (host: string) => this.call<SpecCoverage>('specs.coverage', { host });
+  specRequest = (specId: string, key: string, baseUrl?: string) => this.call<{ method: string; url: string; headers: HeaderList; body: string }>('specs.request', { specId, key, baseUrl });
+  importHar = (text: string, tag?: string) => this.call<HarImport>('har.import', { text, tag });
+  exportOpenApi = (host: string) => this.call<Record<string, unknown>>('openapi.export', { host });
+  values = (p: { host?: string; query?: string; limit?: number } = {}) => this.call<ValueField[]>('values.catalog', p);
+  valueOrigin = (value: string, beforeId?: string) => this.call<ValueOrigin[]>('values.origin', { value, beforeId });
+  moveTag = (tag: string, id: string) => this.call<string[]>('tags.move', { tag, id });
+  tagValue = (ref: string) => this.call<string>('tags.value', { ref });
+  contractCheck = (id: string) => this.call<ContractResult | null>('contract.check', { id });
+  contractScan = (host: string) => this.call<ContractSummary>('contract.scan', { host });
+  identities = () => this.call<Identity[]>('identities.get');
+  setIdentities = (identities: Identity[]) => this.call<Identity[]>('identities.set', { identities });
+  authMatrix = (ids: string[], identities?: string[], ignoreTlsErrors = false) => this.call<{ runId: string; rows: AuthRow[] }>('authmatrix.run', { ids, identities, ignoreTlsErrors });
+  negativeTests = (id: string, max?: number, ignoreTlsErrors = false) => this.call<{ runId: string; baseline: number | null; results: NegativeResult[] }>('negative.run', { id, max, ignoreTlsErrors });
+  diffExchanges = (a: string, b: string) => this.call<ExchangeDiff>('diff.exchanges', { a, b });
+  lifecycle = (host: string) => this.call<Resource[]>('lifecycle.get', { host });
+  glossary = (host?: string) => this.call<GlossaryEntry[]>('glossary.get', { host });
+  graphqlImport = (p: { targetUrl: string; schemaUrl?: string; headers?: HeaderList; schemaHeaders?: HeaderList; method?: 'introspection' | 'suggestions' | 'traffic'; ignoreTlsErrors?: boolean }) =>
+    this.call<ApiSpec>('graphql.import', p as unknown as Record<string, unknown>);
+  graphqlOperations = (host?: string) => this.call<SeenOperation[]>('graphql.operations', { host });
+  graphqlDrift = (targetUrl: string) => this.call<Array<{ field: string; type: string; count: number; exampleId: string }>>('graphql.drift', { targetUrl });
+  curl = (id: string) => this.call<string>('export.curl', { id });
+  exportHar = (p: { ids?: string[]; query?: string }) => this.call<Record<string, unknown>>('export.har', p);
+  exportPostman = (p: { flow?: string; ids?: string[]; name?: string }) => this.call<Record<string, unknown>>('export.postman', p);
+  flowToTest = (name: string) => this.call<Script>('flows.toTest', { name });
+  endpointNotes = () => this.call<Record<string, { notes: string; tags: string[]; updatedAt: number; by: string }>>('notes.endpoints');
+  setEndpointNote = (key: string, notes: string, tags: string[] = []) => this.call<Record<string, { notes: string; tags: string[] }>>('notes.setEndpoint', { key, notes, tags });
+  noteFor = (id: string) => this.call<{ key: string; notes: string; tags: string[] } | null>('notes.forExchange', { id });
 }
 
 export interface SavedChain {

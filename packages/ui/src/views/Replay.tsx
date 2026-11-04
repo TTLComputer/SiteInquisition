@@ -15,8 +15,12 @@ interface Options {
   sigv4: string;
   ignoreTls: boolean;
   protocol: 'h1' | 'h3';
+  /** Run this flow before each send; its variables fill {{var:...}}. */
+  flow: string;
+  /** Codec chain the body is encoded with after tokens are filled in, e.g. "base64,json". */
+  encode: string;
 }
-const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false, protocol: 'h1' };
+const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false, protocol: 'h1', flow: '', encode: '' };
 
 const binaryMarker = (n: number) => `<binary body: ${n} bytes, sent as captured>`;
 
@@ -68,6 +72,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
   const [sending, setSending] = useState(false);
   const [opts, setOpts] = useState<Options>({ ...DEFAULT_OPTIONS, ...tab.options });
   const [profiles, setProfiles] = useState<AwsProfile[]>([]);
+  const [flowNames, setFlowNames] = useState<string[]>([]);
   const [preview, setPreview] = useState<{ sends: number; url: string | null; error: string | null } | null>(null);
   const [draftSends, setDraftSends] = useState<ExchangeSummary[]>([]);
   const [sends, setSends] = useState<ExchangeSummary[]>([]);
@@ -94,6 +99,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
 
   useEffect(() => {
     client.aws().then((a) => setProfiles(a.profiles), () => undefined);
+    client.flows().then((f) => setFlowNames(f.map((x) => x.name)), () => undefined);
   }, [client]);
 
   // Token preview: how many sends, and the first one's URL, or the error a token gives.
@@ -162,6 +168,8 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         sigv4: opts.sigv4 || undefined,
         ignoreTlsErrors: opts.ignoreTls,
         protocol: opts.protocol === 'h3' ? 'h3' : undefined,
+        flow: opts.flow || undefined,
+        bodyChain: opts.encode ? opts.encode.split(/[,>\s]+/).filter(Boolean) : undefined,
       };
       if (preview && preview.sends > 1) {
         const out = await client.replayBatch(req, { ...options, concurrency: 4 });
@@ -319,6 +327,21 @@ export function Replay({ tab }: { tab: ReplayTab }) {
               </option>
             ))}
           </select>
+        </label>
+        <label className="check" title="Run a flow before each send (a batch runs it once per send); its variables fill {{var:name}}">
+          Run flow first
+          <select className="input" value={opts.flow} onChange={(e) => setOpts({ ...opts, flow: e.target.value })} aria-label="Run flow first">
+            <option value="">none</option>
+            {flowNames.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="check" title="Write the body decoded; after tokens are filled in it is encoded with this codec chain, outermost first (e.g. base64,json)">
+          Encode body
+          <input className="input mono" value={opts.encode} placeholder="none" onChange={(e) => setOpts({ ...opts, encode: e.target.value })} aria-label="Encode body with" style={{ width: 110 }} />
         </label>
         <span style={{ flex: 1 }} />
         <TokenPicker onPick={insertToken} />

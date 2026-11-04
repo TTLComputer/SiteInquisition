@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import type { ExchangeSummary, HostTechSummary, SiteMapHost } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
-import { fmtMs, fmtSize, fmtTime, statusClass, statusText, toRawRequest } from '../format';
+import { fmtMs, fmtSize, fmtTime, statusClass, statusText, toRawRequest, downloadText } from '../format';
 import { bodyText, breakOn, mockFromExchange } from '../actions';
 import { Coverage } from './Coverage';
 import { Inspector } from './Inspector';
@@ -101,8 +101,10 @@ interface MenuState {
 }
 
 function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): void; setQuery(q: string): void; query: string }) {
-  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select } = useApp();
+  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select, flowPicks, setFlowPicks, openAt, compareMark, setCompareMark, sendToApi } = useApp();
   const ref = useRef<HTMLDivElement>(null);
+  const [tagging, setTagging] = useState(false);
+  const [tagName, setTagName] = useState('');
   useEffect(() => {
     ref.current?.querySelector('button')?.focus();
     const onDown = (e: MouseEvent) => {
@@ -184,8 +186,74 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
       >
         Show in Timeline
       </button>
+      <button
+        role="menuitem"
+        onClick={run(() => {
+          if (flowPicks.includes(row.id)) return notify('Already picked for the flow');
+          setFlowPicks([...flowPicks, row.id]);
+          notify(`${flowPicks.length + 1} picked. Make the flow in API, Flows.`);
+        })}
+      >
+        Add to flow {flowPicks.length > 0 && <span className="faint">({flowPicks.length} picked)</span>}
+      </button>
+      {flowPicks.length > 0 && (
+        <button role="menuitem" onClick={run(() => openAt('api', 'flows'))}>
+          Make a flow from the {flowPicks.length} picked
+        </button>
+      )}
+      {tagging ? (
+        <form
+          className="menu-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const t = tagName.trim();
+            if (!t) return;
+            run(async () => {
+              const moved = await client.moveTag(t, row.id);
+              notify(`Tag "${t}" is now on this request${moved.length ? `, moved from ${moved.length} other` : ''}. Use {{$${t}.field}} in requests.`);
+            })();
+          }}
+        >
+          <input className="input mono" autoFocus placeholder="tag name" value={tagName} onChange={(e) => setTagName(e.target.value)} aria-label="Reference tag" onKeyDown={(e) => e.stopPropagation()} />
+          <button className="btn small primary" type="submit">
+            Move here
+          </button>
+        </form>
+      ) : (
+        <button role="menuitem" onClick={() => setTagging(true)} title="Put a tag on this request only; {{$tag.field}} tokens then read from it">
+          Move a reference tag here...
+        </button>
+      )}
+      {compareMark && compareMark !== row.id ? (
+        <button role="menuitem" onClick={run(() => sendToApi('compare', [compareMark, row.id]))}>
+          Compare with the marked request
+        </button>
+      ) : (
+        <button
+          role="menuitem"
+          onClick={run(() => {
+            setCompareMark(row.id);
+            notify('Marked. Right-click another request and choose Compare with the marked request.');
+          })}
+        >
+          Mark to compare
+        </button>
+      )}
+      {!row.isWebSocket && !row.scheme.startsWith('mqtt') && (
+        <>
+          <button role="menuitem" onClick={run(() => sendToApi('auth', [row.id]))} title="Send it again as each identity (other users, no auth) and compare the answers">
+            Try as other users (auth matrix)
+          </button>
+          <button role="menuitem" onClick={run(() => sendToApi('negative', [row.id]))} title="Send broken variants: wrong types, missing fields, huge and special values">
+            Run negative tests
+          </button>
+        </>
+      )}
       <button role="menuitem" onClick={run(() => navigator.clipboard.writeText(row.url).then(() => notify('URL copied')))}>
         Copy URL
+      </button>
+      <button role="menuitem" onClick={run(async () => navigator.clipboard.writeText(await client.curl(row.id)).then(() => notify('Copied as curl')))}>
+        Copy as curl
       </button>
       <button role="menuitem" onClick={run(() => setQuery(withFilter(query, 'host', row.host)))}>
         Only this host
@@ -474,6 +542,22 @@ export function History() {
           }}
         >
           Save view
+        </button>
+        <button
+          className="btn small"
+          title="Save the requests that match the filter as a HAR file"
+          onClick={() =>
+            void client.exportHar({ query }).then(
+              (har) => {
+                const n = ((har.log as { entries: unknown[] }).entries ?? []).length;
+                downloadText(`siteinquisition-${new Date().toISOString().slice(0, 10)}.har`, JSON.stringify(har, null, 2));
+                notify(`Exported ${n} requests as HAR`);
+              },
+              (e: Error) => notify(e.message),
+            )
+          }
+        >
+          Export HAR
         </button>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }} className="muted">
           <button className="switch" role="switch" aria-checked={follow} aria-label="Live follow" onClick={() => setFollow((f) => !f)} />

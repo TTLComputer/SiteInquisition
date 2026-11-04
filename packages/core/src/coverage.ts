@@ -40,6 +40,8 @@ const SEGMENT_RULES: Array<[RegExp, string]> = [
   [/^[0-9A-HJKMNP-TV-Z]{26}$/, '{ulid}'],
   [/^(?=.*\d)[A-Za-z0-9_-]{20,}$/, '{token}'],
   [/^[^@/]+@[^@/]+\.[a-z]{2,}$/i, '{email}'],
+  // Business references like PO-7781, INV_20231, SKU12345.
+  [/^[A-Za-z]{1,6}[-_]?\d{3,}$/, '{ref}'],
 ];
 
 export function pathTemplate(path: string): string {

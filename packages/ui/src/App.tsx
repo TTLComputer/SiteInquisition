@@ -15,6 +15,7 @@ import { Race } from './views/Race';
 import { H3Lab } from './views/H3Lab';
 import { Streams } from './views/Streams';
 import { Scripts } from './views/Scripts';
+import { Api } from './views/Api';
 import { Aws, Macros, Variables } from './views/CookiesTools';
 import { ApprovalChip } from './views/Mcp';
 import { bodyText } from './actions';
@@ -32,6 +33,7 @@ const NAV: Array<{ id: ViewId; label: string }> = [
   { id: 'cookies', label: 'Cookies' },
   { id: 'streams', label: 'Streams' },
   { id: 'scripts', label: 'Scripts' },
+  { id: 'api', label: 'API' },
   { id: 'settings', label: 'Settings' },
 ];
 
@@ -82,13 +84,14 @@ function TitleBar() {
 }
 
 function NavRail() {
-  const { view, setView, info, replayTabs, savedViews, setQuery, scope, raceItems, paused } = useApp();
+  const { view, setView, info, replayTabs, savedViews, setQuery, scope, raceItems, paused, flowPicks } = useApp();
   const badge: Partial<Record<ViewId, string>> = {
     history: info ? fmtCount(info.stats.exchanges) : undefined,
     replay: replayTabs.length ? String(replayTabs.length) : undefined,
     race: raceItems.length ? String(raceItems.length) : undefined,
     rules: paused.length ? `${paused.length} paused` : scope ? String(scope.rules.length) : undefined,
     streams: info?.mqtt.length ? `${info.mqtt.length} mqtt` : undefined,
+    api: flowPicks.length ? `${flowPicks.length} picked` : undefined,
   };
   return (
     <nav className="nav" aria-label="Views">
@@ -276,6 +279,7 @@ export function App() {
           {view === 'h3' && <H3Lab />}
           {view === 'streams' && <Streams />}
           {view === 'scripts' && <Scripts />}
+          {view === 'api' && <Api />}
           {view === 'rules' && <Rules />}
           {view === 'settings' && <Settings />}
         </main>

@@ -111,3 +111,12 @@ export function parseRawRequest(raw: string): ParsedRequest {
   }
   return { method: m[1]!.toUpperCase(), url: url.href, headers, body };
 }
+
+/** Save text as a file through the browser's download. */
+export function downloadText(name: string, text: string, type = 'application/json') {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}

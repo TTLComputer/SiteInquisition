@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { CoverageReport, SiteMapHost } from '../api';
+import type { CoverageReport, SiteMapHost, SpecCoverage } from '../api';
 import { useApp } from '../state';
 import { fmtMs, fmtTime } from '../format';
 import { templatePrefix } from '../actions';
@@ -26,7 +26,8 @@ function toMarkdown(r: CoverageReport): string {
  * scripts mention that nobody has requested yet.
  */
 export function Coverage({ initialHost }: { initialHost: string | null }) {
-  const { client, setQuery, select, openReplayById, openDraft, notify } = useApp();
+  const { client, setQuery, select, openReplayById, openDraft, notify, openAt } = useApp();
+  const [docs, setDocs] = useState<SpecCoverage | null>(null);
   const [hosts, setHosts] = useState<SiteMapHost[]>([]);
   const [host, setHost] = useState<string | null>(initialHost);
   const [report, setReport] = useState<CoverageReport | null>(null);
@@ -52,6 +53,7 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
       .coverage(host)
       .then((r) => (setReport(r), setError(null)), (e: Error) => setError(e.message))
       .finally(() => setLoading(false));
+    client.specCoverage(host).then(setDocs, () => setDocs(null));
   }, [client, host]);
   useEffect(load, [load]);
 
@@ -79,6 +81,34 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
   };
 
   const neverOk = report?.endpoints.filter((e) => !Object.keys(e.statuses).some((s) => /^[23]/.test(s))).length ?? 0;
+  const hasDocs = !!docs && docs.documented.length > 0;
+  const undocumented = new Set(docs?.undocumented ?? []);
+  const neverCalled = docs?.documented.filter((d) => d.count === 0) ?? [];
+
+  const exportSpec = async () => {
+    if (!host) return;
+    try {
+      const doc = await client.exportOpenApi(host);
+      const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${host}-openapi.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      notify(`Exported ${Object.keys((doc.paths as object) ?? {}).length} paths as OpenAPI 3.1`);
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  const tryDocumented = async (specId: string, key: string) => {
+    try {
+      const r = await client.specRequest(specId, key);
+      openDraft({ method: r.method, url: r.url, headers: r.headers, body: r.body }, key.split(' ').pop()!.split('/').filter(Boolean).pop() ?? key);
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
 
   return (
     <div className="coverage" aria-label="Endpoint coverage">
@@ -103,6 +133,12 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
         <button className="btn small" disabled={!report} onClick={() => report && navigator.clipboard.writeText(toMarkdown(report)).then(() => notify('Copied as Markdown'), () => notify('Could not copy'))}>
           Copy as Markdown
         </button>
+        <button className="btn small" disabled={!host} onClick={() => void exportSpec()} title="Write an OpenAPI 3.1 file from what was seen on this host, with schemas inferred from real bodies">
+          Export OpenAPI
+        </button>
+        <button className="btn small" onClick={() => openAt('api', 'specs')} title="Import OpenAPI, Swagger, Postman or HAR to compare with what was seen">
+          Import API file
+        </button>
       </div>
       {error && <div className="empty error-text">Could not build coverage: {error}</div>}
       {report && (
@@ -110,6 +146,12 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
           <div className="coverage-summary" aria-live="polite">
             <b>{report.endpoints.length}</b> endpoints from <b>{report.scanned}</b> exchanges · <b className={neverOk ? 's-4' : ''}>{neverOk}</b> never succeeded ·{' '}
             <b>{report.unexercised.length}</b> referenced but never requested
+            {hasDocs && (
+              <>
+                {' '}
+                · <b>{docs!.documented.length - neverCalled.length}</b> of {docs!.documented.length} documented called · <b className={undocumented.size ? 's-4' : ''}>{undocumented.size}</b> undocumented
+              </>
+            )}
           </div>
           <table className="data-table coverage-table">
             <thead>
@@ -122,6 +164,7 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                 <th>Types</th>
                 <th>Slowest</th>
                 <th>Last seen</th>
+                {hasDocs && <th>Docs</th>}
                 <th />
               </tr>
             </thead>
@@ -151,6 +194,9 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                   <td className="faint">{e.contentTypes.join(', ')}</td>
                   <td className="mono">{fmtMs(e.maxMs)}</td>
                   <td className="faint">{fmtTime(e.lastAt)}</td>
+                  {hasDocs && (
+                    <td>{undocumented.has(`${e.method} ${e.template}`) ? <span className="chip s-4" title="No imported API file describes this endpoint">undocumented</span> : <span className="faint">documented</span>}</td>
+                  )}
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button
                       className="btn small"
@@ -170,6 +216,33 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
               ))}
             </tbody>
           </table>
+          {neverCalled.length > 0 && (
+            <>
+              <div className="panel-title" style={{ margin: '16px 12px 4px' }}>
+                Documented but never called
+              </div>
+              <div className="faint" style={{ margin: '0 12px 8px', fontSize: 12 }}>
+                Endpoints the imported API files describe that nothing has requested. Try them to see whether they exist and what they need.
+              </div>
+              <table className="data-table" aria-label="Documented but never called">
+                <tbody>
+                  {neverCalled.map((d) => (
+                    <tr key={`${d.specId} ${d.endpoint.key}`}>
+                      <td className={`mono m-${d.endpoint.method}`}>{d.endpoint.method}</td>
+                      <td className="mono">{d.endpoint.path}</td>
+                      <td className="faint">{d.endpoint.summary}</td>
+                      <td className="faint">{d.specName}</td>
+                      <td>
+                        <button className="btn small" onClick={() => void tryDocumented(d.specId, d.endpoint.key)}>
+                          Try it
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
           {report.unexercised.length > 0 && (
             <>
               <div className="panel-title" style={{ margin: '16px 12px 4px' }}>

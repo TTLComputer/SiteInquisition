@@ -13,6 +13,8 @@ import type { CaptureStore, ExchangeSource, ExchangeSummary, HeaderList, Timings
 export interface ProxyOptions {
   /** Port to listen on. 0 or undefined lets the OS pick a free port. */
   port?: number;
+  /** Largest body held whole so hooks can change it; bigger ones stream through. Default 64 MB. */
+  maxBufferBytes?: number;
   /**
    * Accept connections from other machines (phones, IoT devices). When false
    * (the default) only loopback clients can connect.
@@ -227,6 +229,8 @@ export class ProxyEngine extends EventEmitter<{
       // Refuse other machines before any byte is read unless LAN access is on (this covers tunnels and TLS passthrough too).
       acceptClient: this.opts.allowLan ? undefined : (socket) => LOOPBACK.test(socket.remoteAddress ?? ''),
       hooks: this.interceptorHooks(),
+      maxCaptureBytes: this.store.maxBodyBytes,
+      maxBufferBytes: this.opts.maxBufferBytes,
     });
     this.subscribe(server);
     const port = this.listenPort ?? (this.opts.port || (await freePort()));
@@ -326,6 +330,7 @@ export class ProxyEngine extends EventEmitter<{
       httpVersion: req.httpVersion,
       headers: req.headers,
       body: req.body,
+      bodySize: req.bodySize,
       isWebSocket,
       flowId: redirect?.flowId,
       parentId: redirect?.exchangeId,
@@ -356,6 +361,7 @@ export class ProxyEngine extends EventEmitter<{
           statusMessage: res.statusMessage,
           headers: res.headers,
           body: res.body,
+          bodySize: res.bodySize,
           timings: timingsFrom(res.timings),
         });
         if (res.status >= 300 && res.status < 400) {

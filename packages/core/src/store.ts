@@ -71,6 +71,8 @@ export interface NewRequest {
   httpVersion: string;
   headers: HeaderList;
   body?: Uint8Array;
+  /** The real body size when `body` holds only its start (-1: unknown). */
+  bodySize?: number;
   isWebSocket?: boolean;
   /** The exchange this one is a replay of. */
   replayOf?: string | null;
@@ -82,6 +84,8 @@ export interface NewResponse {
   statusMessage?: string;
   headers: HeaderList;
   body?: Uint8Array;
+  /** The real body size when `body` holds only its start (-1: unknown). */
+  bodySize?: number;
   timings?: Timings;
 }
 
@@ -330,7 +334,8 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   readonly db: DatabaseSync;
   private readonly statements = new Map<string, StatementSync>();
   readonly actor: string;
-  private readonly maxBodyBytes: number;
+  /** Bodies are kept up to this size. */
+  readonly maxBodyBytes: number;
   private readonly maxIndexBytes: number;
 
   constructor(file: string, opts: StoreOptions = {}) {
@@ -448,8 +453,9 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   // ---------- blobs ----------
 
-  private putBlob(data: Uint8Array): { sha: string; size: number; truncated: boolean } {
-    const truncated = data.byteLength > this.maxBodyBytes;
+  /** `fullSize`: the body's real size when `data` is only its start (-1: unknown). */
+  private putBlob(data: Uint8Array, fullSize?: number): { sha: string; size: number; truncated: boolean } {
+    const truncated = data.byteLength > this.maxBodyBytes || (fullSize !== undefined && fullSize !== data.byteLength);
     const body = truncated ? data.subarray(0, this.maxBodyBytes) : data;
     const sha = createHash('sha256').update(body).digest('hex');
     const exists = this.q('SELECT 1 FROM blob WHERE sha256 = ?').get(sha);
@@ -465,7 +471,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       }
       this.q('INSERT INTO blob (sha256, size, compression, data) VALUES (?, ?, ?, ?)').run(sha, body.byteLength, compression, stored);
     }
-    return { sha, size: data.byteLength, truncated };
+    return { sha, size: fullSize !== undefined && fullSize >= 0 ? fullSize : data.byteLength, truncated };
   }
 
   getBlob(sha: string): Uint8Array | undefined {
@@ -492,7 +498,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
         flowId = newId();
         this.q('INSERT INTO flow (id, kind, created_at) VALUES (?, ?, ?)').run(flowId, 'single', req.startedAt);
       }
-      const body = req.body && req.body.byteLength ? this.putBlob(req.body) : undefined;
+      const body = req.body && req.body.byteLength ? this.putBlob(req.body, req.bodySize) : undefined;
       const scheme = url.protocol.replace(/:$/, '');
       const port = url.port ? Number(url.port) : defaultPort(scheme);
       this.db
@@ -538,7 +544,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   completeResponse(id: string, res: NewResponse): ExchangeSummary {
     return this.tx(() => {
-      const body = res.body && res.body.byteLength ? this.putBlob(res.body) : undefined;
+      const body = res.body && res.body.byteLength ? this.putBlob(res.body, res.bodySize) : undefined;
       const info = this.db
         .prepare(
           `UPDATE exchange SET status = ?, status_message = ?, res_headers = ?, res_body = ?, res_body_size = ?, res_truncated = ?,

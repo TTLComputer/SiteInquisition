@@ -23,7 +23,40 @@ export interface EndpointCoverage {
   exampleId: string;
   /** Slowest duration seen, ms. */
   maxMs: number | null;
+  /** How requests authenticated: "bearer", "basic", "cookie", "api key", another Authorization scheme, or "none". */
+  auth: string[];
+  /** Query and body fields with the JSON types seen and one example value. */
+  params: ParamInfo[];
 }
+
+export interface ParamInfo {
+  in: 'query' | 'body';
+  name: string;
+  types: string[];
+  example: string;
+}
+
+const API_KEY_HEADER = /^(x-api-key|api-key|apikey|x-auth-token|x-access-token|x-session-token)$/i;
+
+/** How a request proves who it is, from its headers. */
+export function authKinds(headers: Array<[string, string]>): string[] {
+  const out: string[] = [];
+  for (const [k, v] of headers) {
+    const name = k.toLowerCase();
+    if (name === 'authorization') {
+      const scheme = v.trim().split(/\s+/)[0]!.toLowerCase();
+      out.push(scheme === 'bearer' ? 'bearer' : scheme === 'basic' ? 'basic' : scheme.startsWith('aws4') ? 'sigv4' : scheme || 'authorization');
+    } else if (name === 'cookie' && v.trim()) out.push('cookie');
+    else if (API_KEY_HEADER.test(k)) out.push('api key');
+  }
+  return out.length ? [...new Set(out)] : ['none'];
+}
+
+const jsonType = (v: unknown) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
+const example = (v: unknown) => {
+  const t = typeof v === 'string' ? v : JSON.stringify(v);
+  return t.length > 60 ? `${t.slice(0, 57)}...` : t;
+};
 
 export interface CoverageReport {
   host: string;
@@ -61,28 +94,29 @@ export function pathTemplate(path: string): string {
 
 const templateRegex = (t: string) => new RegExp(`^${t.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace(/\{[a-z]+\}/g, '[^/]+')}/?$`);
 
-function bodyParams(text: string, contentType: string): string[] {
+/** Body fields with a value each: JSON keys (dotted, [] for arrays, three levels deep) or form fields. */
+function bodyParams(text: string, contentType: string): Array<[string, unknown]> {
   const t = text.trim();
   if (/json/i.test(contentType) || t.startsWith('{')) {
     try {
       const v = JSON.parse(t) as unknown;
-      const keys = new Set<string>();
+      const out: Array<[string, unknown]> = [];
       const walk = (x: unknown, prefix: string, depth: number) => {
         if (depth > 3 || !x || typeof x !== 'object') return;
         if (Array.isArray(x)) return walk(x[0], `${prefix}[]`, depth + 1);
         for (const [k, val] of Object.entries(x)) {
           const name = prefix ? `${prefix}.${k}` : k;
-          keys.add(name);
+          out.push([name, val]);
           walk(val, name, depth + 1);
         }
       };
       walk(v, '', 0);
-      return [...keys];
+      return out;
     } catch {
       return [];
     }
   }
-  if (/x-www-form-urlencoded/i.test(contentType) || /^[\w.%[\]-]+=/.test(t)) return [...new Set([...new URLSearchParams(t).keys()])];
+  if (/x-www-form-urlencoded/i.test(contentType) || /^[\w.%[\]-]+=/.test(t)) return [...new URLSearchParams(t).entries()];
   return [];
 }
 
@@ -122,7 +156,7 @@ export function coverage(store: CaptureStore, host: string, limit = 5000): Cover
     const key = `${e.method} ${template}`;
     let c = map.get(key);
     if (!c) {
-      c = { method: e.method, template, count: 0, statuses: {}, queryParams: [], bodyParams: [], contentTypes: [], sources: [], firstAt: e.startedAt, lastAt: e.startedAt, exampleId: e.id, maxMs: null, bestStatus: 999 };
+      c = { method: e.method, template, count: 0, statuses: {}, queryParams: [], bodyParams: [], contentTypes: [], sources: [], firstAt: e.startedAt, lastAt: e.startedAt, exampleId: e.id, maxMs: null, auth: [], params: [], bestStatus: 999 };
       map.set(key, c);
     }
     c.count++;
@@ -134,14 +168,30 @@ export function coverage(store: CaptureStore, host: string, limit = 5000): Cover
     if (e.durationMs !== null) c.maxMs = Math.max(c.maxMs ?? 0, e.durationMs);
     if (e.status !== null && e.status < c.bestStatus) ((c.bestStatus = e.status), (c.exampleId = e.id));
     const q = e.path.indexOf('?');
-    if (q !== -1) for (const k of new URLSearchParams(e.path.slice(q + 1)).keys()) if (!c.queryParams.includes(k)) c.queryParams.push(k);
+    const note = (where: 'query' | 'body', name: string, value: unknown) => {
+      const ep = c!;
+      let p = ep.params.find((x) => x.in === where && x.name === name);
+      if (!p) ep.params.push((p = { in: where, name, types: [], example: /pass|secret|token|api.?key|credential/i.test(name) ? '(hidden)' : example(value) }));
+      const t = where === 'query' ? 'string' : jsonType(value);
+      if (!p.types.includes(t)) p.types.push(t);
+    };
+    if (q !== -1)
+      for (const [k, v] of new URLSearchParams(e.path.slice(q + 1)).entries()) {
+        if (!c.queryParams.includes(k)) c.queryParams.push(k);
+        note('query', k, v);
+      }
     if (c.count <= 50) {
       const ex = store.getExchange(e.id);
       if (!ex) continue;
+      for (const a of authKinds(ex.requestHeaders)) if (!c.auth.includes(a)) c.auth.push(a);
       const reqType = ex.requestHeaders.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '';
       if (e.reqBodySize > 0 && e.reqBodySize < 65_536) {
         const b = store.getBody(e.id, 'request', true);
-        if (b && looksLikeText(b)) for (const p of bodyParams(bytesToString(b), reqType)) if (!c.bodyParams.includes(p)) c.bodyParams.push(p);
+        if (b && looksLikeText(b))
+          for (const [p, v] of bodyParams(bytesToString(b), reqType)) {
+            if (!c.bodyParams.includes(p)) c.bodyParams.push(p);
+            note('body', p, v);
+          }
       }
       const resType = ex.responseHeaders?.find(([k]) => k.toLowerCase() === 'content-type')?.[1]?.split(';')[0]?.trim();
       if (resType && !c.contentTypes.includes(resType)) c.contentTypes.push(resType);
@@ -157,7 +207,7 @@ export function coverage(store: CaptureStore, host: string, limit = 5000): Cover
       }
     }
   }
-  const endpoints = [...map.values()].map(({ bestStatus: _b, ...c }) => ({ ...c, queryParams: c.queryParams.sort(), bodyParams: c.bodyParams.sort() }));
+  const endpoints = [...map.values()].map(({ bestStatus: _b, ...c }) => ({ ...c, queryParams: c.queryParams.sort(), bodyParams: c.bodyParams.sort(), params: c.params.sort((a, b) => a.in.localeCompare(b.in) || a.name.localeCompare(b.name)) }));
   endpoints.sort((a, b) => a.template.localeCompare(b.template) || a.method.localeCompare(b.method));
   const patterns = endpoints.map((e) => templateRegex(e.template));
   const unexercised = [...referenced.entries()]

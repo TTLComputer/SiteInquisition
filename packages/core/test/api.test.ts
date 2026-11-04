@@ -4,7 +4,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { WebSocket } from 'ws';
 import { Core, readRuntimeInfo, type Change } from '@siteinquisition/core';
 
 let tmp: string;
@@ -27,12 +26,16 @@ beforeAll(async () => {
   await core.start();
   const info = readRuntimeInfo(join(tmp, 'p'))!;
   ws = new WebSocket(`ws://127.0.0.1:${info.apiPort}/?token=${info.token}`);
-  ws.on('message', (raw) => {
-    const msg = JSON.parse(raw.toString());
+  // Node's built-in client, so the in-house server is checked against an independent implementation.
+  ws.addEventListener('message', (ev) => {
+    const msg = JSON.parse(String(ev.data));
     if (msg.method === 'change') notifications.push(msg.params);
     else pending.get(msg.id)?.(msg);
   });
-  await new Promise((r, j) => ws.once('open', r).once('error', j));
+  await new Promise((r, j) => {
+    ws.addEventListener('open', r, { once: true });
+    ws.addEventListener('error', j, { once: true });
+  });
 });
 
 afterAll(async () => {
@@ -43,9 +46,14 @@ afterAll(async () => {
 
 describe('core API', () => {
   it('rejects connections without the token', async () => {
+    const { connectWebSocket, UnexpectedResponse } = await import('../src/websocket.js');
+    const err = await connectWebSocket(`ws://127.0.0.1:${core.api!.port}/?token=wrong`).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnexpectedResponse);
+    expect((err as InstanceType<typeof UnexpectedResponse>).status).toBe(401);
+    // The built-in client refuses too.
     const bad = new WebSocket(`ws://127.0.0.1:${core.api!.port}/?token=wrong`);
-    const err = await new Promise<Error>((r) => bad.once('error', r));
-    expect(err.message).toMatch(/401/);
+    const failed = await new Promise<boolean>((r) => bad.addEventListener('error', () => r(true), { once: true }));
+    expect(failed).toBe(true);
   });
 
   it('reports core info', async () => {

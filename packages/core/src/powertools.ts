@@ -298,8 +298,10 @@ export class PowerTools {
     return false;
   }
 
-  liveStreams(): { mqtt: string[]; ws: string[] } {
-    return { mqtt: this.core.mqtt.flatMap((m) => m.liveSessions()), ws: this.ws.openIds() };
+  /** Open streams. ws holds replay connections and proxied WebSockets; wsProxied only the proxied ones, which take frames in either direction. */
+  liveStreams(): { mqtt: string[]; ws: string[]; wsProxied: string[] } {
+    const proxied = [...this.core.proxy.liveWebSockets(), ...(this.core.browserProxy?.liveWebSockets() ?? [])];
+    return { mqtt: this.core.mqtt.flatMap((m) => m.liveSessions()), ws: [...this.ws.openIds(), ...proxied], wsProxied: proxied };
   }
 
   // ---------- MCP tools ----------

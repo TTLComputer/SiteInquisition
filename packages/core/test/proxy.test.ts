@@ -8,8 +8,8 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { generateCA } from '../src/x509.js';
-import { ProxyClient, TunnelAgent } from './proxy-client.js';
-import { WebSocket, WebSocketServer } from 'ws';
+import { ProxyClient, tunnel } from './proxy-client.js';
+import { connectWebSocket, serveWebSockets } from '../src/websocket.js';
 import { Core, sendReplay, type ExchangeSummary } from '@siteinquisition/core';
 
 let tmp: string;
@@ -57,8 +57,7 @@ async function waitFor(query: string, count = 1): Promise<ExchangeSummary[]> {
 beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'siq-proxy-'));
   httpTarget = createHttpServer(handler);
-  const wss = new WebSocketServer({ server: httpTarget });
-  wss.on('connection', (ws) => ws.on('message', (data, isBinary) => ws.send(isBinary ? data : `echo:${data.toString()}`)));
+  serveWebSockets(httpTarget, (ws) => ws.on('message', (data, isBinary) => ws.send(isBinary ? data : `echo:${data.toString()}`)));
   httpPort = await listen(httpTarget);
   const targetCert = generateCA({ commonName: 'localhost' });
   httpsTarget = createHttpsServer({ key: targetCert.key, cert: targetCert.cert }, handler);
@@ -132,8 +131,7 @@ describe('proxy capture', () => {
   });
 
   it('records WebSocket upgrades and every frame in both directions', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${httpPort}/socket`, { agent: new TunnelAgent(proxyUrl) });
-    await new Promise((r, j) => ws.once('open', r).once('error', j));
+    const { ws } = await connectWebSocket(`ws://127.0.0.1:${httpPort}/socket`, { createConnection: () => tunnel(proxyUrl, '127.0.0.1', httpPort) });
     const replies: string[] = [];
     ws.on('message', (d) => replies.push(d.toString()));
     ws.send('ping');

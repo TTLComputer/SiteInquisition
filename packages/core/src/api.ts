@@ -5,7 +5,8 @@ import { coverage } from './coverage.js';
 import { parseSigV4 } from './sigv4.js';
 import { batchPlan, resolveTokens } from './tokens.js';
 import type { AddressInfo } from 'node:net';
-import { WebSocketServer, type WebSocket } from 'ws';
+import { OPEN, serveWebSockets, type WsConnection as WebSocket } from './websocket.js';
+import { PRESETS, buildPlan, validatePlan } from './wsplan.js';
 import { cookieJar } from './cookies.js';
 import type { Core } from './core.js';
 import { sendReplay } from './replay.js';
@@ -87,13 +88,13 @@ const num = (p: Record<string, unknown>, k: string): number | undefined => {
 
 export class CoreApiServer {
   readonly token: string;
-  private wss?: WebSocketServer;
+  private wss?: { clients: Set<WebSocket> };
   private http?: Server;
   private subscribers = new Set<WebSocket>();
   private readonly handlers: Record<string, Handler>;
   private readonly onChange = (c: Change) => {
     const msg = JSON.stringify({ jsonrpc: '2.0', method: 'change', params: c });
-    for (const ws of this.subscribers) if (ws.readyState === ws.OPEN) ws.send(msg);
+    for (const ws of this.subscribers) if (ws.readyState === OPEN) ws.send(msg);
   };
 
   constructor(
@@ -246,7 +247,9 @@ export class CoreApiServer {
         const id = str(p, 'exchangeId', false);
         const ex = id ? store.getExchange(id) : undefined;
         if (id && !ex) throw new RpcError(404, 'exchange not found');
-        return core.tools.ws.connect({ url: ex?.url ?? str(p, 'url')!, headers: ex?.requestHeaders ?? ((p.headers as HeaderList) ?? []), replayOf: ex?.id ?? null, ignoreTlsErrors: p.ignoreTlsErrors === true });
+        // Edited handshake headers win over the captured ones, e.g. to try another Origin.
+        const headers = Array.isArray(p.headers) ? (p.headers as HeaderList) : (ex?.requestHeaders ?? []);
+        return core.tools.ws.connect({ url: str(p, 'url', false) ?? ex?.url ?? '', headers, replayOf: ex?.id ?? null, ignoreTlsErrors: p.ignoreTlsErrors === true });
       },
       'stream.send': (p) => {
         const id = str(p, 'exchangeId')!;
@@ -254,7 +257,26 @@ export class CoreApiServer {
         core.tools.ws.send(id, payload, p.opcode === 'binary' ? 'binary' : 'text');
         return true;
       },
-      'stream.close': (p) => (core.tools.ws.close(str(p, 'exchangeId')!), true),
+      'stream.close': (p) => (core.tools.ws.close(str(p, 'exchangeId')!, num(p, 'code') ?? 1000, str(p, 'reason', false) ?? 'closed from SiteInquisition'), true),
+      'stream.presets': () => PRESETS,
+      'stream.buildPlan': (p) =>
+        buildPlan(str(p, 'preset')!, { payload: Buffer.from(str(p, 'base64', false) ?? '', 'base64'), opcode: p.opcode === 'binary' ? 'binary' : 'text' }, (p.options as Record<string, number | string>) ?? {}),
+      'stream.sendPlan': async (p) => {
+        const id = str(p, 'exchangeId')!;
+        const steps = validatePlan(p.steps);
+        if (core.tools.ws.isOpen(id)) return core.tools.ws.sendPlan(id, steps);
+        const proxy = [core.proxy, core.browserProxy].find((x) => x?.liveWebSockets().includes(id));
+        if (!proxy) throw new RpcError(409, 'that WebSocket is not open');
+        return proxy.injectWebSocket(id, p.to === 'client' ? 'client' : 'server', steps);
+      },
+      'stream.replaySession': (p) =>
+        core.tools.ws.replaySession(str(p, 'exchangeId')!, {
+          ignoreTlsErrors: p.ignoreTlsErrors === true,
+          timing: p.timing === 'original' ? 'original' : 'none',
+          speed: num(p, 'speed'),
+          preset: str(p, 'preset', false),
+          presetOptions: (p.options as Record<string, number | string>) ?? undefined,
+        }),
       'stream.isOpen': (p) => core.tools.ws.isOpen(str(p, 'exchangeId')!) || core.tools.liveStreams().mqtt.includes(str(p, 'exchangeId')!),
       'mqtt.publish': (p) => {
         const ok = core.tools.mqttPublish(str(p, 'exchangeId')!, {
@@ -359,20 +381,19 @@ export class CoreApiServer {
         res.end();
       });
     });
-    const wss = new WebSocketServer({
-      server: http,
-      maxPayload: 32 * 1024 * 1024,
-      verifyClient: ({ req }: { req: IncomingMessage }) => this.authorized(req),
-    });
+    const wss = serveWebSockets(
+      http,
+      (ws) => {
+        ws.on('message', (data) => void this.handle(ws, data.toString()));
+        ws.on('close', () => this.subscribers.delete(ws));
+      },
+      { maxPayload: 32 * 1024 * 1024, verify: (req: IncomingMessage) => this.authorized(req) },
+    );
     await new Promise<void>((resolve, reject) => {
       http.once('error', reject);
       http.listen(port, '127.0.0.1', () => resolve());
     });
     this.http = http;
-    wss.on('connection', (ws) => {
-      ws.on('message', (data) => void this.handle(ws, data.toString()));
-      ws.on('close', () => this.subscribers.delete(ws));
-    });
     this.core.store.on('change', this.onChange);
     this.core.tools.live.on('change', this.onChange);
     this.wss = wss;
@@ -386,7 +407,6 @@ export class CoreApiServer {
     this.wss = undefined;
     if (!wss) return;
     for (const ws of wss.clients) ws.terminate();
-    await new Promise<void>((resolve) => wss.close(() => resolve()));
     const http = this.http;
     this.http = undefined;
     if (http) await new Promise<void>((resolve) => http.close(() => resolve()));

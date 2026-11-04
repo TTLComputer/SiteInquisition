@@ -4,6 +4,7 @@ import { leafIssuer, type CertificateAuthority } from './ca.js';
 import { Interceptor, decodeBody, type InterceptorHooks, type ProxiedRequest, type Timings as WireTimings } from './interceptor.js';
 import type { HookMessage } from './rules.js';
 import { globToRegExp, type Scope } from './scope.js';
+import type { PlanStep, SentStep } from './wsplan.js';
 import type { SeenHosts } from './seen.js';
 import type { CaptureStore, ExchangeSource, ExchangeSummary, HeaderList, Timings } from './store.js';
 
@@ -95,6 +96,8 @@ export class ProxyEngine extends EventEmitter<{
   private server?: Interceptor;
   private live = new Map<string, Live>();
   private wsStreams = new Map<string, string>();
+  /** Recorded exchange id to proxy request id, for open WebSockets. */
+  private wsExchanges = new Map<string, string>();
   private redirects = new Map<string, { exchangeId: string; flowId: string; expires: number }>();
   private listenPort?: number;
   private hooks?: ProxyHooks;
@@ -180,6 +183,19 @@ export class ProxyEngine extends EventEmitter<{
           }
         : undefined,
     };
+  }
+
+  /** Exchange ids of recorded WebSockets the proxy is relaying right now. */
+  liveWebSockets(): string[] {
+    const open = new Set(this.server?.liveWebSockets() ?? []);
+    return [...this.wsExchanges].filter(([, id]) => open.has(id)).map(([ex]) => ex);
+  }
+
+  /** Inject a frame plan into a live relayed WebSocket, to the server (as the client) or to the client (as the server). */
+  injectWebSocket(exchangeId: string, to: 'server' | 'client', steps: PlanStep[]): Promise<SentStep[]> {
+    const id = this.wsExchanges.get(exchangeId);
+    if (!id || !this.server) return Promise.reject(new Error('that WebSocket is not open through the proxy'));
+    return this.server.injectWebSocket(id, to, steps);
   }
 
   get port(): number {
@@ -330,6 +346,7 @@ export class ProxyEngine extends EventEmitter<{
           timings: timingsFrom(res.timings),
         });
         this.wsStreams.set(res.id, this.store.openStream('websocket', live.exchangeId));
+        this.wsExchanges.set(live.exchangeId, res.id);
         this.emit('response', summary);
       }),
     );
@@ -339,7 +356,7 @@ export class ProxyEngine extends EventEmitter<{
       this.guard((msg) => {
         const streamId = this.wsStreams.get(msg.id);
         if (!streamId) return;
-        this.store.addStreamMessage({ streamId, direction: msg.from, opcode: msg.binary ? 'binary' : 'text', at: msg.at, payload: msg.data });
+        this.store.addStreamMessage({ streamId, direction: msg.from, opcode: msg.opcode, at: msg.at, payload: msg.data, ...(msg.meta ? { meta: msg.meta } : {}) });
       }),
     );
 
@@ -347,6 +364,7 @@ export class ProxyEngine extends EventEmitter<{
       'websocket-close',
       this.guard((close) => {
         const streamId = this.wsStreams.get(close.id);
+        for (const [ex, id] of this.wsExchanges) if (id === close.id) this.wsExchanges.delete(ex);
         if (!streamId) return;
         this.wsStreams.delete(close.id);
         this.store.closeStream(streamId, close.code, close.reason);

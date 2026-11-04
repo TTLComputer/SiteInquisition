@@ -8,11 +8,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect as tlsConnect } from 'node:tls';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { WebSocket, WebSocketServer } from 'ws';
+import { connectWebSocket, serveWebSockets } from '../src/websocket.js';
 import { Core, type ExchangeSummary } from '@siteinquisition/core';
 import { parseClientHello } from '../src/interceptor.js';
 import { LeafIssuer, generateCA } from '../src/x509.js';
-import { ProxyClient, TunnelAgent, tunnel } from './proxy-client.js';
+import { ProxyClient, tunnel } from './proxy-client.js';
 
 let tmp: string;
 let core: Core;
@@ -73,8 +73,7 @@ function socks5(host: string, p: number): Promise<Socket> {
 beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'siq-icpt-'));
   target = createHttpServer(handler);
-  const wss = new WebSocketServer({ server: target, handleProtocols: (p) => (p.has('chat') ? 'chat' : false) });
-  wss.on('connection', (ws) => ws.on('message', (d, bin) => ws.send(bin ? d : `echo:${d.toString()}`)));
+  serveWebSockets(target, (ws) => ws.on('message', (d, bin) => ws.send(bin ? d : `echo:${d.toString()}`)), { protocol: (offered) => (offered.includes('chat') ? 'chat' : undefined) });
   port = await listen(target);
   const cert = generateCA({ commonName: 'localhost' });
   secureTarget = createHttpsServer({ key: cert.key, cert: cert.cert }, handler);
@@ -210,8 +209,7 @@ describe('interceptor', () => {
 
   it('passes the WebSocket subprotocol and frames through', async () => {
     const proxy = `http://127.0.0.1:${proxyPort}`;
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/proto`, ['chat'], { agent: new TunnelAgent(proxy) });
-    await new Promise((r, j) => ws.once('open', r).once('error', j));
+    const { ws } = await connectWebSocket(`ws://127.0.0.1:${port}/proto`, { protocols: ['chat'], createConnection: () => tunnel(proxy, '127.0.0.1', port) });
     expect(ws.protocol).toBe('chat');
     const reply = new Promise<string>((r) => ws.once('message', (d) => r(d.toString())));
     ws.send('hi');

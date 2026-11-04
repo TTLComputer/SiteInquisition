@@ -25,7 +25,8 @@ import { performance } from 'node:perf_hooks';
 import { Duplex } from 'node:stream';
 import type { TLSSocket } from 'node:tls';
 import * as zlib from 'node:zlib';
-import { WebSocket, WebSocketServer, type RawData } from 'ws';
+import { FrameParser, MessageAssembler } from './websocket.js';
+import { runPlan, type PlanStep, type SentStep } from './wsplan.js';
 import type { LeafIssuer } from './x509.js';
 
 export type HeaderPairs = Array<[string, string]>;
@@ -64,9 +65,12 @@ export interface WsMessage {
   id: string;
   /** "client" means from the client to the server. */
   from: 'client' | 'server';
+  /** text, binary, ping, pong, close, opN, or raw / socket for injected steps. */
+  opcode: string;
   data: Buffer;
-  binary: boolean;
   at: number;
+  /** Fragment count, protocol violations, close code, injection details. */
+  meta?: Record<string, unknown>;
 }
 
 /** What a request hook may do: change the request, answer it, or close the connection. */
@@ -388,7 +392,6 @@ function splitHostPort(s: string, defPort: number): { host: string; port: number
 export class Interceptor extends EventEmitter<InterceptorEvents> {
   private net: Server;
   private http = createHttpServer();
-  private wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
   private sockets = new Set<Duplex>();
   private seq = 0;
   private httpAgent = new HttpAgent({ keepAlive: true });
@@ -428,7 +431,6 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
     this.sockets.clear();
     this.httpAgent.destroy();
     for (const a of this.httpsAgents.values()) a.destroy();
-    this.wss.clients.forEach((c) => c.terminate());
     await new Promise<void>((r) => this.net.close(() => r()));
   }
 
@@ -818,6 +820,64 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
     });
   }
 
+  private wsLive = new Map<string, LiveWebSocket>();
+
+  /** Proxied WebSocket connections that are open now, by request id. */
+  liveWebSockets(): string[] {
+    return [...this.wsLive.keys()];
+  }
+
+  /**
+   * Write a frame plan into a live proxied connection: "server" sends it to
+   * the server as if from the client (masked by default), "client" to the
+   * client as if from the server. Each step waits until no frame from the
+   * side being impersonated is half-forwarded, so the streams stay framed.
+   */
+  async injectWebSocket(id: string, to: 'server' | 'client', steps: PlanStep[]): Promise<SentStep[]> {
+    const live = this.wsLive.get(id);
+    if (!live) throw new Error('that WebSocket connection is no longer open');
+    const dest = to === 'server' ? live.upstream : live.client;
+    const parser = to === 'server' ? live.fromClient : live.fromServer;
+    const asm = to === 'server' ? live.clientMsgs : live.serverMsgs;
+    const idle = async () => {
+      for (let i = 0; i < 200 && (parser.pending || asm.inMessage); i++) await new Promise((r) => setTimeout(r, 10));
+    };
+    return runPlan(
+      steps,
+      {
+        write: (b) => dest.write(b),
+        end: () => dest.end(),
+        destroy: () => dest.destroy(),
+        alive: () => !dest.destroyed,
+        defaultMask: to === 'server',
+      },
+      undefined,
+      undefined,
+      idle,
+    ).then((sent) => {
+      for (const st of sent) {
+        const step = steps[st.index]!;
+        const payload = step.kind === 'frame' ? Buffer.from(step.payload, 'base64') : step.kind === 'raw' ? Buffer.from(step.bytes, 'base64') : Buffer.alloc(0);
+        this.emit('websocket-message', {
+          id,
+          from: to === 'server' ? 'client' : 'server',
+          opcode: st.frame?.opcode ?? st.kind,
+          data: payload,
+          at: st.at,
+          meta: { injected: true, ...(st.frame ? { frame: st.frame } : {}), ...(st.note ? { note: st.note } : {}) },
+        });
+      }
+      return sent;
+    });
+  }
+
+  /**
+   * Relay a WebSocket byte for byte: the client's handshake goes upstream
+   * (minus compression offers, so frames stay readable), the server's answer
+   * comes back as is, and afterwards both directions are piped untouched
+   * while copies are parsed into messages for the record. Fragmentation,
+   * masks and even malformed frames reach the other side exactly as sent.
+   */
   private onUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, conn?: ConnInfo): void {
     this.track(socket);
     if ((req.headers.upgrade ?? '').toLowerCase() !== 'websocket') return void socket.destroy();
@@ -834,76 +894,129 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
     const preq = this.newRequest(req, url, Buffer.alloc(0), startTime, conn);
     this.emit('websocket-request', preq);
     const insecure = this.opts.ignoreUpstreamTlsErrors(target.host);
-    const protocols = (req.headers['sec-websocket-protocol'] ?? '').split(',').map((p) => p.trim()).filter(Boolean);
-    const fwd = endToEnd(preq.headers).filter(([k]) => !/^(host|sec-websocket-(key|version|extensions|protocol))$/i.test(k));
-    const dest = `${target.secure ? 'wss' : 'ws'}://${hostPort(target.host, target.port, target.secure)}${url.pathname}${url.search}`;
-    const upstream = new WebSocket(dest, protocols, {
-      headers: { ...toObject(fwd), host: url.host } as Record<string, string>,
-      rejectUnauthorized: !insecure,
-      perMessageDeflate: false,
-      ...(isIP(target.host) ? {} : ({ servername: target.host } as object)),
+    const fwd = preq.headers.filter(([k]) => {
+      const l = k.toLowerCase();
+      return !l.startsWith(':') && l !== 'sec-websocket-extensions' && l !== 'proxy-connection' && l !== 'proxy-authorization' && l !== 'keep-alive';
     });
-    let closed = false;
-    let upgradeRes: IncomingMessage | undefined;
-    upstream.once('upgrade', (r) => (upgradeRes = r));
-    upstream.once('unexpected-response', (_r, r) => {
+    let done = false;
+    const fail = (kind: 'aborted' | 'error', message: string) => {
+      if (done) return;
+      done = true;
+      this.emit('abort', { id: preq.id, kind, message, timings: { total: rel() } });
+    };
+    const upReq = (target.secure ? httpsRequest : httpRequest)({
+      host: target.host,
+      port: target.port,
+      method: req.method,
+      path: url.pathname + url.search,
+      headers: flat(fwd) as unknown as Record<string, string>,
+      setHost: false,
+      agent: false,
+      ...(target.secure ? { servername: isIP(target.host) ? undefined : target.host, rejectUnauthorized: !insecure } : {}),
+    });
+    socket.once('close', () => {
+      if (!done) upReq.destroy();
+      fail('aborted', 'connection closed');
+    });
+    upReq.once('error', (err) => {
+      if (done) return;
+      socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      fail('error', err.message);
+    });
+    upReq.once('response', (r) => {
       // The server refused the upgrade: relay its answer as a normal response.
       void readAll(r).then((data) => {
+        if (done) return;
+        done = true;
         const hdrs = pairsOf(r.rawHeaders);
-        const timings = { responseHeaders: rel(), total: rel() };
         const sent = withLength(endToEnd(hdrs), data.length, true);
         socket.write(`HTTP/1.1 ${r.statusCode} ${r.statusMessage ?? ''}\r\n${sent.map(([k, v]) => `${k}: ${v}\r\n`).join('')}Connection: close\r\n\r\n`);
         socket.end(data);
-        this.emit('response', { id: preq.id, status: r.statusCode ?? 502, statusMessage: r.statusMessage, headers: hdrs, body: data, timings });
+        this.emit('response', { id: preq.id, status: r.statusCode ?? 502, statusMessage: r.statusMessage, headers: hdrs, body: data, timings: { responseHeaders: rel(), total: rel() } });
       });
     });
-    upstream.once('error', (err) => {
-      if (upgradeRes) return;
-      if (!closed) {
+    upReq.once('upgrade', (r: IncomingMessage, upstream: Duplex, upHead: Buffer) => {
+      if (done) return void upstream.destroy();
+      done = true;
+      this.track(upstream);
+      const hdrs = pairsOf(r.rawHeaders);
+      socket.write(`HTTP/1.1 ${r.statusCode} ${r.statusMessage ?? 'Switching Protocols'}\r\n${hdrs.map(([k, v]) => `${k}: ${v}\r\n`).join('')}\r\n`);
+      this.emit('websocket-accepted', { id: preq.id, status: r.statusCode ?? 101, statusMessage: r.statusMessage ?? 'Switching Protocols', headers: hdrs, body: Buffer.alloc(0), timings: { responseHeaders: rel(), total: rel() } });
+
+      const live: LiveWebSocket = {
+        client: socket,
+        upstream,
+        fromClient: new FrameParser(),
+        fromServer: new FrameParser(),
+        clientMsgs: new MessageAssembler('client'),
+        serverMsgs: new MessageAssembler('server'),
+      };
+      this.wsLive.set(preq.id, live);
+      let recording = true;
+      let closeFrame: { code?: number; reason: string } | undefined;
+      const observe = (from: 'client' | 'server', parser: FrameParser, asm: MessageAssembler) => (chunk: Buffer) => {
+        if (!recording) return;
+        try {
+          for (const f of parser.push(chunk)) {
+            const m = asm.push(f);
+            if (!m) continue;
+            if (m.close && !closeFrame) closeFrame = m.close;
+            const meta: Record<string, unknown> = {};
+            if (m.fragments > 1) meta.fragments = m.fragments;
+            if (m.violations.length) meta.violations = m.violations;
+            if (m.close) Object.assign(meta, m.close.code !== undefined ? { code: m.close.code } : {}, m.close.reason ? { reason: m.close.reason } : {});
+            this.emit('websocket-message', { id: preq.id, from, opcode: m.opcode, data: m.payload, at: Date.now(), ...(Object.keys(meta).length ? { meta } : {}) });
+          }
+        } catch (err) {
+          // Framing is lost for the record only; the bytes still flow.
+          recording = false;
+          this.emit('error', new Error(`WebSocket recording stopped for ${url.href}: ${(err as Error).message}`));
+        }
+      };
+      const fromClient = observe('client', live.fromClient, live.clientMsgs);
+      const fromServer = observe('server', live.fromServer, live.serverMsgs);
+      socket.on('data', (c: Buffer) => {
+        fromClient(c);
+        if (!upstream.write(c)) socket.pause();
+      });
+      upstream.on('drain', () => socket.resume());
+      upstream.on('data', (c: Buffer) => {
+        fromServer(c);
+        if (!socket.write(c)) upstream.pause();
+      });
+      socket.on('drain', () => upstream.resume());
+      socket.once('end', () => upstream.end());
+      upstream.once('end', () => socket.end());
+      let closed = false;
+      const finish = () => {
+        if (closed) return;
         closed = true;
-        socket.end(`HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-        this.emit('abort', { id: preq.id, kind: 'error', message: err.message, timings: { total: rel() } });
+        this.wsLive.delete(preq.id);
+        socket.destroy();
+        upstream.destroy();
+        this.emit('websocket-close', { id: preq.id, code: closeFrame?.code, reason: closeFrame?.reason || undefined });
+      };
+      socket.once('close', finish);
+      upstream.once('close', finish);
+      upstream.on('error', () => undefined);
+      if (head.length) {
+        fromClient(head);
+        upstream.write(head);
+      }
+      if (upHead.length) {
+        fromServer(upHead);
+        socket.write(upHead);
       }
     });
-    socket.once('close', () => {
-      if (!upgradeRes && !closed) {
-        closed = true;
-        upstream.terminate();
-        this.emit('abort', { id: preq.id, kind: 'aborted', message: 'connection closed', timings: { total: rel() } });
-      }
-    });
-    upstream.once('open', () => {
-      const chosen = upstream.protocol;
-      const wss = chosen ? new WebSocketServer({ noServer: true, perMessageDeflate: false, handleProtocols: () => chosen }) : this.wss;
-      const passHeaders = pairsOf(upgradeRes?.rawHeaders ?? []).filter(([k]) => !/^(connection|upgrade|sec-websocket-(accept|extensions|protocol))$/i.test(k));
-      wss.once('headers', (lines: string[]) => {
-        for (const [k, v] of passHeaders) lines.push(`${k}: ${v}`);
-      });
-      wss.handleUpgrade(req, socket, head, (client) => {
-        const accepted = pairsOf(upgradeRes?.rawHeaders ?? []);
-        this.emit('websocket-accepted', { id: preq.id, status: 101, statusMessage: upgradeRes?.statusMessage ?? 'Switching Protocols', headers: accepted, body: Buffer.alloc(0), timings: { responseHeaders: rel(), total: rel() } });
-        const relay = (from: 'client' | 'server', src: WebSocket, dst: WebSocket) => {
-          src.on('message', (data: RawData, binary: boolean) => {
-            const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
-            this.emit('websocket-message', { id: preq.id, from, data: buf, binary, at: Date.now() });
-            if (dst.readyState === WebSocket.OPEN) dst.send(buf, { binary });
-          });
-          src.on('ping', (d) => dst.readyState === WebSocket.OPEN && dst.ping(d));
-          src.once('close', (code, reason) => {
-            if (!closed) {
-              closed = true;
-              this.emit('websocket-close', { id: preq.id, code: code === 1005 || code === 1006 ? undefined : code, reason: reason.toString() || undefined });
-            }
-            if (dst.readyState === WebSocket.OPEN) {
-              if (code >= 1000 && code < 5000 && code !== 1005 && code !== 1006) dst.close(code, reason);
-              else dst.close();
-            } else if (dst.readyState === WebSocket.CONNECTING) dst.terminate();
-          });
-          src.on('error', () => dst.terminate());
-        };
-        relay('client', client, upstream);
-        relay('server', upstream, client);
-      });
-    });
+    upReq.end();
   }
+}
+
+interface LiveWebSocket {
+  client: Duplex;
+  upstream: Duplex;
+  fromClient: FrameParser;
+  fromServer: FrameParser;
+  clientMsgs: MessageAssembler;
+  serverMsgs: MessageAssembler;
 }

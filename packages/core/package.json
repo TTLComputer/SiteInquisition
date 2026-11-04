@@ -20,10 +20,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@siteinquisition/codecs": "workspace:*",
-    "ws": "^8.18.3"
-  },
-  "devDependencies": {
-    "@types/ws": "^8.18.1"
+    "@siteinquisition/codecs": "workspace:*"
   }
 }

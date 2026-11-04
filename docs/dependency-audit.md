@@ -73,9 +73,24 @@ What changed in behaviour:
 
 Tests: 147 pass. New tests cover HTTP/2 in a tunnel, SOCKS5 with plain HTTP and with TLS, streaming, 502 on an unreachable server, clients that reject our certificate, WebSocket subprotocols and close codes, SNI parsing, and certificate chains for names and IP addresses. I also drove real Chromium through the proxy. HTTPS came through as HTTP/2, a `wss:` connection relayed both frames, and a POST body arrived intact, all recorded.
 
+## Round 3: ws replaced, with frame-level tools
+
+`ws` is gone. `core/src/websocket.ts` (RFC 6455 framing, handshakes, client and server connections) and `core/src/wsplan.ts` (frame plans and presets) replace it. The API server, the proxy relay and WebSocket replay all use them. The shipped tree is now 7 packages: react, react-dom and their 3 helpers, and the two font packages. The whole tree, dev tools included, is 160.
+
+Owning the framing is what makes the new tools possible, since a correct library will not send a broken frame:
+
+- **Frame plans.** A plan is a list of steps: a frame with every header field under control (opcode including reserved ones, FIN, RSV1-3, mask on, off, zero or a chosen key, 16 or 64-bit length field, a claimed length that differs from the real one, a cut-off point), raw bytes, a delay, or closing the TCP socket.
+- **25 presets** build plans from a message: fragment into N parts or N-byte pieces, split inside a UTF-8 character, ping between fragments, interleave a second message, orphan continuation, never finish, slow drip, burst, invalid UTF-8, unmasked, zero mask, RSV1 without compression, reserved opcode, oversized or fragmented ping, non-minimal length, length lie, huge length, invalid close codes, a 1-byte close, an over-long reason, data after close, and drop mid-frame. Each says whether the frames are legal and what a correct server should do.
+- **Replay.** Open a new connection like a captured one with an edited handshake (Origin, cookies, subprotocols), then send messages or frame plans. A whole captured session can be replayed with its original timing, each message turned into a preset's frames.
+- **Live injection.** The proxy relays WebSocket bytes as they are, so fragmentation and masking reach the other side unchanged. Plans can be injected into a live browser connection toward the server (as the client) or toward the browser (as the server), between messages so the stream stays valid.
+- **Recording.** Messages show how many fragments they came in, close codes, which ones we sent, and protocol violations the parser noticed (unmasked client frames, reserved bits, bad close codes, invalid UTF-8).
+
+In the UI, the Streams composer has a Frames mode with a preset picker and an editable frame table, and the handshake can be edited before connecting.
+
+Tests: 158 pass. New ones cover the codec, every preset, plans over replay, session replay, passthrough of fragmented frames through the proxy, injection both ways, and the Frames composer in the renderer. Real Chromium through the proxy received a 3-fragment injected message and echoed a split UTF-8 character correctly.
+
 ## Kept, and why
 
-- **ws** (0 dependencies): the core API server, WebSocket relaying and WebSocket replay. Node has a WebSocket client but no server, and the built-in client cannot set Cookie or Authorization headers. Next: replace it with in-house framing, which also opens frame-level replay tools (fragmentation, control frames, malformed frames).
 - **react, react-dom** (5 packages): the UI.
 - **@fontsource/inter, @fontsource/jetbrains-mono** (0 dependencies): bundled fonts, so nothing loads from the network.
 - **electron, typescript** (dev): the app shell and the compiler.

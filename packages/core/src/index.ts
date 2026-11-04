@@ -24,3 +24,5 @@ export * from './tokens.js';
 export * from './vars.js';
 export * from './version.js';
 export * from './wsreplay.js';
+export * from './websocket.js';
+export * from './wsplan.js';

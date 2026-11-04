@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ExchangeSummary } from '../api';
-import { base64ToBytes } from '../api';
+import { base64ToBytes, bytesToBase64 } from '../api';
 import { useApp } from '../state';
 import { fmtTime } from '../format';
 import { Messages } from './Inspector';
+import { FramePlanner } from './FramePlanner';
 
 const enc = new TextEncoder();
 
@@ -15,16 +16,33 @@ function parsePayload(text: string, format: 'text' | 'hex' | 'base64'): Uint8Arr
   return new Uint8Array(hex.match(/../g)?.map((h) => parseInt(h, 16)) ?? []);
 }
 
+const headerText = (h: Array<[string, string]>) => h.filter(([k]) => !k.startsWith(':')).map(([k, v]) => `${k}: ${v}`).join('\n');
+const parseHeaders = (t: string): Array<[string, string]> =>
+  t
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const i = l.indexOf(':');
+      if (i <= 0) throw new Error(`header line needs "Name: value": ${l}`);
+      return [l.slice(0, i).trim(), l.slice(i + 1).trim()] as [string, string];
+    });
+
 /**
- * WebSocket and MQTT connections, with a composer. A WebSocket the proxy is
- * passing through cannot take new frames, so the composer opens a replay
- * connection (same URL, cookies and headers) and sends on that. MQTT
- * messages go straight into a live session, in either direction.
+ * WebSocket and MQTT connections, with a composer. Messages and exact frame
+ * plans go into live WebSockets the proxy is relaying (to either side) and
+ * into replay connections, which reopen a captured connection with the same
+ * or edited handshake. MQTT messages go straight into a live session, in
+ * either direction.
  */
 export function Streams() {
   const { client, streamId, streamPrefill, notify, select, setView } = useApp();
   const [conns, setConns] = useState<ExchangeSummary[]>([]);
-  const [live, setLive] = useState<{ mqtt: string[]; ws: string[] }>({ mqtt: [], ws: [] });
+  const [live, setLive] = useState<{ mqtt: string[]; ws: string[]; wsProxied: string[] }>({ mqtt: [], ws: [], wsProxied: [] });
+  const [mode, setMode] = useState<'message' | 'frames'>('message');
+  const [wsTo, setWsTo] = useState<'server' | 'client'>('server');
+  const [handshake, setHandshake] = useState<string | null>(null);
+  const [timing, setTiming] = useState<'none' | 'original'>('none');
   const [current, setCurrent] = useState<string | null>(streamId);
   const [payload, setPayload] = useState('');
   const [format, setFormat] = useState<'text' | 'hex' | 'base64'>('text');
@@ -65,6 +83,8 @@ export function Streams() {
   const sel = conns.find((c) => c.id === current);
   const isMqtt = !!sel?.scheme.startsWith('mqtt');
   const isLive = sel ? (isMqtt ? live.mqtt.includes(sel.id) : live.ws.includes(sel.id)) : false;
+  const isProxied = !!sel && live.wsProxied.includes(sel.id);
+  useEffect(() => setHandshake(null), [current]);
 
   const send = async () => {
     if (!sel) return;
@@ -73,6 +93,8 @@ export function Streams() {
       if (isMqtt) {
         await client.mqttPublish({ exchangeId: sel.id, to, topic, payload: bytes, qos, retain });
         notify(`Published to ${topic} (${to === 'broker' ? 'as the device' : 'to the device'})`);
+      } else if (isProxied) {
+        await client.sendFramePlan(sel.id, [{ kind: 'frame', opcode: format === 'text' ? 'text' : 'binary', payload: bytesToBase64(bytes) }], wsTo);
       } else {
         await client.streamSend(sel.id, bytes, format === 'text' ? 'text' : 'binary');
       }
@@ -84,12 +106,34 @@ export function Streams() {
   const openReplayConnection = async () => {
     if (!sel) return;
     try {
-      const r = await client.streamConnect(sel.id, ignoreTls);
+      const r = await client.streamConnect(sel.id, ignoreTls, handshake === null ? undefined : parseHeaders(handshake));
       await load();
       setCurrent(r.exchangeId);
       notify('Replay connection open. Messages you send appear marked as injected.');
     } catch (e) {
       notify(`Could not connect: ${(e as Error).message}`);
+    }
+  };
+
+  const editHandshake = async () => {
+    if (!sel) return;
+    if (handshake !== null) return setHandshake(null);
+    try {
+      setHandshake(headerText((await client.get(sel.id)).requestHeaders));
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  const replaySession = async () => {
+    if (!sel) return;
+    try {
+      const r = await client.replayStreamSession(sel.id, { ignoreTlsErrors: ignoreTls, timing });
+      await load();
+      setCurrent(r.exchangeId);
+      notify(`Replaying ${r.sent} client ${r.sent === 1 ? 'message' : 'messages'} on a new connection`);
+    } catch (e) {
+      notify(`Could not replay: ${(e as Error).message}`);
     }
   };
 
@@ -135,7 +179,18 @@ export function Streams() {
               >
                 Show in History
               </button>
-              {!isMqtt && isLive && (
+              {!isMqtt && (
+                <>
+                  <select className="input" aria-label="Replay timing" value={timing} onChange={(e) => setTiming(e.target.value as 'none' | 'original')}>
+                    <option value="none">As fast as possible</option>
+                    <option value="original">With the original timing</option>
+                  </select>
+                  <button className="btn small" onClick={() => void replaySession()} title="Open a new connection like this one and send its client messages again">
+                    Replay session
+                  </button>
+                </>
+              )}
+              {!isMqtt && isLive && !isProxied && (
                 <button className="btn small" onClick={() => client.streamClose(sel.id).then(load, (e: Error) => notify(e.message))}>
                   Close connection
                 </button>
@@ -150,20 +205,55 @@ export function Streams() {
                   <span>
                     {sel.source === 'replay'
                       ? 'This replay connection has closed. Open another with the same URL, cookies and headers to keep sending.'
-                      : 'The proxy only passes captured connections through and cannot add frames to them. Open a replay connection with the same URL, cookies and headers to send your own messages.'}
+                      : 'This connection has ended. Open a replay connection with the same URL, cookies and headers, or edit the handshake first (for example another Origin), to send your own messages and frames.'}
                   </span>
                   <label className="check">
                     <input type="checkbox" checked={ignoreTls} onChange={(e) => setIgnoreTls(e.target.checked)} /> Ignore TLS errors
                   </label>
+                  <button className="btn small" aria-pressed={handshake !== null} onClick={() => void editHandshake()}>
+                    Edit handshake
+                  </button>
                   <button className="btn primary small" onClick={() => void openReplayConnection()}>
                     Open replay connection
                   </button>
+                  {handshake !== null && (
+                    <textarea
+                      className="editor composer-text"
+                      aria-label="Handshake headers"
+                      spellCheck={false}
+                      value={handshake}
+                      onChange={(e) => setHandshake(e.target.value)}
+                      title="One header per line. Key, version and extensions are set by the client."
+                    />
+                  )}
                 </div>
               ) : isMqtt && !isLive ? (
                 <div className="composer-note">This MQTT session has ended. Messages can only be injected while the device is connected through the relay.</div>
               ) : (
                 <>
+                  {!isMqtt && (
+                    <div className="composer-row" style={{ paddingBottom: 0 }}>
+                      <div className="segmented" role="group" aria-label="Composer mode">
+                        <button className="seg" aria-pressed={mode === 'message'} onClick={() => setMode('message')}>
+                          Message
+                        </button>
+                        <button className="seg" aria-pressed={mode === 'frames'} onClick={() => setMode('frames')}>
+                          Frames
+                        </button>
+                      </div>
+                      <span className="faint" style={{ fontSize: 12 }}>
+                        {isProxied ? 'Live through the proxy: frames can go to either side.' : 'Replay connection to the server.'}
+                      </span>
+                    </div>
+                  )}
+                  {!isMqtt && mode === 'frames' && <FramePlanner exchangeId={sel.id} payload={() => parsePayload(payload, format)} opcode={format === 'text' ? 'text' : 'binary'} proxied={isProxied} />}
                   <div className="composer-row">
+                    {!isMqtt && isProxied && mode === 'message' && (
+                      <select className="input" aria-label="Send to" value={wsTo} onChange={(e) => setWsTo(e.target.value as 'server' | 'client')}>
+                        <option value="server">To the server, as the client</option>
+                        <option value="client">To the client, as the server</option>
+                      </select>
+                    )}
                     {isMqtt && (
                       <>
                         <select className="input" value={to} onChange={(e) => setTo(e.target.value as 'broker' | 'device')} aria-label="Direction">
@@ -188,9 +278,11 @@ export function Streams() {
                       ))}
                     </div>
                     <span style={{ flex: 1 }} />
-                    <button className="btn primary small" onClick={() => void send()} disabled={isMqtt && !topic} title="Ctrl Enter">
-                      {isMqtt ? 'Publish' : 'Send frame'}
-                    </button>
+                    {(isMqtt || mode === 'message') && (
+                      <button className="btn primary small" onClick={() => void send()} disabled={isMqtt && !topic} title="Ctrl Enter">
+                        {isMqtt ? 'Publish' : 'Send frame'}
+                      </button>
+                    )}
                   </div>
                   <textarea
                     className="editor composer-text"
@@ -199,12 +291,12 @@ export function Streams() {
                     value={payload}
                     onChange={(e) => setPayload(e.target.value)}
                     onKeyDown={(e) => {
-                      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && (isMqtt || mode === 'message')) {
                         e.preventDefault();
                         void send();
                       }
                     }}
-                    placeholder={isMqtt ? '{"cmd":"reboot"}' : 'Message to send'}
+                    placeholder={isMqtt ? '{"cmd":"reboot"}' : mode === 'frames' ? 'Message the preset turns into frames' : 'Message to send'}
                   />
                 </>
               )}

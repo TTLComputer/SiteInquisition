@@ -120,7 +120,17 @@ export function Messages({ exchangeId, protocol }: { exchangeId: string; protoco
                   <tr key={m.id} aria-selected={m.id === selected} onClick={() => setSelected(m.id)} style={{ cursor: 'pointer', background: m.id === selected ? 'var(--bg-selected)' : undefined }}>
                     <td className={m.direction === 'client' ? 'dir-client' : 'dir-server'}>{m.direction === 'client' ? '↑ client' : '↓ server'}</td>
                     <td className="faint">{fmtTime(m.at)}</td>
-                    <td>{m.opcode}</td>
+                    <td>
+                      {m.opcode}
+                      {typeof meta.fragments === 'number' && <span className="faint"> ×{meta.fragments} frames</span>}
+                      {typeof meta.code === 'number' && <span className="faint"> {meta.code}</span>}
+                      {meta.injected === true && <span className="src-replay" style={{ marginLeft: 6 }}>sent</span>}
+                      {Array.isArray(meta.violations) && meta.violations.length > 0 && (
+                        <span className="badge warn" style={{ marginLeft: 6 }} title={(meta.violations as string[]).join('\n')}>
+                          {(meta.violations as string[]).length === 1 ? (meta.violations as string[])[0] : `${(meta.violations as string[]).length} protocol issues`}
+                        </span>
+                      )}
+                    </td>
                     {isMqtt && (
                       <td>
                         {typeof meta.topic === 'string' ? meta.topic : ''}

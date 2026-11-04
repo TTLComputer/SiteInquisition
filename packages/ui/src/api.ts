@@ -71,6 +71,33 @@ export interface CoreInfo {
   mqtt: Array<{ port: number | null; broker: string; listenTls: boolean }>;
 }
 
+/** One step of a WebSocket frame plan (mirrors the core's PlanStep). */
+export type PlanStep =
+  | {
+      kind: 'frame';
+      opcode: string | number;
+      payload: string;
+      fin?: boolean;
+      rsv1?: boolean;
+      rsv2?: boolean;
+      rsv3?: boolean;
+      mask?: string;
+      lengthField?: 'auto' | 16 | 64;
+      declaredLength?: number;
+      truncateTo?: number;
+      delayMs?: number;
+      note?: string;
+    }
+  | { kind: 'raw'; bytes: string; delayMs?: number; note?: string }
+  | { kind: 'socket'; action: 'end' | 'destroy'; delayMs?: number; note?: string };
+
+export interface FramePreset {
+  id: string;
+  name: string;
+  expect: string;
+  options?: Array<{ key: string; label: string; default: number | string }>;
+}
+
 export type ExchangeDetail = Exchange & { stream: { id: string; protocol: string; openedAt: number; closedAt: number | null; closeCode: number | null } | null };
 export type WireStreamMessage = Omit<StreamMessage, 'payload'> & { base64: string };
 export interface SiteMapHost {
@@ -289,10 +316,16 @@ export class CoreClient {
   parseSigV4 = (id: string) => this.call<ParsedSigV4 | null>('aws.parse', { id });
   race = (requests: Array<WireRequest & { offsetMs: number }>, opts: { sync: 'last-byte' | 'single-packet' | 'none'; repeat?: number; jitterMs?: number; ignoreTlsErrors?: boolean }) =>
     this.call<RaceResult>('race.run', { requests: requests.map((r) => ({ ...wire(r), offsetMs: r.offsetMs })), ...opts });
-  liveStreams = () => this.call<{ mqtt: string[]; ws: string[] }>('stream.live');
-  streamConnect = (exchangeId: string, ignoreTlsErrors = false) => this.call<{ exchangeId: string }>('stream.connect', { exchangeId, ignoreTlsErrors });
+  liveStreams = () => this.call<{ mqtt: string[]; ws: string[]; wsProxied: string[] }>('stream.live');
+  streamConnect = (exchangeId: string, ignoreTlsErrors = false, headers?: Array<[string, string]>) => this.call<{ exchangeId: string }>('stream.connect', { exchangeId, ignoreTlsErrors, ...(headers ? { headers } : {}) });
+  framePresets = () => this.call<FramePreset[]>('stream.presets');
+  buildFramePlan = (preset: string, payload: Uint8Array, opcode: 'text' | 'binary', options: Record<string, number | string>) =>
+    this.call<PlanStep[]>('stream.buildPlan', { preset, base64: bytesToBase64(payload), opcode, options });
+  sendFramePlan = (exchangeId: string, steps: PlanStep[], to?: 'server' | 'client') => this.call<unknown[]>('stream.sendPlan', { exchangeId, steps, ...(to ? { to } : {}) });
+  replayStreamSession = (exchangeId: string, opts: { ignoreTlsErrors?: boolean; timing?: 'none' | 'original'; speed?: number; preset?: string; options?: Record<string, number | string> }) =>
+    this.call<{ exchangeId: string; sent: number }>('stream.replaySession', { exchangeId, ...opts });
   streamSend = (exchangeId: string, payload: Uint8Array, opcode: 'text' | 'binary') => this.call<boolean>('stream.send', { exchangeId, base64: bytesToBase64(payload), opcode });
-  streamClose = (exchangeId: string) => this.call<boolean>('stream.close', { exchangeId });
+  streamClose = (exchangeId: string, code?: number, reason?: string) => this.call<boolean>('stream.close', { exchangeId, code, reason });
   streamIsOpen = (exchangeId: string) => this.call<boolean>('stream.isOpen', { exchangeId });
   mqttPublish = (p: { exchangeId: string; to: 'broker' | 'device'; topic: string; payload: Uint8Array; qos: 0 | 1; retain: boolean }) =>
     this.call<boolean>('mqtt.publish', { ...p, payload: undefined, base64: bytesToBase64(p.payload) });

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ProxyClient } from './proxy-client.js';
-import { WebSocketServer } from 'ws';
+import { serveWebSockets } from '../src/websocket.js';
 import { Core, batchPlan, coverage, parseSigV4, pathTemplate, readRuntimeInfo, resolveTokens, runRace, signSigV4, type ExchangeSummary } from '@siteinquisition/core';
 
 let tmp: string;
@@ -83,8 +83,7 @@ const mcp = async (body: unknown, headers: Record<string, string> = {}) => {
 beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'siq-tools-'));
   target = createServer(handler);
-  const wss = new WebSocketServer({ server: target });
-  wss.on('connection', (ws, req) => {
+  serveWebSockets(target, (ws, req) => {
     ws.send(`hello ${req.headers.cookie ?? 'anon'}`);
     ws.on('message', (d) => ws.send(`echo:${d.toString()}`));
   });

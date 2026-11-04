@@ -1,9 +1,10 @@
 import { EventEmitter } from 'node:events';
-import { createServer, type AddressInfo, type Server, type Socket } from 'node:net';
-import * as mockttp from 'mockttp';
-import type { CertificateAuthority } from './ca.js';
+import { createServer, type AddressInfo } from 'node:net';
+import { leafIssuer, type CertificateAuthority } from './ca.js';
+import { Interceptor, decodeBody, type InterceptorHooks, type ProxiedRequest, type Timings as WireTimings } from './interceptor.js';
 import type { HookMessage } from './rules.js';
-import type { Scope } from './scope.js';
+import { globToRegExp, type Scope } from './scope.js';
+import type { PlanStep, SentStep } from './wsplan.js';
 import type { SeenHosts } from './seen.js';
 import type { CaptureStore, ExchangeSource, ExchangeSummary, HeaderList, Timings } from './store.js';
 
@@ -32,16 +33,13 @@ export interface ProxyOptions {
 export interface ProxyHooks {
   request?(msg: HookMessage, ctx: { key: string; source: ExchangeSource }): Promise<{ applied: string[]; respond?: { status: number; statusMessage?: string; headers: HeaderList; body: Uint8Array }; drop?: boolean }>;
   response?(req: HookMessage, res: HookMessage, ctx: { key: string; source: ExchangeSource }): Promise<{ applied: string[]; drop?: boolean }>;
+  /**
+   * Whether the response hook needs this response. Responses it does not need
+   * stream straight through (server-sent events, long downloads); the others
+   * are buffered so the hook sees the whole body. Missing means always.
+   */
+  wantsResponse?(req: { method: string; url: string; status: number }, ctx: { key: string }): boolean;
 }
-
-const toHeaderObject = (list: HeaderList): Record<string, string | string[]> => {
-  const out: Record<string, string | string[]> = {};
-  for (const [k, v] of list) {
-    const cur = out[k];
-    out[k] = cur === undefined ? v : Array.isArray(cur) ? [...cur, v] : [cur, v];
-  }
-  return out;
-};
 
 interface Live {
   exchangeId: string;
@@ -50,7 +48,7 @@ interface Live {
   clientAddr: string | null;
 }
 
-/** Ask the OS for an unused port (mockttp's own default scans upwards from 8000, which collides easily). */
+/** Ask the OS for an unused port. */
 const freePort = () =>
   new Promise<number>((resolve, reject) => {
     const probe = createServer();
@@ -65,10 +63,10 @@ const freePort = () =>
  * A restart frees the port for a moment before re-binding it, so retry
  * briefly if something grabbed it in between, then fail with a clear message.
  */
-async function startWithRetry(server: mockttp.Mockttp, port: number, attempts = 5): Promise<void> {
+async function startWithRetry(server: Interceptor, port: number, attempts = 5): Promise<void> {
   for (let i = 1; ; i++) {
     try {
-      await server.start(port);
+      await server.listen(port);
       return;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE' || i >= attempts) {
@@ -82,16 +80,7 @@ async function startWithRetry(server: mockttp.Mockttp, port: number, attempts = 
 
 const LOOPBACK = /^(127\.|::1$|::ffff:127\.)/;
 
-const pairs = (raw: Array<[string, string]> | undefined): HeaderList => (raw ?? []).map(([k, v]) => [k, v]);
-
-const timingsFrom = (t: mockttp.TimingEvents): Timings => {
-  const rel = (ts?: number) => (ts === undefined ? undefined : Math.round((ts - t.startTimestamp) * 1000) / 1000);
-  return {
-    requestBody: rel(t.bodyReceivedTimestamp),
-    responseHeaders: rel(t.headersSentTimestamp),
-    total: rel(t.responseSentTimestamp ?? t.wsAcceptedTimestamp),
-  };
-};
+const timingsFrom = (t: WireTimings): Timings => ({ requestBody: t.requestBody, responseHeaders: t.responseHeaders, total: t.total });
 
 /**
  * The intercepting proxy. Traffic always flows through; scope only decides
@@ -104,13 +93,15 @@ export class ProxyEngine extends EventEmitter<{
   response: [ExchangeSummary];
   error: [Error];
 }> {
-  private server?: mockttp.Mockttp;
+  private server?: Interceptor;
   private live = new Map<string, Live>();
   private wsStreams = new Map<string, string>();
+  /** Recorded exchange id to proxy request id, for open WebSockets. */
+  private wsExchanges = new Map<string, string>();
   private redirects = new Map<string, { exchangeId: string; flowId: string; expires: number }>();
   private listenPort?: number;
   private hooks?: ProxyHooks;
-  /** Tags from hooks, by mockttp request id, waiting for the exchange to be recorded. */
+  /** Tags from hooks, by proxy request id, waiting for the exchange to be recorded. */
   private pendingTags = new Map<string, string[]>();
 
   constructor(
@@ -139,81 +130,72 @@ export class ProxyEngine extends EventEmitter<{
     this.pendingTags.set(reqId, [...(this.pendingTags.get(reqId) ?? []), ...tags]);
   }
 
-  private passthroughHooks() {
+  private interceptorHooks(): InterceptorHooks | undefined {
     const hooks = this.hooks;
-    if (!hooks) return {};
+    if (!hooks) return undefined;
     const source = this.opts.source ?? 'proxy';
-    const modifiable = (url: string) => {
-      try {
-        return this.scope.evaluate(url).modify;
-      } catch {
-        return false;
-      }
-    };
-    const requestMsg = async (req: mockttp.CompletedRequest): Promise<HookMessage> => ({
-      method: req.method,
-      url: req.url,
-      headers: pairs(req.rawHeaders),
-      body: new Uint8Array((await req.body.getDecodedBuffer()) ?? req.body.buffer),
-    });
+    const fail = (err: unknown) => this.emit('error', err instanceof Error ? err : new Error(String(err)));
+    const tagsOf = (applied: string[]) => applied.map((a) => (a.includes(':') ? a : `rule:${a}`));
+    const requestMsg = (req: ProxiedRequest, body: Buffer): HookMessage => ({ method: req.method, url: req.url, headers: req.headers.map(([k, v]) => [k, v]), body: new Uint8Array(body) });
     return {
-      beforeRequest: hooks.request
-        ? async (req: mockttp.CompletedRequest): Promise<mockttp.requestSteps.CallbackRequestResult | void> => {
-            if (!modifiable(req.url)) return;
+      wants: (url) => {
+        try {
+          return this.scope.evaluate(url).modify;
+        } catch {
+          return false;
+        }
+      },
+      request: hooks.request
+        ? async (req, body) => {
             try {
-              const msg = await requestMsg(req);
+              const msg = requestMsg(req, body);
               const before = JSON.stringify([msg.method, msg.url, msg.headers]);
-              const beforeBody = Buffer.from(msg.body);
               const out = await hooks.request!(msg, { key: req.id, source });
-              this.addTags(req.id, out.applied.map((a) => (a.includes(':') ? a : `rule:${a}`)));
-              if (out.drop) return { response: 'close' };
-              if (out.respond) {
-                return { response: { statusCode: out.respond.status, statusMessage: out.respond.statusMessage, headers: toHeaderObject(out.respond.headers), rawBody: out.respond.body } };
-              }
-              const changedHead = before !== JSON.stringify([msg.method, msg.url, msg.headers]);
-              const changedBody = !beforeBody.equals(Buffer.from(msg.body));
-              if (!changedHead && !changedBody) return;
-              return {
-                method: msg.method,
-                url: msg.url,
-                // With a new body mockttp sets the length itself; a stale Content-Length makes the upstream reject it.
-                headers: toHeaderObject(msg.headers.filter(([k]) => !k.startsWith(':') && !(changedBody && /^(content-length|transfer-encoding)$/i.test(k)))),
-                ...(changedBody ? { body: msg.body } : {}),
-              };
+              this.addTags(req.id, tagsOf(out.applied));
+              if (out.drop) return { close: true };
+              if (out.respond) return { respond: out.respond };
+              const changedBody = !body.equals(Buffer.from(msg.body));
+              if (before === JSON.stringify([msg.method, msg.url, msg.headers]) && !changedBody) return;
+              return { replace: { method: msg.method, url: msg.url, headers: msg.headers.filter(([k]) => !k.startsWith(':')), ...(changedBody ? { body: msg.body } : {}) } };
             } catch (err) {
-              this.emit('error', err instanceof Error ? err : new Error(String(err)));
+              fail(err);
               return;
             }
           }
         : undefined,
-      beforeResponse: hooks.response
-        ? async (res: mockttp.requestSteps.PassThroughResponse, req: mockttp.CompletedRequest): Promise<mockttp.requestSteps.CallbackResponseResult | void> => {
-            if (!modifiable(req.url)) return;
+      wantsResponse: hooks.wantsResponse ? (req, status) => hooks.wantsResponse!({ method: req.method, url: req.url, status }, { key: req.id }) : undefined,
+      response: hooks.response
+        ? async (req, res) => {
             try {
-              const reqMsg = await requestMsg(req);
-              const msg: HookMessage = {
-                method: req.method,
-                url: req.url,
-                headers: pairs(res.rawHeaders),
-                body: new Uint8Array((await res.body.getDecodedBuffer()) ?? res.body.buffer),
-                status: res.statusCode,
-                statusMessage: res.statusMessage,
-              };
+              const reqMsg = requestMsg(req, decodeBody(req.body, req.headers) ?? req.body);
+              const msg: HookMessage = { method: req.method, url: req.url, headers: res.headers.map(([k, v]) => [k, v]), body: new Uint8Array(res.decodedBody), status: res.status, statusMessage: res.statusMessage };
               const before = JSON.stringify([msg.status, msg.statusMessage, msg.headers]);
-              const beforeBody = Buffer.from(msg.body);
               const out = await hooks.response!(reqMsg, msg, { key: req.id, source });
-              this.addTags(req.id, out.applied.map((a) => (a.includes(':') ? a : `rule:${a}`)));
-              if (out.drop) return 'close';
-              const changedBody = !beforeBody.equals(Buffer.from(msg.body));
+              this.addTags(req.id, tagsOf(out.applied));
+              if (out.drop) return { close: true };
+              const changedBody = !res.decodedBody.equals(Buffer.from(msg.body));
               if (before === JSON.stringify([msg.status, msg.statusMessage, msg.headers]) && !changedBody) return;
-              return { statusCode: msg.status, statusMessage: msg.statusMessage, headers: toHeaderObject(changedBody ? msg.headers.filter(([k]) => !/^(content-length|transfer-encoding)$/i.test(k)) : msg.headers), ...(changedBody ? { body: msg.body } : {}) };
+              return { replace: { status: msg.status ?? res.status, statusMessage: msg.statusMessage, headers: msg.headers, ...(changedBody ? { body: msg.body } : {}) } };
             } catch (err) {
-              this.emit('error', err instanceof Error ? err : new Error(String(err)));
+              fail(err);
               return;
             }
           }
         : undefined,
     };
+  }
+
+  /** Exchange ids of recorded WebSockets the proxy is relaying right now. */
+  liveWebSockets(): string[] {
+    const open = new Set(this.server?.liveWebSockets() ?? []);
+    return [...this.wsExchanges].filter(([, id]) => open.has(id)).map(([ex]) => ex);
+  }
+
+  /** Inject a frame plan into a live relayed WebSocket, to the server (as the client) or to the client (as the server). */
+  injectWebSocket(exchangeId: string, to: 'server' | 'client', steps: PlanStep[]): Promise<SentStep[]> {
+    const id = this.wsExchanges.get(exchangeId);
+    if (!id || !this.server) return Promise.reject(new Error('that WebSocket is not open through the proxy'));
+    return this.server.injectWebSocket(id, to, steps);
   }
 
   get port(): number {
@@ -227,20 +209,20 @@ export class ProxyEngine extends EventEmitter<{
 
   async start(): Promise<number> {
     if (this.server) return this.port;
-    const server = mockttp.getLocal({
-      https: { cert: this.ca.cert, key: this.ca.key, tlsInterceptOnly: this.scope.decryptHosts().map((hostname) => ({ hostname })) },
-      http2: 'fallback',
-      socks: true,
-      recordTraffic: false,
-      cors: false,
+    const decrypt = this.scope.decryptHosts().map(globToRegExp);
+    const ignore = this.opts.ignoreUpstreamTlsErrors ?? false;
+    const ignoreHosts = Array.isArray(ignore) ? new Set(ignore.map((h) => h.toLowerCase())) : undefined;
+    const server = new Interceptor({
+      issuer: leafIssuer(this.ca),
+      shouldDecrypt: (host) => decrypt.some((re) => re.test(host)),
+      ignoreUpstreamTlsErrors: (host) => (ignoreHosts ? ignoreHosts.has(host.toLowerCase()) : ignore === true),
+      // Refuse other machines before any byte is read unless LAN access is on (this covers tunnels and TLS passthrough too).
+      acceptClient: this.opts.allowLan ? undefined : (socket) => LOOPBACK.test(socket.remoteAddress ?? ''),
+      hooks: this.interceptorHooks(),
     });
-    const passthrough = { ignoreHostHttpsErrors: this.opts.ignoreUpstreamTlsErrors ?? false };
-    await server.forAnyRequest().thenPassThrough({ ...passthrough, ...this.passthroughHooks() });
-    await server.forAnyWebSocket().thenPassThrough(passthrough);
-    await this.subscribe(server);
+    this.subscribe(server);
     const port = this.listenPort ?? (this.opts.port || (await freePort()));
     await startWithRetry(server, port);
-    this.restrictClients(server);
     this.server = server;
     this.listenPort = server.port;
     return server.port;
@@ -249,7 +231,7 @@ export class ProxyEngine extends EventEmitter<{
   async stop(): Promise<void> {
     const server = this.server;
     this.server = undefined;
-    if (server) await server.stop();
+    if (server) await server.close();
     this.live.clear();
     this.wsStreams.clear();
   }
@@ -258,18 +240,6 @@ export class ProxyEngine extends EventEmitter<{
   async restart(): Promise<number> {
     await this.stop();
     return this.start();
-  }
-
-  private restrictClients(server: mockttp.Mockttp): void {
-    if (this.opts.allowLan) return;
-    // mockttp listens on every interface and has no bind option, so drop
-    // non-loopback sockets before any byte is read (this covers CONNECT
-    // tunnels and TLS passthrough too, which never reach request rules).
-    const net = (server as unknown as { server?: Server }).server;
-    if (!net) throw new Error('cannot restrict proxy clients: mockttp internals changed');
-    net.prependListener('connection', (socket: Socket) => {
-      if (!LOOPBACK.test(socket.remoteAddress ?? '')) socket.destroy();
-    });
   }
 
   private takeRedirect(clientAddr: string | null, url: string) {
@@ -306,23 +276,23 @@ export class ProxyEngine extends EventEmitter<{
     };
   }
 
-  private recordRequest(req: mockttp.CompletedRequest, isWebSocket: boolean): void {
-    const url = isWebSocket ? req.url.replace(/^http/, 'ws') : req.url;
-    if (!this.scope.evaluate(url).record) {
-      this.seen?.add(req.destination?.hostname ?? new URL(req.url).hostname, 'http');
+  private recordRequest(req: ProxiedRequest, isWebSocket: boolean): void {
+    if (!this.scope.evaluate(req.url).record) {
+      this.seen?.add(req.hostname, 'http');
       return;
     }
-    const clientAddr = req.remoteIpAddress ?? null;
-    const redirect = this.takeRedirect(clientAddr, req.url);
+    const clientAddr = req.remoteAddress;
+    // Redirect chains are keyed by the http(s) URL a client follows.
+    const redirect = this.takeRedirect(clientAddr, isWebSocket ? req.url.replace(/^ws/, 'http') : req.url);
     const ex = this.store.addRequest({
       source: this.opts.source ?? 'proxy',
       clientAddr,
-      startedAt: req.timingEvents.startTime,
+      startedAt: req.startTime,
       method: req.method,
-      url,
+      url: req.url,
       httpVersion: req.httpVersion,
-      headers: pairs(req.rawHeaders),
-      body: req.body.buffer,
+      headers: req.headers,
+      body: req.body,
       isWebSocket,
       flowId: redirect?.flowId,
       parentId: redirect?.exchangeId,
@@ -336,98 +306,96 @@ export class ProxyEngine extends EventEmitter<{
     this.emit('exchange', ex);
   }
 
-  private async subscribe(server: mockttp.Mockttp): Promise<void> {
-    await server.on('request', this.guard((req) => this.recordRequest(req, false)));
-    await server.on('websocket-request', this.guard((req) => this.recordRequest(req, true)));
+  private subscribe(server: Interceptor): void {
+    server.on('request', this.guard((req) => this.recordRequest(req, false)));
+    server.on('websocket-request', this.guard((req) => this.recordRequest(req, true)));
+    server.on('error', (err) => this.emit('error', err));
 
-    await server.on(
+    server.on(
       'response',
       this.guard((res) => {
         const live = this.live.get(res.id);
         this.pendingTags.delete(res.id);
         if (!live) return;
         this.live.delete(res.id);
-        const headers = pairs(res.rawHeaders);
         const summary = this.store.completeResponse(live.exchangeId, {
-          status: res.statusCode,
+          status: res.status,
           statusMessage: res.statusMessage,
-          headers,
-          body: res.body.buffer,
-          timings: timingsFrom(res.timingEvents),
+          headers: res.headers,
+          body: res.body,
+          timings: timingsFrom(res.timings),
         });
-        if (res.statusCode >= 300 && res.statusCode < 400) {
-          const location = headers.find(([k]) => k.toLowerCase() === 'location')?.[1];
+        if (res.status >= 300 && res.status < 400) {
+          const location = res.headers.find(([k]) => k.toLowerCase() === 'location')?.[1];
           if (location) this.rememberRedirect(live, location);
         }
         this.emit('response', summary);
       }),
     );
 
-    await server.on(
+    server.on(
       'websocket-accepted',
       this.guard((res) => {
         const live = this.live.get(res.id);
         if (!live) return;
         this.live.delete(res.id);
         const summary = this.store.completeResponse(live.exchangeId, {
-          status: res.statusCode,
+          status: res.status,
           statusMessage: res.statusMessage,
-          headers: pairs(res.rawHeaders),
-          timings: timingsFrom(res.timingEvents),
+          headers: res.headers,
+          timings: timingsFrom(res.timings),
         });
         this.wsStreams.set(res.id, this.store.openStream('websocket', live.exchangeId));
+        this.wsExchanges.set(live.exchangeId, res.id);
         this.emit('response', summary);
       }),
     );
 
-    const onMessage = (direction: 'client' | 'server') =>
-      this.guard((msg: mockttp.WebSocketMessage) => {
-        const streamId = this.wsStreams.get(msg.streamId);
+    server.on(
+      'websocket-message',
+      this.guard((msg) => {
+        const streamId = this.wsStreams.get(msg.id);
         if (!streamId) return;
-        const at = Math.round(msg.timingEvents.startTime + (msg.eventTimestamp - msg.timingEvents.startTimestamp));
-        this.store.addStreamMessage({ streamId, direction, opcode: msg.isBinary ? 'binary' : 'text', at, payload: msg.content });
-      });
-    // "received" means received by the proxy from the client; "sent" means sent by the proxy to the client.
-    await server.on('websocket-message-received', onMessage('client'));
-    await server.on('websocket-message-sent', onMessage('server'));
+        this.store.addStreamMessage({ streamId, direction: msg.from, opcode: msg.opcode, at: msg.at, payload: msg.data, ...(msg.meta ? { meta: msg.meta } : {}) });
+      }),
+    );
 
-    await server.on(
+    server.on(
       'websocket-close',
       this.guard((close) => {
-        const streamId = this.wsStreams.get(close.streamId);
+        const streamId = this.wsStreams.get(close.id);
+        for (const [ex, id] of this.wsExchanges) if (id === close.id) this.wsExchanges.delete(ex);
         if (!streamId) return;
-        this.wsStreams.delete(close.streamId);
-        this.store.closeStream(streamId, close.closeCode, close.closeReason);
+        this.wsStreams.delete(close.id);
+        this.store.closeStream(streamId, close.code, close.reason);
       }),
     );
 
-    await server.on(
+    server.on(
       'abort',
-      this.guard((req) => {
-        const live = this.live.get(req.id);
+      this.guard((a) => {
+        this.pendingTags.delete(a.id);
+        const live = this.live.get(a.id);
         if (live) {
-          this.live.delete(req.id);
-          this.store.failExchange(live.exchangeId, 'aborted', req.error?.message ?? 'connection closed', timingsFrom(req.timingEvents));
+          this.live.delete(a.id);
+          this.store.failExchange(live.exchangeId, a.kind, a.message, timingsFrom(a.timings));
         }
-        const streamId = this.wsStreams.get(req.id);
+        const streamId = this.wsStreams.get(a.id);
         if (streamId) {
-          this.wsStreams.delete(req.id);
-          this.store.closeStream(streamId, undefined, req.error?.message ?? 'aborted');
+          this.wsStreams.delete(a.id);
+          this.store.closeStream(streamId, undefined, a.message);
         }
       }),
     );
 
-    await server.on(
-      'tls-passthrough-opened',
-      this.guard((t) => this.seen?.add(t.tlsMetadata?.sniHostname ?? t.destination.hostname, 'tls')),
+    server.on(
+      'tls-passthrough',
+      this.guard((t) => this.seen?.add(t.host, 'tls')),
     );
 
-    await server.on(
+    server.on(
       'tls-client-error',
-      this.guard((f) => {
-        const host = f.tlsMetadata.sniHostname ?? f.destination?.hostname;
-        this.store.addTlsFailure({ host, clientAddr: f.remoteIpAddress, cause: f.failureCause });
-      }),
+      this.guard((f) => this.store.addTlsFailure({ host: f.host ?? undefined, clientAddr: f.remoteAddress ?? undefined, cause: f.cause })),
     );
   }
 }

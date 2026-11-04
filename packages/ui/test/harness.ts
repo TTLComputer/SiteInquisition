@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { WebSocketServer } from 'ws';
+import { serveWebSockets } from '@siteinquisition/core';
 import { Core } from '@siteinquisition/core';
 
 export const DIST = join(import.meta.dirname, '..', 'dist');
@@ -36,10 +36,9 @@ async function startUpstream() {
       }
     });
   });
-  const wss = new WebSocketServer({ server });
-  wss.on('connection', (ws) => ws.on('message', (m) => ws.send(`echo ${String(m)}`)));
+  const wss = serveWebSockets(server, (ws) => ws.on('message', (m) => ws.send(`echo ${String(m)}`)));
   const port = await listen(server);
-  return { port, close: () => new Promise<void>((r) => (wss.close(), server.close(() => r()))) };
+  return { port, close: () => new Promise<void>((r) => (wss.clients.forEach((c) => c.terminate()), server.close(() => r()))) };
 }
 
 function viaProxy(proxyPort: number, url: string, method = 'GET', body?: string) {

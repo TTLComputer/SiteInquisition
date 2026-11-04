@@ -175,6 +175,30 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
     h.core.tools.ws.close(exchangeId);
   });
 
+  it('builds a fragmented frame plan, edits a frame and sends it', async () => {
+    const { exchangeId } = await h.core.tools.ws.connect({ url: `ws://127.0.0.1:${h.upstreamPort}/frames`, headers: [] });
+    await nav('Streams');
+    await page.locator('.streams .saved-view', { hasText: '/frames' }).click();
+    await page.getByRole('group', { name: 'Composer mode' }).getByRole('button', { name: 'Frames' }).click();
+    await page.getByLabel('Message payload').fill('abcdef');
+    await page.getByLabel('Frame preset').selectOption('fragment');
+    await page.getByRole('button', { name: 'Build frames' }).click();
+    const rows = page.locator('.frame-table tbody tr');
+    await expect.poll(() => rows.count()).toBe(3);
+    expect(await page.getByLabel('Opcode of step 2').inputValue()).toBe('continuation');
+    expect(await page.getByLabel('FIN of step 3').isChecked()).toBe(true);
+    // A ping in the middle of the message is legal; the server still reassembles it.
+    await page.getByRole('button', { name: 'Add ping' }).click();
+    await page.getByLabel('Move step 4 up').click();
+    await page.getByLabel('Move step 3 up').click();
+    await page.getByRole('button', { name: 'Send 4 steps' }).click();
+    await expect.poll(() => page.locator('.msg-table:not(.frame-table)').textContent(), { timeout: 10_000 }).toContain('echo abcdef');
+    await shot('frames');
+    const sent = h.core.store.getStreamMessages(h.core.store.getStreamForExchange(exchangeId)!.id).filter((m) => m.direction === 'client');
+    expect(sent.map((m) => m.opcode)).toEqual(['text', 'ping', 'continuation', 'continuation']);
+    h.core.tools.ws.close(exchangeId);
+  });
+
   it('runs a line in the scripts console', async () => {
     await nav('Scripts');
     const input = page.getByLabel('Console input');

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { ExchangeDetail, HeaderList, WireStreamMessage } from '../api';
+import type { ContractResult, ExchangeDetail, HeaderList, WireStreamMessage } from '../api';
 import { base64ToBytes } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -40,7 +40,7 @@ function BodyView({ bytes, headers, mode, truncated }: { bytes: Uint8Array | nul
   );
 }
 
-function Side({ title, first, headers, bytes, truncated, extra, onDecode }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void }) {
+function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrace }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void; onTrace?(text: string): void }) {
   const [mode, setMode] = useState<BodyMode>('pretty');
   return (
     <section>
@@ -58,6 +58,18 @@ function Side({ title, first, headers, bytes, truncated, extra, onDecode }: { ti
             }}
           >
             Decode
+          </button>
+        )}
+        {onTrace && (
+          <button
+            className="btn small"
+            title="Select a value (an id, a token) and find the earlier response that handed it out"
+            onClick={() => {
+              const sel = window.getSelection()?.toString().trim();
+              onTrace(sel ?? '');
+            }}
+          >
+            Where from?
           </button>
         )}
         <div className="segmented" role="group" aria-label={`${title} body view`}>
@@ -267,12 +279,114 @@ function Notes({ ex }: { ex: ExchangeDetail }) {
           Save
         </button>
       </div>
+      <EndpointNotes ex={ex} />
     </div>
   );
 }
 
+/** What the API description says about this exchange, and the team's notes on its endpoint. */
+function ApiStrip({ ex, onNotes }: { ex: ExchangeDetail; onNotes(): void }) {
+  const { client } = useApp();
+  const [contract, setContract] = useState<ContractResult | null>(null);
+  const [note, setNote] = useState<{ key: string; notes: string; tags: string[] } | null>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setContract(null);
+    setNote(null);
+    if (ex.stream || ex.state === 'pending') return;
+    client.contractCheck(ex.id).then((c) => live && setContract(c), () => undefined);
+    client.noteFor(ex.id).then((n) => live && setNote(n), () => undefined);
+    return () => {
+      live = false;
+    };
+  }, [client, ex.id, ex.state, ex.stream]);
+  const errors = contract?.issues.filter((i) => i.severity === 'error') ?? [];
+  const warnings = contract?.issues.filter((i) => i.severity === 'warning') ?? [];
+  if (!contract && !note?.notes && !note?.tags.length) return null;
+  return (
+    <div className="api-strip" aria-label="API description">
+      {contract && (
+        <div className="api-strip-row">
+          <span className={`chip ${errors.length ? 'chip-bad' : warnings.length ? 'chip-warn' : 'chip-good'}`}>
+            {errors.length ? `${errors.length} contract ${errors.length === 1 ? 'issue' : 'issues'}` : warnings.length ? `${warnings.length} ${warnings.length === 1 ? 'warning' : 'warnings'}` : 'Matches the spec'}
+          </span>
+          <span className="mono faint">
+            {contract.endpoint} in {contract.specName}
+          </span>
+          {contract.issues.length > 0 && (
+            <button className="btn small" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+              {open ? 'Hide' : 'Show'}
+            </button>
+          )}
+        </div>
+      )}
+      {open &&
+        contract?.issues.map((i, n) => (
+          <div key={n} className={`api-issue ${i.severity}`}>
+            <span className="faint">{i.side}</span> <span className="mono">{i.path}</span> {i.message}
+          </div>
+        ))}
+      {note && (note.notes || note.tags.length > 0) && (
+        <div className="api-strip-row">
+          <span className="chip">Endpoint note</span>
+          {note.tags.map((t) => (
+            <span key={t} className="chip">
+              {t}
+            </span>
+          ))}
+          <span className="api-note-text">{note.notes}</span>
+          <button className="btn small" onClick={onNotes}>
+            Edit
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EndpointNotes({ ex }: { ex: ExchangeDetail }) {
+  const { client, notify } = useApp();
+  const [key, setKey] = useState('');
+  const [notes, setNotes] = useState('');
+  const [tags, setTags] = useState('');
+  useEffect(() => {
+    client.noteFor(ex.id).then((n) => {
+      setKey(n?.key ?? '');
+      setNotes(n?.notes ?? '');
+      setTags(n?.tags.join(', ') ?? '');
+    }, () => undefined);
+  }, [client, ex.id]);
+  if (!key) return null;
+  return (
+    <>
+      <div className="sec-head" style={{ marginTop: 12 }}>
+        <b style={{ color: 'var(--text)' }}>Endpoint notes</b>
+        <span className="mono faint">{key}</span>
+      </div>
+      <div className="faint" style={{ fontSize: 12 }}>
+        Shared with everyone and shown on every call to this endpoint, in Coverage and in the API view.
+      </div>
+      <input className="input mono" placeholder="tags: needs auth, slow, admin only" value={tags} onChange={(e) => setTags(e.target.value)} aria-label="Endpoint tags" />
+      <textarea className="input" style={{ height: 90, padding: 8 }} value={notes} onChange={(e) => setNotes(e.target.value)} aria-label="Endpoint notes" placeholder="What this endpoint does, quirks, who owns it" />
+      <div>
+        <button
+          className="btn"
+          onClick={() =>
+            client
+              .setEndpointNote(key, notes, tags.split(',').map((t) => t.trim()).filter(Boolean))
+              .then(() => notify('Endpoint notes saved'), (e: Error) => notify(e.message))
+          }
+        >
+          Save endpoint notes
+        </button>
+      </div>
+    </>
+  );
+}
+
 export function Inspector({ id, height, onClose }: { id: string; height: number | null; onClose(): void }) {
-  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream } = useApp();
+  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, traceValue } = useApp();
   const [sig, setSig] = useState<{ accessKeyId: string; region: string; service: string; date: string; signedHeaders: string[] } | null>(null);
   const [ex, setEx] = useState<ExchangeDetail | null>(null);
   const [reqBody, setReqBody] = useState<Uint8Array | null>(null);
@@ -365,6 +479,13 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
             </button>
             <button
               className="btn small"
+              title="Copy this request as a curl command"
+              onClick={() => client.curl(ex.id).then((c) => navigator.clipboard.writeText(c)).then(() => notify('Copied as curl'), (e: Error) => notify(e.message))}
+            >
+              curl
+            </button>
+            <button
+              className="btn small"
               title="Pause the next request to this endpoint"
               onClick={() => breakOn(client, ex).then(() => notify('Breakpoint added for this endpoint.'), (e: Error) => notify(e.message))}
             >
@@ -385,6 +506,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
       </div>
       <div className="insp-body">
         {tab === 'exchange' && <ErrorBanner ex={ex} />}
+        {tab === 'exchange' && <ApiStrip ex={ex} onNotes={() => setTab('notes')} />}
         {tab === 'exchange' && (
           <div className="two-col">
             <Side
@@ -404,6 +526,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
                 </>
               }
               onDecode={(t) => sendToCodecs(t, `${ex.method} ${ex.path.split('?')[0]} request`)}
+              onTrace={(t) => (t ? traceValue(t, ex.id) : notify('Select a value in the request first, such as an id in the path or body.'))}
             />
             <Side
               title="Response"

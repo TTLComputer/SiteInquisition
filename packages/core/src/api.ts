@@ -3,7 +3,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { decodeLayers, detectChain, encodeChain, listCodecs, replaceThroughChain } from '@siteinquisition/codecs';
 import { coverage } from './coverage.js';
 import { parseSigV4 } from './sigv4.js';
-import { batchPlan, resolveTokens } from './tokens.js';
+import { batchPlan, flowRefs, resolveTokens } from './tokens.js';
+import { pickValues, tagValue } from './values.js';
 import type { AddressInfo } from 'node:net';
 import { OPEN, serveWebSockets, type WsConnection as WebSocket } from './websocket.js';
 import { PRESETS, buildPlan, validatePlan } from './wsplan.js';
@@ -160,8 +161,10 @@ export class CoreApiServer {
       'tokens.preview': (p) => {
         const texts = (p.texts as string[]) ?? [];
         const url = str(p, 'url', false) ?? 'http://localhost/';
-        const plan = batchPlan(texts, core.projectDir);
-        const ctx = { url, cookies: () => cookieJar(store), vars: () => core.tools.vars.values(), projectDir: core.projectDir, batch: plan[0] };
+        const plan = batchPlan(texts, core.projectDir, 10_000, (arg) => pickValues(store, arg));
+        // A preview sends nothing, so flows show as placeholders instead of running.
+        const flows = new Map(flowRefs(texts).map((n) => [n, new Proxy({} as Record<string, string>, { get: (_t, k) => (typeof k === 'string' ? `‹flow ${n}.${k}›` : undefined) })]));
+        const ctx = core.tools.sender.tokenContext(url, { batch: plan[0], flows });
         return {
           sends: plan.length,
           resolved: texts.map((t) => {
@@ -268,6 +271,50 @@ export class CoreApiServer {
         if (id && !script) throw new RpcError(404, 'script not found');
         return core.tools.runScript(script ?? { id: 'console', name: 'console', kind: 'script', code: str(p, 'code')! });
       },
+      'flows.list': () => core.tools.flowList(),
+      'flows.set': (p) => core.tools.setFlows(arr(p, 'flows') as never),
+      'flows.save': (p) => core.tools.saveFlow(p.flow as never),
+      'flows.run': (p) => core.tools.runFlow(str(p, 'name')!, (p.inputs as Record<string, string>) ?? {}),
+      'flows.draft': (p) => core.tools.draftFlow(arr(p, 'ids') as string[], str(p, 'name', false)),
+      'specs.list': () => core.tools.specs(),
+      'specs.import': (p) => core.tools.importSpec(str(p, 'text')!, str(p, 'name', false)),
+      'specs.delete': (p) => (core.tools.deleteSpec(str(p, 'id')!), true),
+      'specs.coverage': (p) => core.tools.specCoverage(str(p, 'host')!),
+      'specs.request': (p) => core.tools.specRequest(str(p, 'specId')!, str(p, 'key')!, { baseUrl: str(p, 'baseUrl', false), values: p.values as Record<string, string> | undefined }),
+      'har.import': (p) => core.tools.importHar(str(p, 'text')!, str(p, 'tag', false)),
+      'openapi.export': (p) => core.tools.exportOpenApi(str(p, 'host')!, str(p, 'title', false)),
+      'values.catalog': (p) => core.tools.values({ host: str(p, 'host', false), query: str(p, 'query', false), limit: num(p, 'limit') }),
+      'values.pick': (p) => pickValues(store, str(p, 'spec')!),
+      'values.origin': (p) => core.tools.valueOrigin(str(p, 'value')!, str(p, 'beforeId', false)),
+      'tags.move': (p) => core.tools.moveTag(str(p, 'tag')!, str(p, 'id')!),
+      'tags.value': (p) => tagValue(store, str(p, 'ref')!),
+      'contract.check': (p) => core.tools.contractCheck(str(p, 'id')!),
+      'contract.scan': (p) => core.tools.contractScan(str(p, 'host')!),
+      'identities.get': () => core.tools.identities(),
+      'identities.set': (p) => core.tools.setIdentities(arr(p, 'identities') as never),
+      'authmatrix.run': (p) => core.tools.authMatrix(arr(p, 'ids') as string[], p.identities as string[] | undefined, p.ignoreTlsErrors === true),
+      'negative.run': (p) => core.tools.negativeTests(str(p, 'id')!, num(p, 'max'), p.ignoreTlsErrors === true),
+      'diff.exchanges': (p) => core.tools.diff(str(p, 'a')!, str(p, 'b')!),
+      'lifecycle.get': (p) => core.tools.lifecycle(str(p, 'host')!),
+      'glossary.get': (p) => core.tools.glossary(str(p, 'host', false)),
+      'graphql.import': (p) =>
+        core.tools.graphqlImport({
+          targetUrl: str(p, 'targetUrl')!,
+          schemaUrl: str(p, 'schemaUrl', false),
+          headers: p.headers as never,
+          schemaHeaders: p.schemaHeaders as never,
+          method: str(p, 'method', false) as never,
+          ignoreTlsErrors: p.ignoreTlsErrors === true,
+        }),
+      'graphql.operations': (p) => core.tools.graphqlOperations(str(p, 'host', false)),
+      'graphql.drift': (p) => core.tools.graphqlDrift(str(p, 'targetUrl')!),
+      'export.curl': (p) => core.tools.curl(str(p, 'id')!),
+      'export.har': (p) => core.tools.exportHar(p.query !== undefined ? store.search(String(p.query), { limit: num(p, 'limit') ?? 5000 }).map((e) => e.id) : (arr(p, 'ids') as string[])),
+      'export.postman': (p) => core.tools.exportPostman({ flow: str(p, 'flow', false), ids: p.ids as string[] | undefined, name: str(p, 'name', false) }),
+      'flows.toTest': (p) => core.tools.flowToTest(str(p, 'name')!),
+      'notes.endpoints': () => core.tools.endpointNotes(),
+      'notes.setEndpoint': (p) => core.tools.setEndpointNote(str(p, 'key')!, str(p, 'notes', false) ?? '', (p.tags as string[]) ?? []),
+      'notes.forExchange': (p) => core.tools.noteFor(str(p, 'id')!),
       'macros.get': () => core.tools.macros(),
       'macros.set': (p) => core.tools.setMacros(arr(p, 'macros') as never),
       'macros.run': (p) => core.tools.sender.runMacro(str(p, 'id')!),

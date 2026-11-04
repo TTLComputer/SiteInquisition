@@ -293,7 +293,7 @@ export class ScriptEngine {
   }
 
   /** Run a test suite or a one-off script with the full SDK. */
-  async execute(script: Pick<Script, 'id' | 'name' | 'kind' | 'code'>, sdk: Sdk): Promise<RunResult> {
+  async execute(script: Pick<Script, 'id' | 'name' | 'kind' | 'code'>, sdk: Sdk, extra: Record<string, unknown> = {}): Promise<RunResult> {
     const logs: LogLine[] = [];
     const tests: Array<{ name: string; fn: () => unknown }> = [];
     const context = vm.createContext(
@@ -303,6 +303,7 @@ export class ScriptEngine {
         test: (name: string, fn: () => unknown) => tests.push({ name: String(name), fn }),
         expect: (v: unknown) => new Expectation(v),
         sleep: (ms: number) => new Promise((r) => setTimeout(r, Math.min(Number(ms) || 0, 30_000))),
+        ...extra,
       },
       { codeGeneration: { strings: false, wasm: false } },
     );

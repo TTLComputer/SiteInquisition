@@ -521,3 +521,50 @@ textarea.editor.composer-text { min-height: 90px; height: 110px; width: 100%; bo
 /* JWT and AWS panels */
 .jwt-panel, .jwt-edit, .jwt-out { display: flex; flex-direction: column; gap: 6px; padding: 6px 12px; }
 .jwt-edit { border-top: 1px solid var(--line-soft); }
+/* ---------- API: values, flows, API files ---------- */
+.api-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.api-scroll { flex: 1; min-height: 0; overflow: auto; padding-bottom: 16px; }
+.api-split { flex: 1; min-height: 0; display: flex; }
+.flow-list { width: 240px; flex: none; border-right: 1px solid var(--line); padding: 10px; display: flex; flex-direction: column; gap: 6px; overflow: auto; }
+.flow-list .saved-view[aria-current='true'] { background: var(--bg-raised, rgba(127, 127, 127, 0.12)); }
+.flow-editor { flex: 1; min-width: 0; overflow: auto; display: flex; flex-direction: column; }
+.flow-steps { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px; }
+.flow-step textarea.editor { width: 100%; border-top: 1px solid var(--line-soft); }
+.flow-step.passed { border-left: 3px solid var(--ok); }
+.flow-step.failed { border-left: 3px solid var(--error); }
+.extract-rows { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 6px 10px; }
+.extract-row { display: inline-flex; gap: 6px; align-items: center; }
+.flow-result { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 4px 10px 8px; font-size: 12px; }
+.trace-bar { display: flex; gap: 8px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); }
+.origin-list { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; font-size: 12px; }
+.origin-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.values-table td { vertical-align: top; }
+.samples { display: flex; flex-wrap: wrap; gap: 4px; max-width: 420px; }
+.sample { font: inherit; font-family: var(--mono, monospace); font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+.sample:hover { border-color: var(--accent); }
+.spec-card { padding-bottom: 6px; }
+.menu-form { display: flex; gap: 6px; padding: 6px 8px; }
+.menu-form .input { flex: 1; min-width: 0; }
+.chip { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); white-space: nowrap; }
+.chip-bad { color: var(--error); border-color: var(--error); }
+.chip-warn { color: var(--warn-text); background: var(--warn-bg); border-color: var(--warn-line); }
+.chip-good { color: var(--ok); border-color: var(--ok); }
+.api-strip { padding: 6px 12px; border-bottom: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.api-strip-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.api-note-text { flex: 1; min-width: 0; white-space: pre-wrap; }
+.api-issue { padding-left: 12px; font-size: 12px; }
+.api-issue.error { color: var(--error); }
+.api-issue.warning { color: var(--warn-text); }
+.matrix td.v-same { background: var(--diff-del-bg); color: var(--diff-del); font-weight: 600; }
+.matrix td.v-allowed { color: var(--warn-text); }
+.matrix td.v-denied, .matrix td.v-not-found { color: var(--ok); }
+.matrix td.v-error, .matrix td.v-other { color: var(--text-muted); }
+.lc-cell { text-align: center; font-size: 12px; }
+.lc-cell.seen { color: var(--ok); }
+.lc-cell.failed { color: var(--error); }
+.lc-cell.doc { color: var(--text-muted); }
+.lc-cell.missing { color: var(--text-faint); }
+.diff-path { font-family: var(--font-mono); font-size: 12px; }
+.diff-before { color: var(--diff-del); background: var(--diff-del-bg); font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+.diff-after { color: var(--diff-add); background: var(--diff-add-bg); font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+.form-grid { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 6px 10px; align-items: center; font-size: 12px; }

@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Approval, CoreClient, CoreInfo, ExchangeSummary, HeaderList, Paused, ScopeConfig } from './api';
 
-export type ViewId = 'browser' | 'history' | 'timeline' | 'replay' | 'race' | 'rules' | 'codecs' | 'cookies' | 'streams' | 'scripts' | 'settings';
+export type ViewId = 'browser' | 'history' | 'timeline' | 'replay' | 'race' | 'h3' | 'rules' | 'codecs' | 'cookies' | 'streams' | 'scripts' | 'settings';
 
 /** A request built somewhere other than History (Codecs, an agent, a script) and opened in Replay. */
 export interface Draft {
@@ -29,6 +29,27 @@ export interface RaceItem {
   raw: string;
   offsetMs: number;
   replayOf?: string;
+}
+
+/** One row of the HTTP/3 lab's stream plan. Numbers left empty mean "not set". */
+export interface H3Item {
+  key: string;
+  raw: string;
+  replayOf?: string;
+  openAtMs?: number;
+  after?: { row: number; event: 'headers' | 'end' };
+  hold?: 'last-byte' | 'fin';
+  releaseAtMs?: number;
+  chunkSize?: number;
+  chunkGapMs?: number;
+  resetAfterBytes?: number;
+  resetAtMs?: number;
+  resetCode?: number;
+  stopSendingAfterBytes?: number;
+  priority?: string;
+  priorityUpdateAtMs?: number;
+  priorityUpdateValue?: string;
+  earlyData?: boolean;
 }
 
 /** Text handed to the Codecs workbench from another screen. */
@@ -77,6 +98,10 @@ interface AppState {
   sendToCodecs(text: string, label: string, returnTo?: (text: string) => void): void;
   raceItems: RaceItem[];
   setRaceItems(items: RaceItem[]): void;
+  h3Items: H3Item[];
+  setH3Items(items: H3Item[]): void;
+  /** Add requests to the HTTP/3 lab and open it. */
+  sendToH3(items: Array<Omit<H3Item, 'key'>>): void;
   sendToRace(items: Array<Omit<RaceItem, 'key' | 'offsetMs'> & { offsetMs?: number }>): void;
   /** The connection the Streams view should show. */
   streamId: string | null;
@@ -118,6 +143,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
   const toastTimer = useRef<number>();
   const [codecInput, setCodecInput] = useState<CodecInput | null>(null);
   const [raceItems, setRaceItems] = useState<RaceItem[]>([]);
+  const [h3Items, setH3Items] = useState<H3Item[]>([]);
   const [streamId, setStreamId] = useState<string | null>(null);
   const [streamPrefill, setStreamPrefill] = useState<AppState['streamPrefill']>(null);
   const [paused, setPaused] = useState<Paused[]>([]);
@@ -203,6 +229,10 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     setViewState('codecs');
   }, []);
 
+  const sendToH3 = useCallback((items: Array<Omit<H3Item, 'key'>>) => {
+    setH3Items((cur) => [...cur, ...items.map((it, i) => ({ ...it, key: `${Date.now().toString(36)}-h${cur.length + i}` }))]);
+    setViewState('h3');
+  }, []);
   const sendToRace = useCallback((items: Array<Omit<RaceItem, 'key' | 'offsetMs'> & { offsetMs?: number }>) => {
     setRaceItems((cur) => [...cur, ...items.map((it, i) => ({ ...it, offsetMs: it.offsetMs ?? 0, key: `${Date.now().toString(36)}-${cur.length + i}` }))]);
     setViewState('race');
@@ -288,6 +318,9 @@ export function AppProvider({ client, children }: { client: CoreClient; children
       raceItems,
       setRaceItems,
       sendToRace,
+      h3Items,
+      setH3Items,
+      sendToH3,
       streamId,
       streamPrefill,
       openStream,
@@ -296,7 +329,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
       subTab,
       openAt,
     }),
-    [client, info, connected, view, setView, activeTab, replayTabs, openReplay, closeReplay, resendNow, selectedId, query, savedViews, saveView, refreshInfo, scope, openReplayById, toast, notify, openDraft, codecInput, sendToCodecs, raceItems, sendToRace, streamId, streamPrefill, openStream, paused, approvals, subTab, openAt],
+    [client, info, connected, view, setView, activeTab, replayTabs, openReplay, closeReplay, resendNow, selectedId, query, savedViews, saveView, refreshInfo, scope, openReplayById, toast, notify, openDraft, codecInput, sendToCodecs, raceItems, sendToRace, h3Items, sendToH3, streamId, streamPrefill, openStream, paused, approvals, subTab, openAt],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

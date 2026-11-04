@@ -27,7 +27,7 @@ export interface CoreOptions {
    * A second, loopback-only listener for the built-in browser. Its traffic is
    * recorded with source "browser" so the browser view can show its own feed.
    */
-  browserProxy?: boolean;
+  browserProxy?: boolean | { port?: number; http3?: boolean };
   /** Core API settings, or false to run without it. */
   api?: { port?: number; token?: string } | false;
 }
@@ -41,6 +41,40 @@ export interface CoreRuntimeInfo {
 }
 
 export const RUNTIME_FILE = 'core.json';
+
+/**
+ * Hosts the built-in browser sends to the HTTP/3 listener. Chromium reads
+ * them from its command line, so the app reads this file before it starts
+ * and changes take effect on the next launch.
+ */
+export const BROWSER_FILE = 'browser.json';
+
+export function readBrowserHttp3Hosts(projectDir: string): string[] {
+  try {
+    const v = JSON.parse(readFileSync(join(projectDir, BROWSER_FILE), 'utf8')) as { http3Hosts?: unknown };
+    return Array.isArray(v.http3Hosts) ? v.http3Hosts.filter((h): h is string => typeof h === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Host names only: Chromium's force-QUIC switch takes exact origins, so no wildcards or ports. */
+export function normalizeBrowserHttp3Hosts(hosts: string[]): string[] {
+  const out = new Set<string>();
+  for (const raw of hosts) {
+    const h = raw.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/[/:].*$/, '');
+    if (!h) continue;
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(h)) throw new Error(`"${raw.trim()}" is not a host name (wildcards and IP addresses are not supported)`);
+    out.add(h);
+  }
+  return [...out];
+}
+
+export function writeBrowserHttp3Hosts(projectDir: string, hosts: string[]): string[] {
+  const list = normalizeBrowserHttp3Hosts(hosts);
+  writeFileSync(join(projectDir, BROWSER_FILE), JSON.stringify({ http3Hosts: list }, null, 2));
+  return list;
+}
 
 export class Core {
   readonly projectDir: string;
@@ -62,7 +96,8 @@ export class Core {
     this.scope = new Scope(this.store.getMeta<ScopeConfig>('scope') ?? DEFAULT_SCOPE);
     this.proxy = new ProxyEngine(this.store, this.scope, ca, opts.proxy, this.seen);
     if (opts.browserProxy) {
-      this.browserProxy = new ProxyEngine(this.store, this.scope, ca, { ignoreUpstreamTlsErrors: opts.proxy?.ignoreUpstreamTlsErrors, source: 'browser' }, this.seen);
+      const b = opts.browserProxy === true ? {} : opts.browserProxy;
+      this.browserProxy = new ProxyEngine(this.store, this.scope, ca, { ignoreUpstreamTlsErrors: opts.proxy?.ignoreUpstreamTlsErrors, source: 'browser', port: b.port, http3: b.http3 }, this.seen);
     }
     this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg, this.seen));
     this.tools = new PowerTools(this);
@@ -124,6 +159,8 @@ export class Core {
       actor: this.store.actor,
       proxyPort: this.proxy.running ? this.proxy.port : null,
       browserProxyPort: this.browserProxy?.running ? this.browserProxy.port : null,
+      browserHttp3Port: this.browserProxy?.http3Port ?? null,
+      browserHttp3Hosts: readBrowserHttp3Hosts(this.projectDir),
       apiPort: this.api ? safe(() => this.api!.port) : null,
       ca: { certPath: this.ca.certPath, fingerprint: this.ca.fingerprint, expiresAt: this.ca.expiresAt.toISOString() },
       decryptHosts: this.scope.decryptHosts(),

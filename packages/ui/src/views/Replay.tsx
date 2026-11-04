@@ -14,8 +14,9 @@ interface Options {
   csrf: boolean;
   sigv4: string;
   ignoreTls: boolean;
+  protocol: 'h1' | 'h3';
 }
-const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false };
+const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false, protocol: 'h1' };
 
 const binaryMarker = (n: number) => `<binary body: ${n} bytes, sent as captured>`;
 
@@ -160,6 +161,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         followRedirects: opts.followRedirects ? 10 : 0,
         sigv4: opts.sigv4 || undefined,
         ignoreTlsErrors: opts.ignoreTls,
+        protocol: opts.protocol === 'h3' ? 'h3' : undefined,
       };
       if (preview && preview.sends > 1) {
         const out = await client.replayBatch(req, { ...options, concurrency: 4 });
@@ -293,6 +295,13 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         )}
       </div>
       <div className="replay-options" aria-label="Send options">
+        <label className="check" title="HTTP/3 sends over QUIC with the built-in stack (https URLs only)">
+          Protocol
+          <select className="input" value={opts.protocol} onChange={(e) => setOpts({ ...opts, protocol: e.target.value as Options['protocol'] })} aria-label="Protocol">
+            <option value="h1">HTTP/1.1</option>
+            <option value="h3">HTTP/3</option>
+          </select>
+        </label>
         {opt('refreshCookies', 'Fresh cookies', 'Replace the Cookie header with the current cookie jar')}
         {opt('applyRules', 'Apply rules', 'Run enabled request match and replace rules')}
         {opt('loginMacro', 'Log in on 401/403', 'Run the login macro for this host and send again')}

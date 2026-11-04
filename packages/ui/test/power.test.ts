@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
-import { readRuntimeInfo } from '@siteinquisition/core';
+import { H3Server, leafIssuer, readRuntimeInfo } from '@siteinquisition/core';
 import { DIST, startHarness, type Harness } from './harness';
 
 // The power tools, driven through the built renderer against a real core.
@@ -155,6 +155,39 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
     await expect.poll(() => page.getByLabel('Race results').locator('tbody tr').count(), { timeout: 15_000 }).toBe(10);
     await shot('race');
     expect(await page.getByLabel('Race results').textContent()).toContain('all 200');
+  });
+
+  it('runs an HTTP/3 stream plan with the single-datagram gate', async () => {
+    // An HTTP/3 server on the upstream's port number (UDP), so captured URLs work as https.
+    const issuer = leafIssuer(h.core.ca);
+    const leaf = issuer.issue('127.0.0.1');
+    const arrivals: number[] = [];
+    const h3 = new H3Server({ cert: leaf.cert, key: leaf.key }, async (req) => {
+      await req.body();
+      arrivals.push(performance.now());
+      req.respond(200, [['content-type', 'application/json']], '{"ok":true}');
+    });
+    await h3.listen(h.upstreamPort, '127.0.0.1');
+    try {
+      await nav('History');
+      await page.locator('.row', { hasText: '/api/apply-coupon' }).first().click();
+      await nav('HTTP/3');
+      await page.getByRole('button', { name: 'Add selected request' }).click();
+      await expect.poll(() => page.locator('.h3-item').count()).toBe(1);
+      await page.getByRole('button', { name: '×10' }).click();
+      await page.getByRole('group', { name: 'Presets' }).getByRole('button', { name: 'Single-datagram race' }).click();
+      await page.locator('.h3lab .replay-bar').getByText('Ignore TLS errors').click();
+      await page.locator('.h3lab .btn.primary').click();
+      const results = page.getByLabel('HTTP/3 results');
+      await expect.poll(() => results.locator('tbody tr').count(), { timeout: 15_000 }).toBe(10);
+      expect(await results.textContent()).toContain('all 200');
+      expect(await results.textContent()).toContain('gate released in 1 datagram');
+      expect(Math.max(...arrivals) - Math.min(...arrivals)).toBeLessThan(50);
+      await results.getByRole('button', { name: /Packet log/ }).click();
+      await shot('h3lab');
+    } finally {
+      await h3.close();
+    }
   });
 
   it('opens a WebSocket replay connection and sends a frame from the composer', async () => {

@@ -32,6 +32,8 @@ export interface SendOptions {
   csrf?: boolean;
   ignoreTlsErrors?: boolean;
   timeoutMs?: number;
+  /** Send over HTTP/3 ('h3') instead of HTTP/1.1. */
+  protocol?: 'h1' | 'h3';
 }
 
 export interface SendRequest {
@@ -191,6 +193,7 @@ export class Sender {
         headers: [['Accept', 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8'], ...(cookieHeaderFor(this.d.store, target) ? [['Cookie', cookieHeaderFor(this.d.store, target)!] as [string, string]] : [])],
         ignoreTlsErrors: opts.ignoreTlsErrors,
         timeoutMs: opts.timeoutMs,
+        protocol: opts.protocol,
       });
       this.addTags(res.id, ['csrf-refresh']);
     }
@@ -204,13 +207,13 @@ export class Sender {
       prepared = this.prepare(req, { ...opts, refreshCookies: opts.refreshCookies ?? true }, batch);
     }
     const { req: r, applied } = prepared;
-    let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+    let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
     this.addTags(res.id, applied);
 
     if (prepared.csrf.length && res.status !== null && CSRF_REJECTED.has(res.status)) {
       await this.refreshCsrf(prepared.csrf, r.url, opts);
       const again = this.prepare(req, { ...opts, refreshCookies: opts.refreshCookies ?? true }, batch);
-      res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+      res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
       this.addTags(res.id, [...again.applied, 'after-csrf-refresh']);
     }
 
@@ -221,7 +224,7 @@ export class Sender {
         await this.runMacro(macro.id);
         // Resend with fresh tokens and cookies; the macro's responses have updated both.
         const again = this.prepare(req, { ...opts, refreshCookies: opts.refreshCookies ?? true }, batch);
-        res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+        res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
         this.addTags(res.id, [...again.applied, `after-login:${macro.name}`]);
       }
     }
@@ -246,6 +249,7 @@ export class Sender {
         replayOf: r.replayOf,
         ignoreTlsErrors: opts.ignoreTlsErrors,
         timeoutMs: opts.timeoutMs,
+        protocol: opts.protocol,
       });
       this.addTags(current.id, [`redirect-of:${flowRoot.id}`]);
     }

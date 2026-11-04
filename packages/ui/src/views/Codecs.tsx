@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { bulk, formatPath, query, type BulkOp, type PathSeg } from '@siteinquisition/codecs/jsonpath';
+import { bulk, formatPath, query, setAt, type BulkOp, type PathSeg } from '@siteinquisition/codecs/jsonpath';
 import { base64ToBytes, type SavedChain } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -15,13 +15,26 @@ function layerText(l: Layer): string {
   return asText(l.bytes) ?? hexDump(l.bytes);
 }
 
-function JsonTree({ value, path, onPick, depth = 0 }: { value: unknown; path: PathSeg[]; onPick(p: PathSeg[]): void; depth?: number }) {
+/** A string that is probably encoded data worth decoding in place: JSON text, base64, a JWT or url-encoding. */
+const looksEncoded = (v: string) =>
+  v.length >= 8 && (/^\s*[[{]/.test(v) || /^[A-Za-z0-9+/_-]{16,}={0,2}$/.test(v) || /^eyJ[\w-]+\.[\w-]*\.?[\w-]*$/.test(v) || /%[0-9a-f]{2}/i.test(v));
+
+type TreeProps = { value: unknown; path: PathSeg[]; onPick(p: PathSeg[]): void; onDecode?(p: PathSeg[], text: string): void; depth?: number };
+
+function JsonTree({ value, path, onPick, onDecode, depth = 0 }: TreeProps) {
   const [open, setOpen] = useState(depth < 2);
   if (value === null || typeof value !== 'object') {
     return (
-      <button className={`jt-leaf jt-${value === null ? 'null' : typeof value}`} onClick={() => onPick(path)} title={`Use ${formatPath(path)}`}>
-        {JSON.stringify(value)}
-      </button>
+      <>
+        <button className={`jt-leaf jt-${value === null ? 'null' : typeof value}`} onClick={() => onPick(path)} title={`Use ${formatPath(path)}`}>
+          {JSON.stringify(value)}
+        </button>
+        {onDecode && typeof value === 'string' && looksEncoded(value) && (
+          <button className="btn small jt-decode" onClick={() => onDecode(path, value)} title="Decode this value in place, edit it, and put it back encoded the same way">
+            decode
+          </button>
+        )}
+      </>
     );
   }
   const entries: Array<[PathSeg, unknown]> = Array.isArray(value) ? value.map((v, i) => [i, v]) : Object.entries(value);
@@ -37,7 +50,7 @@ function JsonTree({ value, path, onPick, depth = 0 }: { value: unknown; path: Pa
               <button className="jt-key" onClick={() => onPick([...path, k])} title={`Use ${formatPath([...path, k])}`}>
                 {typeof k === 'number' ? `[${k}]` : k}
               </button>
-              : <JsonTree value={v} path={[...path, k]} onPick={onPick} depth={depth + 1} />
+              : <JsonTree value={v} path={[...path, k]} onPick={onPick} onDecode={onDecode} depth={depth + 1} />
             </div>
           ))}
         </div>
@@ -128,6 +141,34 @@ export function Codecs() {
       live = false;
     };
   }, [client, chain, input]);
+
+  // A value inside the JSON that is itself encoded (a JSON string, base64, a JWT...), decoded on its own.
+  const [nested, setNested] = useState<{ path: PathSeg[]; chain: string[]; isValue: boolean; text: string } | null>(null);
+  const decodeNested = async (at: PathSeg[], value: string) => {
+    try {
+      const bytes = enc.encode(value);
+      const ch = await client.detect(bytes);
+      if (!ch.length) return notify('No encoding recognized in that value');
+      const ls = await client.layers(ch, bytes);
+      const last = ls[ls.length - 1]!;
+      setNested({ path: at, chain: ch, isValue: last.kind !== 'bytes', text: last.kind === 'bytes' ? (asText(base64ToBytes(last.base64)) ?? '') : JSON.stringify(last.value, null, 2) });
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+  const putNestedBack = async () => {
+    if (!nested || parsedEdit === undefined) return;
+    try {
+      const bytes = await client.encode(nested.chain, nested.isValue ? JSON.parse(nested.text) : enc.encode(nested.text));
+      setEdit(JSON.stringify(setAt(parsedEdit, nested.path, new TextDecoder().decode(bytes)), null, 2));
+      setEditDirty(true);
+      setOutput(null);
+      notify(`Put back into ${formatPath(nested.path)} as ${nested.chain.join(' > ')}`);
+      setNested(null);
+    } catch (e) {
+      notify(`Could not encode: ${(e as Error).message}`);
+    }
+  };
 
   const inner = layers[layers.length - 1];
   const innerIsJson = inner?.kind === 'value' && typeof inner.value === 'object' && inner.value !== null;
@@ -357,10 +398,26 @@ export function Codecs() {
             />
             {innerIsJson && parsedEdit !== undefined && (
               <div className="json-tree" aria-label="JSON tree">
-                <JsonTree value={parsedEdit} path={[]} onPick={(p) => setPath(formatPath(p))} />
+                <JsonTree value={parsedEdit} path={[]} onPick={(p) => setPath(formatPath(p))} onDecode={(p, v) => void decodeNested(p, v)} />
               </div>
             )}
           </div>
+          {nested && (
+            <div className="nested-edit" aria-label="Nested value">
+              <div className="sec-head">
+                <b style={{ color: 'var(--text)' }}>{formatPath(nested.path)}</b>
+                <span className="mono">{nested.chain.join(' > ')}</span>
+                <span style={{ flex: 1 }} />
+                <button className="btn small primary" onClick={() => void putNestedBack()}>
+                  Put back
+                </button>
+                <button className="btn small" onClick={() => setNested(null)}>
+                  Cancel
+                </button>
+              </div>
+              <textarea className="editor" aria-label="Decoded nested value" spellCheck={false} value={nested.text} onChange={(e) => setNested({ ...nested, text: e.target.value })} rows={8} />
+            </div>
+          )}
           {innerIsJson && (
             <div className="jsonpath-bar">
               <input className="input mono" aria-label="JSONPath" placeholder="$..token  or  $.items[*].price" value={path} onChange={(e) => setPath(e.target.value)} style={{ flex: '1 1 220px' }} />

@@ -80,7 +80,8 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
     const table = page.locator('.coverage-table');
     await expect.poll(() => table.textContent()).toContain('/api/apply-coupon');
     const post = table.locator('tr', { hasText: '/api/apply-coupon' });
-    expect(await post.textContent()).toContain('cart, code');
+    expect(await post.textContent()).toContain('cart:number, code:string');
+    expect(await post.textContent()).toContain('no auth');
     expect(await table.locator('tr', { hasText: '/api/cart' }).first().textContent()).toContain('?page');
     await shot('coverage');
     await post.getByRole('button', { name: 'Calls' }).click();

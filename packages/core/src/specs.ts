@@ -10,7 +10,7 @@ import { parseJsonOrYaml } from './yaml.js';
  * was actually seen, opened as ready-to-send requests, and filled with values
  * from recorded traffic. HAR files go into History instead (see importHar).
  */
-export type SpecFormat = 'openapi3' | 'swagger2' | 'postman';
+export type SpecFormat = 'openapi3' | 'swagger2' | 'postman' | 'graphql';
 
 export interface SpecParam {
   name: string;
@@ -39,6 +39,12 @@ export interface SpecEndpoint {
   deprecated?: boolean;
   /** Postman requests are complete already: headers and body as written. */
   draft?: { url: string; headers: HeaderList; body?: string };
+  /** JSON schemas with references resolved, for contract checks and negative tests. */
+  requestSchema?: Record<string, unknown>;
+  /** By status code ("200", "4XX", "default"). */
+  responseSchemas?: Record<string, Record<string, unknown>>;
+  /** GraphQL operations: the operation type and name. */
+  graphql?: { kind: 'query' | 'mutation' | 'subscription'; field: string; args: Array<{ name: string; type: string }>; returns: string };
 }
 
 export interface ApiSpec {
@@ -136,6 +142,24 @@ export function exampleFor(root: Obj, schema: unknown, depth = 0, seen = new Set
     default:
       return null;
   }
+}
+
+/** Inline local references so a schema stands alone; cycles and very deep nesting become {}. */
+export function resolveSchema(root: Obj, schema: unknown, depth = 0, seen: string[] = []): Obj {
+  if (depth > 10) return {};
+  if (isObj(schema) && typeof schema.$ref === 'string') {
+    if (seen.includes(schema.$ref)) return {};
+    return resolveSchema(root, deref(root, schema), depth + 1, [...seen, schema.$ref]);
+  }
+  if (!isObj(schema)) return {};
+  const out: Obj = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (k === 'properties' && isObj(v)) out[k] = Object.fromEntries(Object.entries(v).map(([pk, pv]) => [pk, resolveSchema(root, pv, depth + 1, seen)]));
+    else if ((k === 'items' || k === 'additionalProperties' || k === 'not') && isObj(v)) out[k] = resolveSchema(root, v, depth + 1, seen);
+    else if ((k === 'allOf' || k === 'oneOf' || k === 'anyOf') && Array.isArray(v)) out[k] = v.map((x) => resolveSchema(root, x, depth + 1, seen));
+    else if (k !== 'example' && k !== 'examples' && k !== 'description' && k !== 'xml' && k !== 'externalDocs') out[k] = v;
+  }
+  return out;
 }
 
 const schemaType = (root: Obj, s: unknown): string | undefined => {
@@ -243,6 +267,7 @@ function fromOpenApi(doc: Obj, name: string): ApiSpec {
       // Operation parameters override path-level ones with the same name and place.
       const params = [...shared.params.filter((p) => !own.params.some((o) => o.name === p.name && o.in === p.in)), ...own.params];
       let requestBody = own.body ?? shared.body;
+      let requestSchemaV3: Obj | undefined;
       if (!v2 && op.requestBody) {
         const rb = deref(doc, op.requestBody);
         if (isObj(rb) && isObj(rb.content)) {
@@ -260,9 +285,26 @@ function fromOpenApi(doc: Obj, name: string): ApiSpec {
             if (/x-www-form-urlencoded/i.test(ct) && isObj(ex)) text = new URLSearchParams(Object.entries(ex).map(([k, v]): [string, string] => [k, typeof v === 'string' ? v : JSON.stringify(v)])).toString();
             else text = typeof ex === 'string' ? ex : JSON.stringify(ex ?? {}, null, 2);
             requestBody = { contentType: ct, example: text, required: !!rb.required };
+            if (isObj(media) && media.schema) requestSchemaV3 = resolveSchema(doc, media.schema);
           }
         }
       }
+      // Response schemas by status: v3 content, v2 schema.
+      const responseSchemas: Record<string, Obj> = {};
+      if (isObj(op.responses)) {
+        for (const [st, rawRes] of Object.entries(op.responses)) {
+          const r = deref(doc, rawRes);
+          if (!isObj(r)) continue;
+          if (v2 && r.schema) responseSchemas[st] = resolveSchema(doc, r.schema);
+          else if (isObj(r.content)) {
+            const ct = Object.keys(r.content).find((t) => /json/i.test(t));
+            const media = ct ? r.content[ct] : undefined;
+            if (isObj(media) && media.schema) responseSchemas[st] = resolveSchema(doc, media.schema);
+          }
+        }
+      }
+      const v2Body = v2 ? [...(Array.isArray(item.parameters) ? item.parameters : []), ...(Array.isArray(op.parameters) ? op.parameters : [])].map((x) => deref(doc, x)).find((x) => isObj(x) && x.in === 'body') : undefined;
+      const requestSchema = requestSchemaV3 ?? (isObj(v2Body) && v2Body.schema ? resolveSchema(doc, v2Body.schema) : undefined);
       const opSecurity = Array.isArray(op.security) ? op.security.filter(isObj).flatMap((s) => (Object.keys(s).length ? Object.keys(s) : ['none'])) : undefined;
       const method = m.toUpperCase();
       endpoints.push({
@@ -277,6 +319,8 @@ function fromOpenApi(doc: Obj, name: string): ApiSpec {
         responses: isObj(op.responses) ? Object.keys(op.responses) : [],
         security: opSecurity ?? globalSecurity,
         deprecated: op.deprecated === true || undefined,
+        ...(requestSchema ? { requestSchema } : {}),
+        ...(Object.keys(responseSchemas).length ? { responseSchemas } : {}),
       });
     }
   }

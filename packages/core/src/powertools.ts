@@ -1,6 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { bytesToString, decodeChain, detectChain } from '@siteinquisition/codecs';
-import { coverage } from './coverage.js';
+import { coverage, pathTemplate } from './coverage.js';
+import { checkExchange, contractScan } from './contract.js';
+import { exchangeCurl, exchangesToPostman, exportHar, flowToPostman, flowToTest } from './exporters.js';
+import { harvestOperations, introspect, probeSuggestions, schemaDrift, schemaFromOperations, schemaToSpec, type GqlSchema } from './graphql.js';
+import { diffExchanges, glossary, lifecycle } from './insight.js';
+import { runAuthMatrix, runNegative, type Identity } from './probes.js';
+import { findEndpoint } from './contract.js';
 import { draftFlow, FlowRunner, normalizeFlow, type ApiFlow } from './flows.js';
 import { exportOpenApi, importHar, parseSpec, requestForEndpoint, specCoverage, type ApiSpec } from './specs.js';
 import { moveTag, pickValues, tagValue, valueCatalog, valueOrigin } from './values.js';
@@ -230,6 +236,113 @@ export class PowerTools {
     return moveTag(this.core.store, tag, toId);
   }
 
+  // ---------- extras: contracts, probes, insight, GraphQL, exports, notes ----------
+  contractCheck(id: string) {
+    return checkExchange(this.core.store, this.specs(), id);
+  }
+  contractScan(host: string) {
+    return contractScan(this.core.store, this.specs(), host);
+  }
+  identities(): Identity[] {
+    return this.meta<Identity[]>('identities', [{ name: 'no auth', headers: [], anonymous: true }]);
+  }
+  setIdentities(list: Identity[]): Identity[] {
+    for (const i of list) if (!i.name?.trim()) throw new Error('an identity needs a name');
+    this.core.store.setMeta('identities', list);
+    return list;
+  }
+  authMatrix(exchangeIds: string[], identities?: string[], ignoreTlsErrors?: boolean) {
+    const all = this.identities();
+    const chosen = identities?.length ? all.filter((i) => identities.includes(i.name)) : all;
+    if (!chosen.length) throw new Error('add at least one identity (another user, or no auth)');
+    return runAuthMatrix(this.core.store, this.sender, { exchangeIds, identities: chosen, ignoreTlsErrors });
+  }
+  negativeTests(id: string, max?: number, ignoreTlsErrors?: boolean) {
+    const ex = this.core.store.getSummary(id);
+    const hit = ex ? findEndpoint(this.specs(), ex) : undefined;
+    return runNegative(this.core.store, this.sender, id, { schema: hit?.ep.requestSchema, max, ignoreTlsErrors });
+  }
+  diff(a: string, b: string) {
+    return diffExchanges(this.core.store, a, b);
+  }
+  lifecycle(host: string) {
+    return lifecycle(this.core.store, this.specs(), host);
+  }
+  glossary(host?: string) {
+    return glossary(this.core.store, { host });
+  }
+  async graphqlImport(opts: { targetUrl: string; schemaUrl?: string; headers?: HeaderList; schemaHeaders?: HeaderList; method?: 'introspection' | 'suggestions' | 'traffic'; ignoreTlsErrors?: boolean }) {
+    const from = opts.schemaUrl || opts.targetUrl;
+    let schema: GqlSchema;
+    let note = '';
+    if (opts.method === 'traffic') {
+      const ops = harvestOperations(this.core.store, { host: new URL(opts.targetUrl).hostname });
+      if (!ops.length) throw new Error('no GraphQL operations in recorded traffic for this host');
+      schema = schemaFromOperations(ops);
+      note = `${ops.length} operations seen in traffic`;
+    } else if (opts.method === 'suggestions') {
+      const r = await probeSuggestions(this.sender, this.core.store, { url: from, headers: opts.schemaHeaders ?? opts.headers, ignoreTlsErrors: opts.ignoreTlsErrors });
+      if (!r.suggestionsWork) throw new Error('the server gives no "Did you mean" suggestions; try traffic instead');
+      schema = r.schema;
+      note = `rebuilt from suggestions in ${r.requests} requests`;
+    } else {
+      schema = (await introspect(this.sender, this.core.store, { url: from, headers: opts.schemaHeaders ?? opts.headers, ignoreTlsErrors: opts.ignoreTlsErrors })).schema;
+    }
+    const spec = schemaToSpec(schema, { targetUrl: opts.targetUrl, schemaFrom: from });
+    // Requests to the target carry the target's headers (auth for pre-prod), not the schema server's.
+    if (opts.headers?.length) for (const ep of spec.endpoints) if (ep.draft) ep.draft.headers = [...ep.draft.headers, ...opts.headers.filter(([k]) => k.toLowerCase() !== 'content-type')];
+    if (note) spec.warnings.push(note);
+    const list = this.specs().filter((s) => !(s.format === 'graphql' && s.servers[0] === opts.targetUrl));
+    this.core.store.setMeta('specs', [...list, spec]);
+    return spec;
+  }
+  graphqlOperations(host?: string) {
+    return harvestOperations(this.core.store, { host });
+  }
+  graphqlDrift(targetUrl: string) {
+    return schemaDrift(this.core.store, targetUrl);
+  }
+  curl(id: string) {
+    return exchangeCurl(this.core.store, id);
+  }
+  exportHar(ids: string[]) {
+    return exportHar(this.core.store, ids);
+  }
+  exportPostman(p: { flow?: string; ids?: string[]; name?: string }) {
+    if (p.flow) {
+      const f = this.flows.find(p.flow);
+      if (!f) throw new Error(`no flow "${p.flow}"`);
+      return flowToPostman(f);
+    }
+    return exchangesToPostman(this.core.store, p.ids ?? [], p.name);
+  }
+  /** Save a test-suite script that checks a flow; returns the script. */
+  flowToTest(name: string): Script {
+    const f = this.flows.find(name);
+    if (!f) throw new Error(`no flow "${name}"`);
+    const scriptName = `test ${f.name}`;
+    const list = this.scriptList().filter((x) => x.name !== scriptName);
+    const saved = this.setScripts([...list, { name: scriptName, kind: 'test', code: flowToTest(f) }]);
+    return saved.find((x) => x.name === scriptName)!;
+  }
+  endpointNotes(): Record<string, { notes: string; tags: string[]; updatedAt: number; by: string }> {
+    return this.meta('endpointNotes', {});
+  }
+  /** Notes on an endpoint template: key "host METHOD /template". An empty note and no tags removes it. */
+  setEndpointNote(key: string, notes: string, tags: string[] = []) {
+    const all = this.endpointNotes();
+    if (!notes.trim() && !tags.length) delete all[key];
+    else all[key] = { notes, tags, updatedAt: Date.now(), by: this.core.store.actor };
+    this.core.store.setMeta('endpointNotes', all);
+    return all;
+  }
+  noteFor(exchangeId: string) {
+    const ex = this.core.store.getSummary(exchangeId);
+    if (!ex) return null;
+    const key = `${ex.host} ${ex.method} ${pathTemplate(ex.path)}`;
+    return { key, ...(this.endpointNotes()[key] ?? { notes: '', tags: [] }) };
+  }
+
   awsProfiles(): AwsProfile[] {
     return this.meta<AwsProfile[]>('awsProfiles', []);
   }
@@ -407,6 +520,19 @@ export class PowerTools {
       resolve: (text: string, url = 'http://localhost/') => resolveTokens(String(text), this.sender.tokenContext(String(url))),
       specs: () => this.specs(),
       specRequest: (specId: string, key: string) => this.specRequest(String(specId), String(key)),
+      contract: (id: string) => this.contractCheck(String(id)),
+      contractScan: (host: string) => this.contractScan(String(host)),
+      authMatrix: (ids: string[], identities?: string[]) => this.authMatrix(ids.map(String), identities),
+      negative: (id: string, max?: number) => this.negativeTests(String(id), max),
+      diff: (a: string, b: string) => this.diff(String(a), String(b)),
+      lifecycle: (host: string) => this.lifecycle(String(host)),
+      glossary: (host?: string) => this.glossary(host),
+      curl: (id: string) => this.curl(String(id)),
+      graphql: {
+        import: (o: Parameters<PowerTools['graphqlImport']>[0]) => this.graphqlImport(o),
+        operations: (host?: string) => this.graphqlOperations(host),
+        drift: (url: string) => this.graphqlDrift(String(url)),
+      },
     };
     return fullSdk as unknown as Sdk;
   }
@@ -531,6 +657,74 @@ export class PowerTools {
         write: true,
         summary: (a) => `Run flow ${String(a.name)}`,
         run: (a) => this.flows.run(String(a.name), (a.inputs as Record<string, string>) ?? {}),
+      },
+      {
+        name: 'contract_check',
+        description: 'Check recorded exchanges of a host against the imported API files: wrong types, missing required fields, enum and format violations, undocumented fields and statuses. Pass id to check one exchange.',
+        inputSchema: { type: 'object', properties: { host: str, id: str } },
+        write: false,
+        run: (a) => (a.id ? this.contractCheck(String(a.id)) : this.contractScan(String(a.host ?? ''))),
+      },
+      {
+        name: 'resource_lifecycle',
+        description: 'Per resource (collection and item paths), which of list, create, read, replace, update and delete were seen, succeeded, or are documented. Missing operations are a hint where to look.',
+        inputSchema: { type: 'object', properties: { host: str }, required: ['host'] },
+        write: false,
+        run: (a) => this.lifecycle(String(a.host)),
+      },
+      {
+        name: 'field_glossary',
+        description: 'Every field name seen in JSON responses with its types, whether it is ever null, the few values an enum-like field takes, numeric ranges, string lengths, formats, and where it appears.',
+        inputSchema: { type: 'object', properties: { host: str } },
+        write: false,
+        run: (a) => this.glossary(a.host ? String(a.host) : undefined),
+      },
+      {
+        name: 'diff_exchanges',
+        description: 'Compare two exchanges: URL and query changes, header changes, and JSON-aware body changes on both sides.',
+        inputSchema: { type: 'object', properties: { a: str, b: str }, required: ['a', 'b'] },
+        write: false,
+        run: (a) => {
+          const d = this.diff(String(a.a), String(a.b));
+          return { ...d, request: { ...d.request, textA: undefined, textB: undefined }, response: { ...d.response, textA: undefined, textB: undefined } };
+        },
+      },
+      {
+        name: 'endpoint_notes',
+        description: 'Notes and tags people wrote about endpoints, keyed "host METHOD /template".',
+        inputSchema: { type: 'object', properties: {} },
+        write: false,
+        run: () => this.endpointNotes(),
+      },
+      {
+        name: 'graphql_operations',
+        description: 'GraphQL operations the app sent (and query text in its scripts), with root fields and persisted-query hashes.',
+        inputSchema: { type: 'object', properties: { host: str } },
+        write: false,
+        run: (a) => this.graphqlOperations(a.host ? String(a.host) : undefined).map(({ document: _d, ...o }) => o),
+      },
+      {
+        name: 'copy_as_curl',
+        description: 'A recorded request as a curl command.',
+        inputSchema: { type: 'object', properties: { id: str }, required: ['id'] },
+        write: false,
+        run: (a) => this.curl(String(a.id)),
+      },
+      {
+        name: 'auth_matrix',
+        description: 'Replay exchanges as each saved identity (another user, no auth) and report who gets what. "same" means an identity got the same successful answer as the original: possible broken access control.',
+        inputSchema: { type: 'object', properties: { ids: { type: 'array', items: str }, identities: { type: 'array', items: str } }, required: ['ids'] },
+        write: true,
+        summary: (a) => `Auth matrix over ${(a.ids as string[]).length} requests`,
+        run: (a) => this.authMatrix((a.ids as string[]).map(String), a.identities as string[] | undefined),
+      },
+      {
+        name: 'negative_tests',
+        description: 'Send a recorded request again with each field broken in turn (missing, null, wrong type, boundary numbers, long and special strings, bad ids) and report what the server accepted, rejected, or failed on.',
+        inputSchema: { type: 'object', properties: { id: str, max: { type: 'number' } }, required: ['id'] },
+        write: true,
+        summary: (a) => `Negative tests on ${String(a.id)}`,
+        run: (a) => this.negativeTests(String(a.id), a.max ? Number(a.max) : undefined),
       },
       {
         name: 'decode',

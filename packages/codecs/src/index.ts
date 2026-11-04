@@ -412,3 +412,7 @@ export function replaceThroughChain(spec: string | string[], input: Uint8Array |
   }
   return { output: toBytes(v), counts };
 }
+
+import { PROTOCOL_CODEC_DEFS } from './protocols.js';
+for (const c of PROTOCOL_CODEC_DEFS) register(c);
+export * from './protocols.js';

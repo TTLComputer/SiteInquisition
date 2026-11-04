@@ -9,6 +9,7 @@ An intercepting proxy, built-in browser and replay toolkit for testing websites,
 - HTTP/1.1 and HTTP/2 proxy on one port. It accepts plain HTTP, `CONNECT` tunnels and SOCKS5.
 - HTTPS interception with a per-install root CA, for in-scope hosts only. Out-of-scope TLS is tunnelled untouched.
 - WebSocket capture, with every frame recorded in both directions.
+- **MQTT** 3.1, 3.1.1 and 5.0 relay: devices connect to SiteInquisition as their broker, every byte is passed to the real broker unchanged, and each packet (CONNECT, SUBSCRIBE, PUBLISH, acks, ...) is recorded with topic, QoS, retain flag, properties and payload. TLS is supported on both sides, with device-facing certificates signed by the project CA.
 - **Scope rules** (host glob, port, scheme, path prefix) that decide what is decrypted and what is recorded. A new project records nothing until you add a host.
 - Redirect chains linked into a single flow.
 - A capture database in SQLite with full-text search over URLs, headers and decoded bodies (gzip, deflate, brotli, zstd).
@@ -33,6 +34,21 @@ curl -x http://127.0.0.1:8080 --cacert "$(node packages/cli/dist/main.js ca | aw
 node packages/cli/dist/main.js search host:api.example.com status:>=400
 node packages/cli/dist/main.js show <exchange-id>
 ```
+
+### MQTT
+
+```sh
+# Devices connect to 127.0.0.1:1883 (add --lan for real devices); traffic goes to broker.local:1883
+siq proxy --include broker.local --mqtt 1883=broker.local
+
+# TLS on both sides; devices must trust the SiteInquisition CA
+siq proxy --lan --include broker.example.com --mqtt 8883=broker.example.com:8883,tls,listen-tls
+
+siq search scheme:mqtt          # one row per MQTT session
+siq show <exchange-id>          # every packet, with topics and payloads
+```
+
+The spec format is `PORT=BROKER[:PORT][,tls][,listen-tls][,insecure]`. `tls` connects to the broker over TLS, `listen-tls` accepts TLS from devices, and `insecure` skips broker certificate checks. Scope rules apply to the broker host, as they do for HTTP. DNS-based and transparent redirection of MQTT come later; for now, point devices at the relay.
 
 Projects live in `./.siq` by default; use `-p <dir>` to choose another folder. The CA is stored per user in `~/.config/siteinquisition/ca` on Linux or `%APPDATA%\SiteInquisition\ca` on Windows. You can override this with `SIQ_DATA_DIR`.
 
@@ -69,7 +85,7 @@ TLS interception is decided per connection, before the path is known. A host is 
 ```
 packages/
   codecs/  chainable encoders and decoders (url, base64, hex, gzip, deflate, br, zstd, json, ...)
-  core/    proxy, scope, capture store, search, core API
+  core/    proxy, MQTT relay, scope, capture store, search, core API
   cli/     the siq command
 ```
 

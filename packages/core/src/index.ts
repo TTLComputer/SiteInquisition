@@ -2,6 +2,7 @@ export * from './api.js';
 export * from './ca.js';
 export * from './core.js';
 export * from './ids.js';
+export * from './mqtt.js';
 export * from './paths.js';
 export * from './proxy.js';
 export * from './scope.js';

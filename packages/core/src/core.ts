@@ -2,6 +2,7 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { CoreApiServer } from './api.js';
 import { loadOrCreateCA, type CertificateAuthority } from './ca.js';
+import { MqttRelay, type MqttListenerConfig } from './mqtt.js';
 import { defaultDataDir } from './paths.js';
 import { ProxyEngine, type ProxyOptions } from './proxy.js';
 import { DEFAULT_SCOPE, Scope, type ScopeConfig } from './scope.js';
@@ -17,6 +18,8 @@ export interface CoreOptions {
   actor?: string;
   store?: Omit<StoreOptions, 'actor'>;
   proxy?: ProxyOptions;
+  /** MQTT listeners that relay to real brokers and record every packet. */
+  mqtt?: MqttListenerConfig[];
   /** Core API settings, or false to run without it. */
   api?: { port?: number; token?: string } | false;
 }
@@ -37,6 +40,7 @@ export class Core {
   readonly scope: Scope;
   readonly proxy: ProxyEngine;
   readonly api?: CoreApiServer;
+  readonly mqtt: MqttRelay[];
 
   private constructor(
     private readonly opts: CoreOptions,
@@ -46,6 +50,7 @@ export class Core {
     this.store = CaptureStore.openProject(this.projectDir, { ...opts.store, actor: opts.actor });
     this.scope = new Scope(this.store.getMeta<ScopeConfig>('scope') ?? DEFAULT_SCOPE);
     this.proxy = new ProxyEngine(this.store, this.scope, ca, opts.proxy);
+    this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg));
     if (opts.api !== false) this.api = new CoreApiServer(this, opts.api?.token);
   }
 
@@ -56,6 +61,7 @@ export class Core {
 
   async start(): Promise<{ proxyPort: number; apiPort?: number }> {
     const proxyPort = await this.proxy.start();
+    for (const relay of this.mqtt) await relay.start();
     let apiPort: number | undefined;
     if (this.api) {
       apiPort = await this.api.start(this.opts.api ? this.opts.api.port : undefined);
@@ -68,6 +74,7 @@ export class Core {
   async close(): Promise<void> {
     await this.api?.stop();
     await this.proxy.stop();
+    for (const relay of this.mqtt) await relay.stop();
     if (this.api) rmSync(join(this.projectDir, RUNTIME_FILE), { force: true });
     this.store.close();
   }
@@ -89,6 +96,7 @@ export class Core {
       apiPort: this.api ? safe(() => this.api!.port) : null,
       ca: { certPath: this.ca.certPath, fingerprint: this.ca.fingerprint, expiresAt: this.ca.expiresAt.toISOString() },
       decryptHosts: this.scope.decryptHosts(),
+      mqtt: this.mqtt.map((m) => ({ port: safe(() => m.port), broker: m.brokerUrl, listenTls: !!m.config.listenTls })),
     };
   }
 }

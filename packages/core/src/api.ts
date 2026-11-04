@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { cookieJar } from './cookies.js';
 import type { Core } from './core.js';
 import { sendReplay } from './replay.js';
 import type { HeaderList } from './store.js';
@@ -139,6 +140,14 @@ export class CoreApiServer {
       },
       'scope.get': () => core.scope.get(),
       'scope.seen': () => core.seenNotInScope(),
+      'scope.evaluate': (p) => {
+        try {
+          return core.scope.evaluate(str(p, 'url')!);
+        } catch {
+          throw new RpcError(-32602, 'url must be an absolute URL');
+        }
+      },
+      'cookies.list': () => cookieJar(store),
       'scope.set': async (p) => {
         await core.setScope(p.config as never);
         return core.scope.get();

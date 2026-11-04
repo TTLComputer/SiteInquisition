@@ -25,7 +25,7 @@ port.on('message', (e: { data: Message }) => {
 
 async function start(msg: StartMessage) {
   try {
-    const open = (proxyPort: number) => Core.open({ projectDir: msg.projectDir, proxy: { port: proxyPort, allowLan: msg.allowLan ?? false }, api: {} });
+    const open = (proxyPort: number) => Core.open({ projectDir: msg.projectDir, proxy: { port: proxyPort, allowLan: msg.allowLan ?? false }, browserProxy: true, api: {} });
     core = await open(msg.proxyPort ?? 8080);
     let ports;
     try {
@@ -37,7 +37,7 @@ async function start(msg: StartMessage) {
       core = await open(0);
       ports = await core.start();
     }
-    port.postMessage({ type: 'ready', proxyPort: ports.proxyPort, apiPort: ports.apiPort, token: core.api!.token });
+    port.postMessage({ type: 'ready', proxyPort: ports.proxyPort, apiPort: ports.apiPort, browserProxyPort: ports.browserProxyPort, caCertPath: core.ca.certPath, token: core.api!.token });
   } catch (err) {
     port.postMessage({ type: 'error', message: (err as Error).message });
   }

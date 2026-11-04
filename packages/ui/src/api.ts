@@ -1,6 +1,6 @@
-import type { Change, Exchange, ExchangeSummary, HeaderList, ScopeConfig, SeenHost, StreamMessage } from '@siteinquisition/core';
+import type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage } from '@siteinquisition/core';
 
-export type { Change, Exchange, ExchangeSummary, HeaderList, ScopeConfig, SeenHost, StreamMessage };
+export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage };
 export type { ScopeRule } from '@siteinquisition/core';
 
 export interface CoreInfo {
@@ -8,6 +8,8 @@ export interface CoreInfo {
   projectDir: string;
   actor: string;
   proxyPort: number | null;
+  /** The built-in browser's own listener; null outside the desktop app. */
+  browserProxyPort?: number | null;
   apiPort: number | null;
   allowLan: boolean;
   ca: { certPath: string; fingerprint: string; expiresAt: string };
@@ -30,12 +32,39 @@ export interface Connection {
   token: string;
 }
 
+/** State of one built-in browser tab, as the desktop app reports it. */
+export interface BrowserTabState {
+  id: number;
+  url: string;
+  title: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  error?: string;
+}
+
+export interface BrowserBridge {
+  create(url: string): Promise<number>;
+  close(id: number): Promise<void>;
+  activate(id: number): Promise<void>;
+  navigate(id: number, url: string): Promise<void>;
+  back(id: number): Promise<void>;
+  forward(id: number): Promise<void>;
+  reload(id: number): Promise<void>;
+  devtools(id: number): Promise<void>;
+  /** Where the page sits in the window, in CSS pixels; null hides every tab. */
+  setBounds(rect: { x: number; y: number; width: number; height: number } | null): Promise<void>;
+  list(): Promise<BrowserTabState[]>;
+  onTab(fn: (tab: BrowserTabState | { id: number; closed: true }) => void): () => void;
+}
+
 declare global {
   interface Window {
     siq?: {
       getConnection(): Promise<Connection>;
       setTheme(theme: 'system' | 'light' | 'dark'): Promise<void>;
       platform: string;
+      browser?: BrowserBridge;
     };
   }
 }
@@ -163,6 +192,8 @@ export class CoreClient {
       replayOf: req.replayOf,
       ignoreTlsErrors: req.ignoreTlsErrors,
     });
+  cookies = () => this.call<JarCookie[]>('cookies.list');
+  evaluate = (url: string) => this.call<ScopeDecision>('scope.evaluate', { url });
   replayHistory = (of: string) => this.call<ExchangeSummary[]>('replay.history', { of });
 }
 

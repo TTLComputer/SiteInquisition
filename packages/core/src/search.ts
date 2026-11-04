@@ -4,6 +4,7 @@
  *
  *   host:api.example.com method:POST status:>=400 "session expired"
  *   host:*.example.com path:/api/ body:token ws:true -status:304
+ *   since:2026-11-04T09:00 until:1762246800000   (ISO time or epoch ms)
  *
  * A leading `-` negates a filter. Quoted text is matched as a phrase.
  */
@@ -15,7 +16,7 @@ export interface CompiledQuery {
   match?: string;
 }
 
-const FILTER_KEYS = new Set(['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'body', 'header', 'state', 'flow', 'scheme', 'replayof']);
+const FILTER_KEYS = new Set(['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'body', 'header', 'state', 'flow', 'scheme', 'replayof', 'since', 'until']);
 
 interface Token {
   key?: string;
@@ -56,6 +57,14 @@ function statusClause(value: string): { sql: string; params: unknown[] } {
   const cmp = /^(>=|<=|>|<|=)?(\d{3})$/.exec(value);
   if (!cmp) throw new Error(`invalid status filter "${value}"`);
   return { sql: `e.status ${cmp[1] ?? '='} ?`, params: [Number(cmp[2])] };
+}
+
+/** Epoch ms or an ISO date/time; a time without a zone is local time, as typed. */
+function timeValue(value: string): number {
+  if (/^\d{10,}$/.test(value)) return Number(value);
+  const t = Date.parse(value);
+  if (Number.isNaN(t)) throw new Error(`invalid time "${value}": use epoch ms or an ISO time like 2026-11-04T09:30`);
+  return t;
 }
 
 export function compileQuery(input: string): CompiledQuery {
@@ -110,6 +119,12 @@ export function compileQuery(input: string): CompiledQuery {
         break;
       case 'ws':
         add(t, 'e.is_websocket = ?', [/^(1|true|yes)$/i.test(t.value) ? 1 : 0]);
+        break;
+      case 'since':
+        add(t, 'e.started_at >= ?', [timeValue(t.value)]);
+        break;
+      case 'until':
+        add(t, 'e.started_at < ?', [timeValue(t.value)]);
         break;
       case 'tag':
         add(t, 'EXISTS (SELECT 1 FROM json_each(e.tags) WHERE json_each.value = ?)', [t.value]);

@@ -661,6 +661,15 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     });
   }
 
+  /** Responses that set cookies, oldest first, for building the cookie jar. */
+  setCookieResponses(limit = 50_000): Array<{ id: string; url: string; host: string; path: string; startedAt: number; headers: HeaderList }> {
+    const rows = this.q(
+      `SELECT id, url, host, path, started_at, res_headers FROM exchange
+       WHERE res_headers IS NOT NULL AND instr(lower(res_headers), '"set-cookie"') > 0 ORDER BY id LIMIT ?`,
+    ).all(limit) as unknown as Array<{ id: string; url: string; host: string; path: string; started_at: number; res_headers: string }>;
+    return rows.map((r) => ({ id: r.id, url: r.url, host: r.host, path: r.path, startedAt: r.started_at, headers: JSON.parse(r.res_headers) as HeaderList }));
+  }
+
   getStreamForExchange(exchangeId: string): { id: string; protocol: string; openedAt: number; closedAt: number | null; closeCode: number | null } | undefined {
     const r = this.q('SELECT * FROM stream WHERE exchange_id = ?').get(exchangeId) as
       | { id: string; protocol: string; opened_at: number; closed_at: number | null; close_code: number | null }

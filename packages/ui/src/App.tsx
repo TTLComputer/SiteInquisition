@@ -7,6 +7,9 @@ import { Replay } from './views/Replay';
 import { Rules } from './views/Rules';
 import { Settings } from './views/Settings';
 import { Placeholder } from './views/Placeholder';
+import { Browser } from './views/Browser';
+import { Timeline } from './views/Timeline';
+import { Cookies } from './views/Cookies';
 
 const NAV: Array<{ id: ViewId; label: string }> = [
   { id: 'browser', label: 'Browser' },
@@ -175,11 +178,8 @@ function WorkspaceTabs() {
 }
 
 const PLACEHOLDERS: Partial<Record<ViewId, { title: string; text: string }>> = {
-  browser: { title: 'Built-in browser', text: 'Chromium tabs that route through the proxy, with breakpoints and a per-tab feed. Coming in the next part of the UI milestone.' },
-  timeline: { title: 'Timeline', text: 'Requests on a time axis grouped by host, flow or connection. Coming in the next part of the UI milestone.' },
   race: { title: 'Race-timed replay', text: 'Send several requests with exact offsets to hunt race conditions. Coming with the power tools milestone.' },
   codecs: { title: 'Codec workbench', text: 'Chained decoders and encoders, JSON editing, find and replace across layers, and tokens like {{cookie:session}}. Coming with the power tools milestone.' },
-  cookies: { title: 'Cookies and auth', text: 'Cookie jar, login macros, token variables and AWS SigV4. Coming in the next part of the UI milestone.' },
   streams: { title: 'WebSocket and MQTT', text: 'Connection list and composer. Until then, select a WebSocket or MQTT session in History to see its messages in the inspector.' },
   scripts: { title: 'Scripts and console', text: 'Live hooks, test suites and a console against the SDK. Coming with the power tools milestone.' },
 };
@@ -231,6 +231,9 @@ export function App() {
           {view === 'replay' && !activeReplay && (
             <Placeholder title="Replay" text="Send a request here from History: the Replay pill on any row, Ctrl R, or the right-click menu." />
           )}
+          {view === 'browser' && <Browser />}
+          {view === 'timeline' && <Timeline />}
+          {view === 'cookies' && <Cookies />}
           {view === 'rules' && <Rules />}
           {view === 'settings' && <Settings />}
           {placeholder && <Placeholder title={placeholder.title} text={placeholder.text} />}

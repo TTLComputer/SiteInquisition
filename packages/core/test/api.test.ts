@@ -1,4 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer, request } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -21,7 +23,7 @@ const call = <T = unknown>(method: string, params?: object) =>
 
 beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'siq-api-'));
-  core = await Core.open({ projectDir: join(tmp, 'p'), dataDir: join(tmp, 'd') });
+  core = await Core.open({ projectDir: join(tmp, 'p'), dataDir: join(tmp, 'd'), browserProxy: true });
   await core.start();
   const info = readRuntimeInfo(join(tmp, 'p'))!;
   ws = new WebSocket(`ws://127.0.0.1:${info.apiPort}/?token=${info.token}`);
@@ -69,6 +71,36 @@ describe('core API', () => {
     const config = await call<{ rules: Array<{ id: string; host: string }> }>('scope.set', { config: { defaultAction: 'ignore', rules: [{ action: 'include', host: '*.a.test' }] } });
     expect(config.rules[0]).toMatchObject({ host: '*.a.test', id: expect.any(String) });
     expect(core.store.getMeta('scope')).toEqual(config);
+  });
+
+  it('records the built-in browser listener as source "browser", and serves the cookie jar', async () => {
+    const upstream = createServer((_req, res) => {
+      res.writeHead(200, { 'set-cookie': 'sid=abc; Path=/; HttpOnly' });
+      res.end('ok');
+    });
+    await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', r));
+    const port = (upstream.address() as AddressInfo).port;
+    try {
+      await call('scope.set', { config: { defaultAction: 'ignore', rules: [{ action: 'include', host: '127.0.0.1', port }] } });
+      const info = await call<{ browserProxyPort: number }>('core.info');
+      expect(info.browserProxyPort).toBe(core.browserProxy!.port);
+      expect(await call('scope.evaluate', { url: `http://127.0.0.1:${port}/x` })).toMatchObject({ record: true });
+      expect(await call('scope.evaluate', { url: 'http://elsewhere.test/' })).toMatchObject({ record: false });
+      await new Promise<void>((resolve, reject) => {
+        const req = request({ host: '127.0.0.1', port: info.browserProxyPort, path: `http://127.0.0.1:${port}/page`, headers: { host: `127.0.0.1:${port}` } }, (res) => {
+          res.resume();
+          res.on('end', resolve);
+        });
+        req.on('error', reject);
+        req.end();
+      });
+      await new Promise((r) => setTimeout(r, 100));
+      const [ex] = await call<Array<{ source: string; path: string }>>('traffic.search', { query: 'source:browser' });
+      expect(ex).toMatchObject({ source: 'browser', path: '/page' });
+      expect(await call('cookies.list')).toEqual([expect.objectContaining({ name: 'sid', value: 'abc', domain: '127.0.0.1', httpOnly: true })]);
+    } finally {
+      upstream.close();
+    }
   });
 
   it('returns JSON-RPC errors', async () => {

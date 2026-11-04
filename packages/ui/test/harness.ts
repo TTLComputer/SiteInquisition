@@ -24,7 +24,8 @@ async function startUpstream() {
         res.writeHead(302, { location: '/api/cart' });
         res.end();
       } else if (req.url?.startsWith('/api/')) {
-        res.writeHead(200, { 'content-type': 'application/json' });
+        const cookies = req.url === '/api/cart' ? { 'set-cookie': ['session=eyJ1c2VyIjoibmljayJ9; Path=/; HttpOnly', 'cart=42; Max-Age=600'] } : {};
+        res.writeHead(200, { 'content-type': 'application/json', ...cookies });
         res.end(JSON.stringify({ path: req.url, method: req.method, hits, echo: body || null }));
       } else if (req.url === '/broken') {
         res.writeHead(500, { 'content-type': 'text/plain' });

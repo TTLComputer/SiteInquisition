@@ -1,25 +1,18 @@
 import { existsSync, mkdirSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
+import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
 import { DIST, startHarness, type Harness } from './harness';
 
 // Drives the built renderer in Chromium against a real core. Needs `pnpm build`
-// first and Playwright with a Chromium; skipped when either is missing.
-type PW = typeof import('playwright');
-let pw: PW | null = null;
-try {
-  pw = createRequire(import.meta.url)('playwright') as PW;
-} catch {
-  pw = null;
-}
+// first and a Chromium or Chrome (see findChromium); skipped when either is missing.
 const SHOTS = process.env.SIQ_SCREENSHOTS;
-const ready = pw !== null && existsSync(join(DIST, 'index.html'));
+const ready = findChromium() !== null && existsSync(join(DIST, 'index.html'));
 
 describe.skipIf(!ready)('renderer against a real core', () => {
   let h: Harness;
-  let browser: import('playwright').Browser;
-  let page: import('playwright').Page;
+  let browser: Browser;
+  let page: Page;
 
   const shot = async (name: string) => {
     if (!SHOTS) return;
@@ -29,7 +22,7 @@ describe.skipIf(!ready)('renderer against a real core', () => {
 
   beforeAll(async () => {
     h = await startHarness();
-    browser = await pw!.chromium.launch();
+    browser = await launch();
     page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
     page.on('pageerror', (e) => console.error('page error:', e));
     await page.goto(h.pageUrl);

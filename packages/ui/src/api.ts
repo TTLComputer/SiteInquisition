@@ -326,6 +326,8 @@ export class CoreClient {
     this.call<H3PlanResult>('h3.run', { requests: requests.map((r) => ({ ...r, ...wire(r), body: undefined })), options });
   h3Tickets = () => this.call<Array<{ origin: string; receivedAt: number; maxEarlyData: number; lifetimeSec: number }>>('h3.tickets');
   h3ClearTickets = () => this.call<boolean>('h3.clearTickets');
+  browserHttp3 = () => this.call<{ hosts: string[]; port: number | null }>('browser.http3');
+  setBrowserHttp3Hosts = (hosts: string[]) => this.call<{ hosts: string[]; restartNeeded: boolean }>('browser.setHttp3Hosts', { hosts });
   liveStreams = () => this.call<{ mqtt: string[]; ws: string[]; wsProxied: string[] }>('stream.live');
   streamConnect = (exchangeId: string, ignoreTlsErrors = false, headers?: Array<[string, string]>) => this.call<{ exchangeId: string }>('stream.connect', { exchangeId, ignoreTlsErrors, ...(headers ? { headers } : {}) });
   framePresets = () => this.call<FramePreset[]>('stream.presets');

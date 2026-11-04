@@ -10,6 +10,8 @@ export interface BrowserSetup {
   window: BrowserWindow;
   proxyPort: number;
   caCertPath: string;
+  /** Hosts sent straight to the browser listener so Chromium can use QUIC (it never does through a proxy). */
+  http3Hosts?: string[];
 }
 
 interface Tab {
@@ -22,11 +24,11 @@ const normalizePem = (pem: string) => pem.replace(/-----[^-]+-----/g, '').replac
 
 let configured: Session | undefined;
 
-async function browserSession(proxyPort: number, caCertPath: string): Promise<Session> {
+async function browserSession(proxyPort: number, caCertPath: string, http3Hosts: string[] = []): Promise<Session> {
   if (configured) return configured;
   const ses = session.fromPartition('persist:siq-browser');
   // "<-loopback>" makes Chromium proxy localhost too, which is where most unfinished apps live.
-  await ses.setProxy({ proxyRules: `http=127.0.0.1:${proxyPort};https=127.0.0.1:${proxyPort}`, proxyBypassRules: '<-loopback>' });
+  await ses.setProxy({ proxyRules: `http=127.0.0.1:${proxyPort};https=127.0.0.1:${proxyPort}`, proxyBypassRules: ['<-loopback>', ...http3Hosts].join(';') });
   const ca = normalizePem(readFileSync(caCertPath, 'utf8'));
   ses.setCertificateVerifyProc((req, callback) => {
     // Accept leaf certificates our CA issued (that is the interception); everything else gets Chromium's own verdict.
@@ -82,8 +84,8 @@ export function setupBrowser(ready: Promise<BrowserSetup>) {
   };
 
   const createTab = async (url: string): Promise<number> => {
-    const { window, proxyPort, caCertPath } = await ready;
-    const ses = await browserSession(proxyPort, caCertPath);
+    const { window, proxyPort, caCertPath, http3Hosts } = await ready;
+    const ses = await browserSession(proxyPort, caCertPath, http3Hosts);
     const view = new WebContentsView({ webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false } });
     const tab: Tab = { id: nextId++, view };
     tabs.set(tab.id, tab);

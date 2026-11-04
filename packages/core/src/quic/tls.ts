@@ -25,7 +25,7 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import { isIP } from 'node:net';
-import { rootCertificates } from 'node:tls';
+import * as nodeTls from 'node:tls';
 import { QuicError, Reader, TransportError, Writer } from './bytes.js';
 import { SUITES, deriveSecret, hash, hkdfExpandLabel, hkdfExtract, hmac, type CipherSuite, type HashName } from './keys.js';
 
@@ -160,7 +160,9 @@ function verifyWith(key: KeyObject, scheme: number, data: Buffer, sig: Buffer): 
 }
 
 let systemRoots: X509Certificate[] | undefined;
-const roots = () => (systemRoots ??= rootCertificates.map((p) => new X509Certificate(p)));
+// 'default' adds NODE_EXTRA_CA_CERTS, the same set node:https trusts (Node 22.15 and later).
+const tlsCa = nodeTls as typeof nodeTls & { getCACertificates?: (kind: 'default') => string[] };
+const roots = () => (systemRoots ??= (tlsCa.getCACertificates?.('default') ?? nodeTls.rootCertificates).map((p) => new X509Certificate(p)));
 
 /** Check a server chain the way a browser would, minus revocation. Returns an error message or null. */
 export function checkChain(chain: X509Certificate[], host: string, extraCa: X509Certificate[] = [], now = new Date()): string | null {

@@ -1,4 +1,5 @@
-import { bytesToString, looksLikeText } from '@siteinquisition/codecs';
+import { bytesToString, encodeChain, getCodec, looksLikeText } from '@siteinquisition/codecs';
+import type { FlowRunner } from './flows.js';
 import { cookieJar } from './cookies.js';
 import { newId } from './ids.js';
 import { sendReplay } from './replay.js';
@@ -6,7 +7,8 @@ import { applyRule, conditionsMatch, type HookMessage, type ReplaceRule } from '
 import { globToRegExp } from './scope.js';
 import { loadAwsProfile, parseSigV4, signSigV4, type AwsCredentials } from './sigv4.js';
 import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
-import { batchPlan, hasTokens, resolveTokens, TOKEN_RE } from './tokens.js';
+import { batchPlan, flowRefs, hasTokens, resolveTokens, TOKEN_RE, type TokenContext } from './tokens.js';
+import { pickValue, pickValues, tagValue } from './values.js';
 import type { Vars } from './vars.js';
 
 export interface SendOptions {
@@ -24,6 +26,14 @@ export interface SendOptions {
   loginMacro?: boolean;
   ignoreTlsErrors?: boolean;
   timeoutMs?: number;
+  /** Variables that override project variables for this send (a flow's own). */
+  vars?: Record<string, string>;
+  /** Run this flow first; its variables are visible as {{var:name}} and {{flow:name.var}}. */
+  flow?: string;
+  /** The body is written decoded: resolve tokens, then encode it with this codec chain (e.g. ["base64", "json"]). */
+  bodyChain?: string[];
+  /** How deep in nested flows this send is (internal). */
+  flowDepth?: number;
 }
 
 export interface SendRequest {
@@ -66,6 +76,20 @@ export interface SendDeps {
   countHit: (ruleId: string) => void;
 }
 
+/** Encode a decoded body with a codec chain; terminal structured codecs (json, form, jwt) take the text as JSON. */
+export function encodeBody(chain: string[], text: string): Uint8Array {
+  const last = chain.length ? getCodec(chain[chain.length - 1]!) : undefined;
+  let value: unknown = text;
+  if (last?.terminal && last.id !== 'text') {
+    try {
+      value = JSON.parse(text);
+    } catch (e) {
+      throw new Error(`the body must be JSON to encode it with ${chain.join(' > ')}: ${(e as Error).message}`);
+    }
+  }
+  return encodeChain(chain, value);
+}
+
 const text = (b: Uint8Array | undefined) => (b && b.length && looksLikeText(b) ? bytesToString(b) : null);
 
 export function cookieHeaderFor(store: CaptureStore, url: string): string | null {
@@ -83,15 +107,52 @@ export function cookieHeaderFor(store: CaptureStore, url: string): string | null
 }
 
 export class Sender {
+  /** Set by PowerTools once the flow runner exists. */
+  flows?: FlowRunner;
+
   constructor(private readonly d: SendDeps) {}
+
+  /** Everything a token can read, for one URL. */
+  tokenContext(url: string, extra: { vars?: Record<string, string>; batch?: Map<string, string>; flows?: Map<string, Record<string, string>> } = {}): TokenContext {
+    return {
+      url,
+      cookies: () => cookieJar(this.d.store),
+      vars: () => (extra.vars ? { ...this.d.vars.values(), ...extra.vars } : this.d.vars.values()),
+      projectDir: this.d.projectDir,
+      batch: extra.batch,
+      flows: extra.flows,
+      pick: (arg) => pickValue(this.d.store, arg),
+      each: (arg) => pickValues(this.d.store, arg),
+      tag: (ref) => tagValue(this.d.store, ref),
+    };
+  }
+
+  /** Run the flows a request refers to (and the opts.flow one), once each, for one send. */
+  async runFlows(req: SendRequest, opts: SendOptions): Promise<{ flows: Map<string, Record<string, string>>; vars?: Record<string, string>; runs: string[] }> {
+    const texts = [req.url, ...req.headers.flat(), text(req.body) ?? ''];
+    const names = flowRefs(texts);
+    if (opts.flow && !names.includes(opts.flow)) names.unshift(opts.flow);
+    const flows = new Map<string, Record<string, string>>();
+    const runs: string[] = [];
+    if (!names.length) return { flows, vars: opts.vars, runs };
+    if (!this.flows) throw new Error('flows are not available');
+    for (const name of names) {
+      const r = await this.flows.run(name, {}, opts.flowDepth ?? 0, { ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+      if (!r.ok) throw new Error(`flow "${name}" failed: ${r.error}`);
+      flows.set(name, r.vars);
+      runs.push(r.runId);
+    }
+    const vars = opts.flow ? { ...(opts.vars ?? {}), ...flows.get(opts.flow) } : opts.vars;
+    return { flows, vars, runs };
+  }
 
   /** Add tags to what the exchange has now (summaries in hand may be stale). */
   private addTags(id: string, tags: string[]) {
     if (tags.length) this.d.store.tagExchange(id, [...(this.d.store.getSummary(id)?.tags ?? []), ...tags]);
   }
 
-  private resolveAll(req: SendRequest, batch?: Map<string, string>): SendRequest {
-    const ctx = { url: req.url, cookies: () => cookieJar(this.d.store), vars: () => this.d.vars.values(), projectDir: this.d.projectDir, batch };
+  private resolveAll(req: SendRequest, extra: { vars?: Record<string, string>; batch?: Map<string, string>; flows?: Map<string, Record<string, string>> }): SendRequest {
+    const ctx = this.tokenContext(req.url, extra);
     // Resolve the URL first so cookie tokens in headers see the final host.
     const url = resolveTokens(req.url, ctx);
     const c2 = { ...ctx, url };
@@ -126,9 +187,13 @@ export class Sender {
   }
 
   /** Apply the send options that change the request itself, in a fixed order. */
-  prepare(req: SendRequest, opts: SendOptions, batch?: Map<string, string>): { req: SendRequest; applied: string[] } {
+  prepare(req: SendRequest, opts: SendOptions, batch?: Map<string, string>, flows?: Map<string, Record<string, string>>): { req: SendRequest; applied: string[] } {
     const applied: string[] = [];
-    let r = opts.tokens === false ? req : this.resolveAll(req, batch);
+    let r = opts.tokens === false ? req : this.resolveAll(req, { vars: opts.vars, batch, flows });
+    if (opts.bodyChain?.length) {
+      r = { ...r, body: encodeBody(opts.bodyChain, text(r.body) ?? '') };
+      applied.push(`encoded:${opts.bodyChain.join('>')}`);
+    }
     if (opts.refreshCookies) {
       const cookie = cookieHeaderFor(this.d.store, r.url);
       const headers = r.headers.filter(([k]) => k.toLowerCase() !== 'cookie');
@@ -140,7 +205,7 @@ export class Sender {
       const msg: HookMessage = { method: r.method, url: r.url, headers: [...r.headers], body: r.body ?? new Uint8Array() };
       for (const rule of this.d.rules()) {
         if (rule.enabled === false || rule.phase !== 'request' || !conditionsMatch(rule, msg)) continue;
-        const n = applyRule(rule, msg, (s) => resolveTokens(s, { url: msg.url, cookies: () => cookieJar(this.d.store), vars: () => this.d.vars.values(), projectDir: this.d.projectDir }));
+        const n = applyRule(rule, msg, (s) => resolveTokens(s, this.tokenContext(msg.url, { vars: opts.vars, flows })));
         if (n) {
           applied.push(`rule:${rule.name}`);
           this.d.countHit(rule.id);
@@ -158,19 +223,26 @@ export class Sender {
   }
 
   async send(req: SendRequest, opts: SendOptions = {}, batch?: Map<string, string>): Promise<ExchangeSummary> {
-    const { req: r, applied } = this.prepare(req, opts, batch);
+    const fl = await this.runFlows(req, opts);
+    const o = { ...opts, vars: fl.vars };
+    const { req: r, applied } = this.prepare(req, o, batch, fl.flows);
     let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
-    this.addTags(res.id, applied);
+    this.addTags(res.id, [...applied, ...[...fl.flows.keys()].map((n) => `used-flow:${n}`)]);
 
     if (opts.loginMacro && res.status !== null) {
       const host = new URL(r.url).hostname;
       const macro = this.d.macros().find((m) => m.enabled !== false && globToRegExp(m.host).test(host) && (m.statuses ?? [401, 403]).includes(res.status!));
-      if (macro) {
-        await this.runMacro(macro.id);
-        // Resend with fresh tokens and cookies; the macro's responses have updated both.
-        const again = this.prepare(req, { ...opts, refreshCookies: opts.refreshCookies ?? true }, batch);
+      const loginFlow = macro ? undefined : this.flows?.authFlowFor(host, res.status);
+      if (macro || loginFlow) {
+        if (macro) await this.runMacro(macro.id);
+        else {
+          const lr = await this.flows!.run(loginFlow!, {}, opts.flowDepth ?? 0, { ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+          if (!lr.ok) throw new Error(`login flow "${loginFlow!.name}" failed: ${lr.error}`);
+        }
+        // Resend with fresh tokens and cookies; the login's responses have updated both.
+        const again = this.prepare(req, { ...o, refreshCookies: opts.refreshCookies ?? true }, batch, fl.flows);
         res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
-        this.addTags(res.id, [...again.applied, `after-login:${macro.name}`]);
+        this.addTags(res.id, [...again.applied, `after-login:${macro?.name ?? loginFlow!.name}`]);
       }
     }
 
@@ -203,7 +275,7 @@ export class Sender {
   /** One send per value of the batch tokens ({{counter}}, {{list}}). */
   async sendBatch(req: SendRequest, opts: SendOptions & { concurrency?: number; max?: number } = {}): Promise<{ batchId: string; sends: ExchangeSummary[]; errors: string[] }> {
     const texts = [req.url, ...req.headers.flat(), text(req.body) ?? ''];
-    const plan = batchPlan(texts, this.d.projectDir, opts.max ?? 10_000);
+    const plan = batchPlan(texts, this.d.projectDir, opts.max ?? 10_000, (arg) => pickValues(this.d.store, arg));
     const batchId = newId();
     const sends: ExchangeSummary[] = [];
     const errors: string[] = [];
@@ -247,4 +319,4 @@ export class Sender {
 }
 
 export const hasBatchTokens = (req: SendRequest): boolean =>
-  [req.url, ...req.headers.flat(), text(req.body) ?? ''].some((t) => [...t.matchAll(TOKEN_RE)].some((m) => /^(counter|list)$/i.test(m[1]!)));
+  [req.url, ...req.headers.flat(), text(req.body) ?? ''].some((t) => [...t.matchAll(TOKEN_RE)].some((m) => /^(counter|list|each)$/i.test(m[1]!)));

@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
+import { getCodec } from '@siteinquisition/codecs';
 import type { JarCookie } from './cookies.js';
 
 /**
@@ -12,10 +13,47 @@ import type { JarCookie } from './cookies.js';
  *   {{uuid}} {{now}} {{now:ms}} {{now:unix}} {{random:16}}   generators
  *   {{counter:1..100}} {{counter:0..1000:10}}  batch: one send per value
  *   {{list:a,b,c}} {{list:ids.txt}}    batch: one send per item (a file in the project folder)
+ *   {{pick:/api/products $.items[*].sku}}   a value from the newest matching response (:random, :last)
+ *   {{each:/api/products $.items[*].sku}}   batch: one send per value in that response
+ *   {{$my-tag.PO_number}} {{tag:my-tag.PO_number}}   a field of the newest request tagged my-tag
+ *   {{flow:create-po.po}}              run the flow "create-po" for this send and use its variable "po"
+ *
+ * Any token takes pipes that encode its value: {{var:po | base64}},
+ * {{$cart.id | url}}, {{uuid | upper}} (see FILTERS).
  *
  * Write `\{{` to send a literal `{{`.
  */
-export const TOKEN_RE = /(?<!\\)\{\{\s*([a-z]+)(?::([^}]*))?\s*\}\}/gi;
+export const TOKEN_RE = /(?<!\\)\{\{\s*([a-z]+|\$)(?::?([^}]*))?\}\}/gi;
+
+/** Pipe filters. Codec encoders, plus a few text helpers. */
+export const FILTERS: Record<string, (v: string) => string> = {
+  url: (v) => encodeURIComponent(v),
+  base64: (v) => Buffer.from(v, 'utf8').toString('base64'),
+  base64url: (v) => Buffer.from(v, 'utf8').toString('base64url'),
+  hex: (v) => Buffer.from(v, 'utf8').toString('hex'),
+  json: (v) => JSON.stringify(v),
+  jsonesc: (v) => JSON.stringify(v).slice(1, -1),
+  upper: (v) => v.toUpperCase(),
+  lower: (v) => v.toLowerCase(),
+  trim: (v) => v.trim(),
+  unbase64: (v) => new TextDecoder().decode(getCodec('base64').decode(new TextEncoder().encode(v)) as Uint8Array),
+  unurl: (v) => decodeURIComponent(v),
+};
+
+/** Split "arg | f1 | f2" into the argument and its known filters (unknown text after | stays in the argument). */
+export function splitPipes(raw: string): { arg: string; filters: string[] } {
+  const parts = raw.split('|');
+  const filters: string[] = [];
+  while (parts.length > 1 && FILTERS[parts[parts.length - 1]!.trim().toLowerCase()]) filters.unshift(parts.pop()!.trim().toLowerCase());
+  return { arg: parts.join('|').trim(), filters };
+}
+
+/** The flows a set of texts refer to with {{flow:name.var}}. */
+export function flowRefs(texts: string[]): string[] {
+  const out = new Set<string>();
+  for (const t of texts) for (const m of t.matchAll(TOKEN_RE)) if (m[1]!.toLowerCase() === 'flow') out.add(splitPipes(m[2] ?? '').arg.split('.')[0]!.trim());
+  return [...out].filter(Boolean);
+}
 
 export interface TokenContext {
   /** Request URL, used to pick cookies by host and path. */
@@ -27,6 +65,14 @@ export interface TokenContext {
   /** Values for batch tokens in this send, by token text. */
   batch?: Map<string, string>;
   now?: () => number;
+  /** {{pick:spec}}: a recorded value. */
+  pick?: (arg: string) => string;
+  /** {{each:spec}}: all values, for batches. */
+  each?: (arg: string) => string[];
+  /** {{$tag.field}}: a field of a tagged exchange. */
+  tag?: (ref: string) => string;
+  /** Variables of flows run for this send, by flow name. */
+  flows?: Map<string, Record<string, string>>;
 }
 
 export class TokenError extends Error {}
@@ -92,14 +138,20 @@ function counterValues(arg: string): string[] {
 }
 
 /** The batch tokens in some texts, with all their values; an empty array means a single send. */
-export function batchTokens(texts: string[], projectDir?: string): Array<{ token: string; values: string[] }> {
+export function batchTokens(texts: string[], projectDir?: string, each?: (arg: string) => string[]): Array<{ token: string; values: string[] }> {
   const seen = new Map<string, string[]>();
   for (const t of texts) {
     for (const m of t.matchAll(TOKEN_RE)) {
       const kind = m[1]!.toLowerCase();
-      if (kind !== 'counter' && kind !== 'list') continue;
+      if (kind !== 'counter' && kind !== 'list' && kind !== 'each') continue;
       if (seen.has(m[0])) continue;
-      seen.set(m[0], kind === 'counter' ? counterValues(m[2] ?? '') : listValues(m[2] ?? '', projectDir));
+      const { arg } = splitPipes(m[2] ?? '');
+      if (kind === 'each') {
+        if (!each) throw new TokenError('{{each}} needs recorded traffic');
+        const vals = each(arg);
+        if (!vals.length) throw new TokenError(`no recorded values for each "${arg}"`);
+        seen.set(m[0], vals);
+      } else seen.set(m[0], kind === 'counter' ? counterValues(arg) : listValues(arg, projectDir));
     }
   }
   return [...seen.entries()].map(([token, values]) => ({ token, values }));
@@ -110,8 +162,8 @@ export function batchTokens(texts: string[], projectDir?: string): Array<{ token
  * `/users/{{counter:1..3}}?n={{list:a,b,c}}` sends 1/a, 2/b, 3/c. The batch
  * is as long as the shortest token.
  */
-export function batchPlan(texts: string[], projectDir?: string, max = 10_000): Array<Map<string, string>> {
-  const tokens = batchTokens(texts, projectDir);
+export function batchPlan(texts: string[], projectDir?: string, max = 10_000, each?: (arg: string) => string[]): Array<Map<string, string>> {
+  const tokens = batchTokens(texts, projectDir, each);
   if (!tokens.length) return [new Map()];
   const n = Math.min(...tokens.map((t) => t.values.length));
   if (n > max) throw new TokenError(`batch of ${n} sends is over the limit of ${max}`);
@@ -125,9 +177,43 @@ export function hasTokens(text: string): boolean {
 
 export function resolveTokens(text: string, ctx: TokenContext): string {
   const out = text.replace(TOKEN_RE, (whole, rawKind: string, rawArg: string | undefined) => {
+    const { arg, filters } = splitPipes(rawArg ?? '');
+    let v = resolveOne(whole, rawKind, arg, ctx);
+    for (const f of filters) v = FILTERS[f]!(v);
+    return v;
+  });
+  return out.replace(/\\\{\{/g, '{{');
+}
+
+function resolveOne(whole: string, rawKind: string, arg: string, ctx: TokenContext): string {
+  {
     const kind = rawKind.toLowerCase();
-    const arg = (rawArg ?? '').trim();
     switch (kind) {
+      case '$':
+      case 'tag':
+        if (!ctx.tag) throw new TokenError('tag references need recorded traffic');
+        return ctx.tag(arg);
+      case 'pick':
+        if (!ctx.pick) throw new TokenError('{{pick}} needs recorded traffic');
+        return ctx.pick(arg);
+      case 'each': {
+        const v = ctx.batch?.get(whole);
+        if (v !== undefined) return v;
+        if (!ctx.each) throw new TokenError('{{each}} needs recorded traffic');
+        const all = ctx.each(arg);
+        if (!all.length) throw new TokenError(`no recorded values for each "${arg}"`);
+        return all[0]!;
+      }
+      case 'flow': {
+        const dot = arg.indexOf('.');
+        const name = dot === -1 ? arg : arg.slice(0, dot);
+        const key = dot === -1 ? '' : arg.slice(dot + 1);
+        const vars = ctx.flows?.get(name);
+        if (!vars) throw new TokenError(`flow "${name}" was not run for this send`);
+        if (!key) throw new TokenError(`say which variable of flow "${name}" to use, e.g. {{flow:${name}.id}}`);
+        if (vars[key] === undefined) throw new TokenError(`flow "${name}" did not set "${key}"`);
+        return vars[key]!;
+      }
       case 'cookie':
         return cookieFor(ctx, arg);
       case 'var': {
@@ -152,6 +238,5 @@ export function resolveTokens(text: string, ctx: TokenContext): string {
       default:
         throw new TokenError(`unknown token {{${rawKind}}}`);
     }
-  });
-  return out.replace(/\\\{\{/g, '{{');
+  }
 }

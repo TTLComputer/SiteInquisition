@@ -26,3 +26,7 @@ export * from './version.js';
 export * from './wsreplay.js';
 export * from './websocket.js';
 export * from './wsplan.js';
+export * from './flows.js';
+export * from './specs.js';
+export * from './values.js';
+export * from './yaml.js';

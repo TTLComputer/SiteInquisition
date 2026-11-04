@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { bytesToString, decodeChain, detectChain } from '@siteinquisition/codecs';
 import { coverage } from './coverage.js';
+import { draftFlow, FlowRunner, normalizeFlow, type ApiFlow } from './flows.js';
+import { exportOpenApi, importHar, parseSpec, requestForEndpoint, specCoverage, type ApiSpec } from './specs.js';
+import { moveTag, pickValues, tagValue, valueCatalog, valueOrigin } from './values.js';
 import { cookieJar } from './cookies.js';
 import type { Core } from './core.js';
 import { newId } from './ids.js';
@@ -31,6 +34,7 @@ export class PowerTools {
   readonly sender: Sender;
   readonly ws: WsReplays;
   readonly mcp: McpServer;
+  readonly flows: FlowRunner;
   /** Ephemeral events (paused requests, approvals) for API clients; not written to the change log. */
   readonly live = new EventEmitter<{ change: [Change] }>();
   private hits = new Map<string, number>();
@@ -51,6 +55,15 @@ export class PowerTools {
       sessionKeys: this.awsKeys,
       countHit: (id) => this.countHit(id),
     });
+    this.flows = new FlowRunner({
+      store,
+      sender: () => this.sender,
+      flows: () => this.flowList(),
+      runScript: (code, name, vars) => this.scripts.execute({ id: `flow:${name}`, name, kind: 'script', code }, this.sdk(), { vars }),
+      globalVars: () => this.vars.values(),
+      setGlobalVar: (k, v, src) => this.vars.set(k, v, src),
+    });
+    this.sender.flows = this.flows;
     this.scripts = new ScriptEngine(() => this.hookSdk());
     this.scripts.load(this.scriptList());
     this.mcp = new McpServer(this.mcpTools(), () => this.mcpSettings());
@@ -124,6 +137,84 @@ export class PowerTools {
     this.core.store.setMeta('macros', out);
     return out;
   }
+  flowList(): ApiFlow[] {
+    return this.meta<ApiFlow[]>('flows', []);
+  }
+  setFlows(list: Array<Omit<ApiFlow, 'id'> & { id?: string }>): ApiFlow[] {
+    const out = list.map(normalizeFlow);
+    const names = new Set<string>();
+    for (const f of out) {
+      if (names.has(f.name)) throw new Error(`two flows are called "${f.name}"`);
+      names.add(f.name);
+    }
+    this.core.store.setMeta('flows', out);
+    return out;
+  }
+  /** Add or replace one flow (by id, then by name). */
+  saveFlow(f: Omit<ApiFlow, 'id'> & { id?: string }): ApiFlow {
+    const list = this.flowList();
+    const i = list.findIndex((x) => (f.id && x.id === f.id) || x.name === f.name);
+    const next = normalizeFlow(i === -1 ? f : { ...f, id: list[i]!.id });
+    const all = i === -1 ? [...list, next] : list.map((x, k) => (k === i ? next : x));
+    this.setFlows(all);
+    return next;
+  }
+  runFlow(nameOrId: string, inputs: Record<string, string> = {}) {
+    return this.flows.run(nameOrId, inputs);
+  }
+  draftFlow(exchangeIds: string[], name?: string) {
+    return draftFlow(this.core.store, exchangeIds, name);
+  }
+
+  // ---------- API descriptions ----------
+  specs(): ApiSpec[] {
+    return this.meta<ApiSpec[]>('specs', []);
+  }
+  importSpec(text: string, name?: string): ApiSpec {
+    const spec = parseSpec(text, name);
+    // Re-importing the same API replaces it.
+    const list = this.specs().filter((s) => !(s.name === spec.name && s.format === spec.format));
+    this.core.store.setMeta('specs', [...list, spec]);
+    return spec;
+  }
+  deleteSpec(id: string): void {
+    this.core.store.setMeta('specs', this.specs().filter((s) => s.id !== id));
+  }
+  specCoverage(host: string) {
+    return specCoverage(this.specs(), coverage(this.core.store, host));
+  }
+  specRequest(specId: string, key: string, opts: { baseUrl?: string; values?: Record<string, string> } = {}) {
+    const spec = this.specs().find((s) => s.id === specId);
+    const ep = spec?.endpoints.find((e) => e.key === key);
+    if (!spec || !ep) throw new Error('no such endpoint');
+    // Fill path parameters with real recorded values where a field of the same name exists.
+    const values: Record<string, string> = { ...(opts.values ?? {}) };
+    const fields = ep.params.some((p) => p.in === 'path' && values[p.name] === undefined) ? valueCatalog(this.core.store, { limit: 800 }) : [];
+    for (const p of ep.params.filter((x) => x.in === 'path' && values[x.name] === undefined)) {
+      const want = p.name.toLowerCase().replace(/[_-]/g, '');
+      const f = fields.find((x) => x.side === 'response' && x.name.toLowerCase().replace(/[_-]/g, '') === want) ?? (want.endsWith('id') ? fields.find((x) => x.side === 'response' && x.name === 'id' && x.template.toLowerCase().includes(want.slice(0, -2))) : undefined);
+      if (f?.samples[0]) values[p.name] = f.samples[0];
+    }
+    return requestForEndpoint(spec, ep, { ...opts, values });
+  }
+  importHar(text: string, tag?: string) {
+    return importHar(this.core.store, text, tag);
+  }
+  exportOpenApi(host: string, title?: string) {
+    return exportOpenApi(this.core.store, host, { title });
+  }
+
+  // ---------- values and tags ----------
+  values(opts: { host?: string; query?: string; limit?: number } = {}) {
+    return valueCatalog(this.core.store, opts);
+  }
+  valueOrigin(value: string, beforeId?: string) {
+    return valueOrigin(this.core.store, value, { beforeId });
+  }
+  moveTag(tag: string, toId: string) {
+    return moveTag(this.core.store, tag, toId);
+  }
+
   awsProfiles(): AwsProfile[] {
     return this.meta<AwsProfile[]>('awsProfiles', []);
   }
@@ -154,7 +245,7 @@ export class PowerTools {
   private resolver(url: string) {
     return (s: string) => {
       try {
-        return resolveTokens(s, { url, cookies: () => cookieJar(this.core.store), vars: () => this.vars.values(), projectDir: this.core.projectDir });
+        return resolveTokens(s, this.sender.tokenContext(url));
       } catch {
         return s;
       }
@@ -280,6 +371,25 @@ export class PowerTools {
       scope: () => this.core.scope.get(),
       flow: (flowId: string) => store.getFlow(String(flowId)),
       runMacro: (id: string) => this.sender.runMacro(String(id)),
+      flows: {
+        list: () => this.flowList(),
+        run: async (name: string, inputs: Record<string, string> = {}) => {
+          const r = await this.flows.run(String(name), inputs);
+          if (!r.ok) throw new Error(`flow "${name}" failed: ${r.error}`);
+          return r.vars;
+        },
+        result: (name: string, inputs: Record<string, string> = {}) => this.flows.run(String(name), inputs),
+        save: (f: Omit<ApiFlow, 'id'>) => this.saveFlow(f),
+        draft: (ids: string[], name?: string) => this.draftFlow(ids.map(String), name),
+      },
+      values: (host?: string) => this.values({ host }),
+      pick: (spec: string) => pickValues(store, String(spec)),
+      origin: (value: string) => this.valueOrigin(String(value)),
+      tagged: (ref: string) => tagValue(store, String(ref)),
+      moveTag: (tag: string, id: string) => this.moveTag(String(tag), String(id)),
+      resolve: (text: string, url = 'http://localhost/') => resolveTokens(String(text), this.sender.tokenContext(String(url))),
+      specs: () => this.specs(),
+      specRequest: (specId: string, key: string) => this.specRequest(String(specId), String(key)),
     };
     return fullSdk as unknown as Sdk;
   }
@@ -348,6 +458,49 @@ export class PowerTools {
         inputSchema: { type: 'object', properties: { host: str }, required: ['host'] },
         write: false,
         run: (a) => coverage(store, String(a.host)),
+      },
+      {
+        name: 'api_values',
+        description: 'Fields seen in recorded JSON bodies, per endpoint and JSONPath, with sample values. Id-like fields (sku, order number, cart id) come first. Use a field in a request with {{pick:METHOD /path $.json.path}}.',
+        inputSchema: { type: 'object', properties: { host: str, query: { type: 'string', description: 'Search filter, e.g. path:/api/products' } } },
+        write: false,
+        run: (a) => this.values({ host: a.host ? String(a.host) : undefined, query: a.query ? String(a.query) : undefined }).slice(0, 300),
+      },
+      {
+        name: 'value_origin',
+        description: 'Which earlier response first handed out a value (an id, a token), with the JSONPath or header it was in.',
+        inputSchema: { type: 'object', properties: { value: str, beforeId: { type: 'string', description: 'Only look at exchanges before this one' } }, required: ['value'] },
+        write: false,
+        run: (a) => this.valueOrigin(String(a.value), a.beforeId ? String(a.beforeId) : undefined),
+      },
+      {
+        name: 'tag_value',
+        description: 'Read a field of the newest exchange with a tag, as the {{$tag.field}} token does. Field: JSONPath, key name, header.Name, query.name, status, req.<field>.',
+        inputSchema: { type: 'object', properties: { ref: { type: 'string', description: 'e.g. my-tag.PO_number' } }, required: ['ref'] },
+        write: false,
+        run: (a) => tagValue(store, String(a.ref)),
+      },
+      {
+        name: 'api_specs',
+        description: 'Imported API descriptions (OpenAPI, Swagger, Postman) and, for a host, which documented endpoints were called, never called, or called but undocumented.',
+        inputSchema: { type: 'object', properties: { host: str } },
+        write: false,
+        run: (a) => (a.host ? this.specCoverage(String(a.host)) : this.specs().map((s) => ({ id: s.id, name: s.name, format: s.format, servers: s.servers, endpoints: s.endpoints.length }))),
+      },
+      {
+        name: 'list_flows',
+        description: 'Saved flows: named multi-step setups (log in, create an order) whose variables requests use as {{flow:name.var}}.',
+        inputSchema: { type: 'object', properties: {} },
+        write: false,
+        run: () => this.flowList(),
+      },
+      {
+        name: 'run_flow',
+        description: 'Run a saved flow and return its variables and the exchange of each step.',
+        inputSchema: { type: 'object', properties: { name: str, inputs: { type: 'object' } }, required: ['name'] },
+        write: true,
+        summary: (a) => `Run flow ${String(a.name)}`,
+        run: (a) => this.flows.run(String(a.name), (a.inputs as Record<string, string>) ?? {}),
       },
       {
         name: 'decode',

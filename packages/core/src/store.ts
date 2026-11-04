@@ -9,7 +9,7 @@ import { newId } from './ids.js';
 import { compileQuery } from './search.js';
 
 export type HeaderList = Array<[string, string]>;
-export type ExchangeSource = 'browser' | 'proxy' | 'replay' | 'script' | 'mcp';
+export type ExchangeSource = 'browser' | 'proxy' | 'replay' | 'script' | 'mcp' | 'import';
 export type ExchangeState = 'pending' | 'complete' | 'aborted' | 'error';
 
 export interface Timings {

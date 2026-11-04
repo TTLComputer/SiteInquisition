@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { CaptureStore } from '../src/store.js';
 import { H3Server, type H3ServerRequest } from '../src/quic/index.js';
 import { h3Tickets, runH3Plan, type H3PlanRequest } from '../src/quic/plan.js';

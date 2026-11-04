@@ -56,7 +56,8 @@ Clickable mockups of every screen are on the design canvas: <https://claude.ai/a
 | Cookies and auth | Cookie jar and auth | Domain list, cookie table with decoded-chain hint, expiry highlighting, link to the exchange that set it; login macros with trigger conditions and run log; token extraction variables; AWS SigV4 credentials (named profile or encrypted key) and parsed signature of the selected request | new: `cookies.*`, `macros.*`, `vars.*`, `aws.*` |
 | WebSocket and MQTT | WebSocket and MQTT | Connection list (kind, state, client), message table (direction, time, opcode or packet type, topic/QoS/retain, size, preview), decoded payload, composer: WS frame to server or client, MQTT publish as the original client with topic, QoS, retain | `traffic.streamMessages`; new: `stream.send`, `mqtt.publish` |
 | Scripts and console | Scripts and console | Script list (live hooks with enabled dot, test suites, one-off scripts), editor with budget stats, console REPL against the SDK, test results | new: `scripts.*`, `console.eval` |
-| Settings | Settings: MCP, proxy, sharing | MCP: pending approval card (approve once, approve for 10 min, deny, open in replay first), write-action setting (ask each time is the default, or allow), stdio and HTTP connection details, agent activity log. Proxy and TLS: port, LAN, proxy modes, CA install page. Work together (after v1). Appearance and keys | new: `mcp.settings`, `mcp.approvals`, `mcp.decide`; `core.info` |
+| Settings | Settings: MCP, proxy, sharing | MCP: pending approval card (approve once, approve for 10 min, deny, open in replay first), write-action setting (ask each time is the default, or allow), stdio and HTTP connection details, agent activity log. Proxy and TLS: port, LAN, proxy modes, CA install page. Work together (after v1). Appearance and keys; links to Keys and certificates | new: `mcp.settings`, `mcp.approvals`, `mcp.decide`; `core.info` |
+| Keys and certificates | Settings: keys and certificates | Key store (CAs, certificates, private keys, HMAC secrets) with owner and chain view; generator for root, intermediate, leaf, CSR, key-only and HMAC; "where keys are used" bindings with per-person overrides; team CA with KDF-derived per-person keys | new: `keys.*`, `bindings.*`, `kdf.derive` (see below) |
 
 ## Visual tokens
 
@@ -105,6 +106,44 @@ Tokens are placeholders resolved when a request is sent. They can sit anywhere: 
 
 In the JSON tree a value holding a token shows as a purple pill with its current resolved value underneath. The Token button and the find and replace field both accept tokens, so "replace every `3b9a0c11` with `{{var:csrf}}`" works across layers. Codec chains re-encode with the resolved value at send time; the workbench output shows the current value.
 
+### Keys and certificates
+
+Settings › Keys and certificates is the one place to create, import and assign every key the app uses.
+
+**Key store.** Grouped into certificate authorities, certificates, private keys, and HMAC and signing secrets. Each entry shows its owner (project, or a person), its chain (root → intermediate → leaf), validity, and everything that uses it. Actions: issue from this CA, renew with the same key, export, rotate. Import accepts PEM, DER, PKCS#12, JWK and OpenSSH; export offers the same, with a passphrase for private keys. Private keys are encrypted at rest (Electron `safeStorage`, falling back to a project passphrase).
+
+**Generator.** One form for root CA, intermediate CA, leaf, CSR, key only, or HMAC secret, with presets (TLS server that browsers accept, mTLS client, long-lived IoT device, and deliberately broken ones: expired, wrong SAN). Options:
+
+| Area | Options |
+| --- | --- |
+| Key | ECDSA P-256 or P-384, Ed25519, RSA 2048, 3072 or 4096; new random key, reuse an existing key, derive from the team secret, or sign a CSR; signature hash SHA-256, 384, 512, or SHA-1 for legacy tests; owner |
+| Subject | CN, O, OU, C, ST, L, email |
+| SANs | DNS (including wildcards), IP, URI, email; fill from hosts in scope. These are what SNI and browsers check |
+| Key usage | All nine bits, with a critical flag |
+| Extended key usage | serverAuth, clientAuth, codeSigning, emailProtection, timeStamping, OCSPSigning, or any custom OID |
+| Serial | Random 128-bit (default), next in sequence for the issuer, custom hex, or a duplicate of an existing serial for negative tests |
+| Validity | Not before and not after, relative or absolute; back-dated or expired on purpose |
+| Issuer | Any CA in the store, or self-signed |
+| More | Basic constraints (CA, path length), name constraints, CRL, OCSP and AIA URLs served by the core at `http://siq.local/pki/`, must-staple, certificate policies, raw extensions by OID |
+
+A live check under the form says whether the result will be accepted by Chrome and Android (SAN present, 397 days or less, serverAuth), so a broken certificate is always a choice.
+
+**Where keys are used.** A table of uses, each with a scope, a project default and an optional override per person:
+
+- Proxy interception CA (signs the on-the-fly leaf certificates)
+- Pinned server certificate for a host, instead of an on-the-fly one
+- Client certificate (mTLS) presented upstream for a host
+- HMAC steps in codec chains and rules, for example `X-Signature` on `POST /api/webhooks/*`
+- JWT re-signing keys
+- AWS SigV4 credentials
+- The CA offered on the device setup page
+
+Resolution is most specific first: the sending person's override, then the project default for that scope, then the project-wide default. Codec steps, rules and scripts name a binding, not a key: the HMAC step's key field takes `{{key:webhook-signature}}`, which resolves to whichever key applies to the person sending. So two people with different keys can share one rule set.
+
+**Team CA and key derivation (for multi-user, after v1).** The owner creates a team root CA (name-constrained to the project's hosts) and installs it on devices once. Each person gets an intermediate CA and their own HMAC keys, derived from the team secret with a KDF using context `siq/v1/{person}/{purpose}` and the project id as salt. Supported KDFs: HKDF-SHA256 (default, for a strong random team secret), Argon2id and scrypt (when the secret is a passphrase), and PBKDF2-HMAC-SHA256 (compatibility). Derivation is deterministic, so a member can recreate their keys on a new machine from the secret alone. Devices trust everyone through the root, while each person's traffic is signed by their own intermediate, so captures and signatures show who made them.
+
+**Building on the in-house certificate code.** PR #9 replaces mockttp with `packages/core/src/x509.ts` (reaching main through PR #11; base certificate work on main after #11 merges) (hand-written DER, RSA with SHA-256, a root CA and a `LeafIssuer`). This screen needs that module extended with: EC (P-256, P-384) and Ed25519 keys; intermediate CAs and sending the full chain in the TLS handshake (TLS context `cert` set to leaf plus intermediates); all SAN types; key usage, extended key usage, basic constraints with path length, name constraints, SKI and AKI; serial policies; arbitrary extensions by OID; and CSR parsing. `LeafIssuer` takes its issuer from the binding for the person whose core is capturing. New core API: `keys.list`, `keys.get`, `keys.generate`, `keys.import`, `keys.export`, `keys.delete`, `bindings.list`, `bindings.set`, `kdf.derive`. PKCS#12 and JWK import and export can use `node:crypto` where it supports them, so no new dependency is needed.
+
 ### Other notes
 
 - **Approval for agent writes** appears in two places: a chip in the title bar (visible from every screen) and a full card in Settings › MCP. Approving runs the request immediately and the result appears in History with source `mcp`.
@@ -121,6 +160,7 @@ The shell already reserves space for it: people in the title bar, a "Work togeth
 
 - Theme follows the system by default (2026-11-04).
 - Replay and Race are workspace tabs, as mocked (2026-11-04).
+- Keys and certificates get their own Settings page with per-person bindings and KDF-derived team keys (2026-11-04).
 
 ## Open questions for review
 

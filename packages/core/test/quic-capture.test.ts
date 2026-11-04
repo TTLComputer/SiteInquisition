@@ -3,7 +3,7 @@ import { createServer as createHttpsServer, type Server } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { Core, normalizeBrowserHttp3Hosts, readBrowserHttp3Hosts, writeBrowserHttp3Hosts, type ExchangeSummary } from '../src/index.js';
 import { H3Server, h3Connect, requestFields, type H3Connection } from '../src/quic/index.js';
 import { generateCA, LeafIssuer } from '../src/x509.js';

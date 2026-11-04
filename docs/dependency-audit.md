@@ -54,7 +54,7 @@ It also has costs beyond the count: the MQTT relay imports `mockttp/dist/util/ce
 
 ## Round 2: mockttp replaced
 
-The proxy is now `core/src/interceptor.ts` (about 900 lines) on `node:net`, `node:tls`, `node:http` and `node:http2`, plus `core/src/x509.ts` (about 250 lines) for the CA and leaf certificates. The shipped tree is 8 packages: react, react-dom and their 3 helpers, ws, and the two font packages.
+The proxy is now `core/src/interceptor.ts` (about 1,100 lines) on `node:net`, `node:tls`, `node:http` and `node:http2`, plus `core/src/x509.ts` (about 250 lines) for the CA and leaf certificates. The shipped tree is 8 packages: react, react-dom and their 3 helpers, ws, and the two font packages.
 
 What it does:
 
@@ -89,9 +89,32 @@ In the UI, the Streams composer has a Frames mode with a preset picker and an ed
 
 Tests: 158 pass. New ones cover the codec, every preset, plans over replay, session replay, passthrough of fragmented frames through the proxy, injection both ways, and the Frames composer in the renderer. Real Chromium through the proxy received a 3-fragment injected message and echoed a split UTF-8 character correctly.
 
+## Round 4: vitest and Vite replaced
+
+`packages/devkit` holds two small tools built on TypeScript, which the repo already needs:
+
+- **Test runner** (`siq-test`, about 950 lines). It has the vitest API, so test files only changed their import line: `describe`, `it`/`test` with `.each`, `.skip`, `.skipIf`, `.only` and `.todo`, the four hooks, per-test timeouts, and `expect` with the matchers the repo uses, including `.not`, `.resolves`, `.rejects`, `expect.poll` and asymmetric matchers. Module hooks compile TypeScript with `transpileModule`, let `./x.js` find `./x.ts`, and point workspace packages at their sources. Each file runs in its own process, several at a time. Failures print a line diff and the test's stack. `-t` filters by name, file arguments filter by path, and `--watch` reruns on change.
+- **Bundler** (`siq-bundle`, about 450 lines). It reads the entry from `index.html` and compiles TS, TSX and ES modules to CommonJS with `transpileModule`. It resolves packages through `exports` maps (browser, import, default) and `main`, and applies `process.env.NODE_ENV`, dropping the `if` branches that become constant so React's development build is never included. CSS imports are concatenated in order, `@import` is inlined, and every `url()` asset is copied under a hashed name. `--serve` rebuilds on save and reloads the page.
+
+The script is 445 kB against Vite's 320 kB, because our own code is not minified. React ships pre-minified. The app loads it from disk, so the difference does not matter there.
+
+The whole tree, dev tools included, went from 160 packages to 27. The shipped tree is still 7. What remains is React, the fonts, Electron with its downloader, TypeScript and type definitions.
+
+Tests: 166 pass. New ones cover the matchers, the runner's hook order, skipping, `.each`, timeouts, failing `beforeAll`, diff output and name filters, plus the bundler (TSX, ES and CommonJS packages, conditional exports, JSON, CSS with `@import` and fonts, branch folding, missing imports). The renderer suites pass against the new bundle, and the Electron smoke test loads it from `file://`.
+
+## Round 5: Playwright replaced
+
+The renderer suites used Playwright, which was never in `package.json`: the tests loaded a global install when one was there and skipped otherwise. `@siteinquisition/devkit/browser` (about 1,100 lines) replaces it. It launches Chromium with `--remote-debugging-pipe` and speaks the DevTools protocol over the pipe, so there is no port and no WebSocket. It offers the part of the Playwright API the tests use, so they only changed their import and launch lines: `getByRole`, `getByLabel`, `getByText`, `getByTestId`, `locator` with `hasText`, `filter`, `first`, `nth`, then `click` (with right button and position), `fill`, `press`, `check`, `selectOption`, `textContent`, `inputValue`, `boundingBox`, the keyboard and mouse, screenshots, viewport, colour scheme, clipboard permissions and page errors.
+
+Actions keep Playwright's rules: they wait for one visible, enabled element that would receive the click, and fail at once when a locator matches more than one. Roles and accessible names are computed in the page with a short version of the ARIA rules, enough for the app's markup.
+
+It finds a browser through `SIQ_CHROMIUM` or `CHROME_PATH`, then `chromium`, `google-chrome` and similar on `PATH`, then browsers other tools downloaded. The package count does not change, since Playwright was never installed by the repo, but the UI tests no longer need anything outside it apart from a browser.
+
+Tests: 172 pass. New ones cover the driver against a fixture page: role, label and text matching, strict mode, waiting for enabled, fill, check, select, key chords, right click, dragging, screenshots and page errors. All 22 renderer tests pass on it.
+
 ## Kept, and why
 
 - **react, react-dom** (5 packages): the UI.
 - **@fontsource/inter, @fontsource/jetbrains-mono** (0 dependencies): bundled fonts, so nothing loads from the network.
-- **electron, typescript** (dev): the app shell and the compiler.
-- **vite, @vitejs/plugin-react, vitest** (dev, about 130 packages): planned for replacement. Tests would move to a small vitest-compatible runner on `node:test`, so the test files barely change.
+- **electron, typescript** (dev): the app shell and the compiler. TypeScript also powers the test runner and the bundler.
+- **@types/*** (dev): type definitions only.

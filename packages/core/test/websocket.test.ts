@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { Core, type ExchangeSummary } from '@siteinquisition/core';
 import { FrameParser, MessageAssembler, connectWebSocket, encodeFrame, frameViolations, serveWebSockets, type WsConnection } from '../src/websocket.js';
 import { PRESETS, buildPlan, type PlanStep } from '../src/wsplan.js';

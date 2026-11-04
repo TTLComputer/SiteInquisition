@@ -1,6 +1,6 @@
 import * as dgram from 'node:dgram';
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import type { Connection } from '../src/quic/connection.js';
 import { QuicClient, QuicServer } from '../src/quic/endpoint.js';
 import type { SessionTicket } from '../src/quic/tls.js';

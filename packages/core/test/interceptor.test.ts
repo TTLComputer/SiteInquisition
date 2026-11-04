@@ -7,7 +7,7 @@ import { connect as netConnect, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect as tlsConnect } from 'node:tls';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { connectWebSocket, serveWebSockets } from '../src/websocket.js';
 import { Core, type ExchangeSummary } from '@siteinquisition/core';
 import { parseClientHello } from '../src/interceptor.js';

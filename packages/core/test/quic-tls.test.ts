@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from '@siteinquisition/devkit/test';
 import { TlsSession, type Level, type SessionTicket, type TlsClientOptions, type TlsServerOptions } from '../src/quic/tls.js';
 import { generateCA, LeafIssuer } from '../src/x509.js';
 

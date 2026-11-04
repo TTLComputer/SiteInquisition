@@ -128,12 +128,15 @@ packages/
 
 ```sh
 pnpm build   # type-checks and compiles every package
-pnpm test    # unit and integration tests (Vitest); spins up local HTTP, HTTPS and WebSocket servers
+pnpm test    # unit and integration tests; spins up local HTTP, HTTPS and WebSocket servers
+pnpm test packages/core -t 'frame plans'   # only matching files and test names
 ```
 
-The UI tests drive the built renderer in Chromium against a real core. They need `pnpm build` first and Playwright with Chromium (`npm i -g playwright && npx playwright install chromium`); without Playwright they are skipped. Set `SIQ_SCREENSHOTS=dir` to save screenshots.
+The UI tests drive the built renderer in Chromium against a real core. They need `pnpm build` first and a Chromium or Chrome, which `@siteinquisition/devkit/browser` drives over the DevTools protocol. It looks at `SIQ_CHROMIUM`, then `chromium`, `google-chrome` and similar on `PATH`; without one the UI tests are skipped. Set `SIQ_SCREENSHOTS=dir` to save screenshots.
 
-To work on the renderer in a normal browser, start a proxy with `siq proxy`, read the API port and token from `core.json` in the project folder, run `pnpm --filter @siteinquisition/ui dev` and open `http://localhost:5173/?api=ws://127.0.0.1:PORT&token=TOKEN`.
+To work on the renderer in a normal browser, start a proxy with `siq proxy`, read the API port and token from `core.json` in the project folder, run `pnpm --filter @siteinquisition/ui dev` (rebuilds on save and reloads the page) and open `http://127.0.0.1:5173/?api=ws://127.0.0.1:PORT&token=TOKEN`.
+
+The test runner and the renderer bundler are in `packages/devkit`. Tests use the vitest API (`describe`, `it`, `expect`, hooks, `.each`, `.skipIf`, `expect.poll`), imported from `@siteinquisition/devkit/test`. Each test file runs in its own process, and TypeScript is compiled with `transpileModule`, so tests are not type-checked.
 
 Electron smoke test (Linux, headless): `SIQ_SMOKE_SCREENSHOT=/tmp/siq.png xvfb-run -a pnpm app` waits until the window is connected to the core, saves a screenshot and exits.
 

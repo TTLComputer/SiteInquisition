@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { createServer, type AddressInfo, type Server, type Socket } from 'node:net';
 import * as mockttp from 'mockttp';
 import type { CertificateAuthority } from './ca.js';
+import type { HookMessage } from './rules.js';
 import type { Scope } from './scope.js';
 import type { SeenHosts } from './seen.js';
 import type { CaptureStore, ExchangeSource, ExchangeSummary, HeaderList, Timings } from './store.js';
@@ -21,6 +22,26 @@ export interface ProxyOptions {
   /** How long a redirect waits for the client to follow it before the chain is forgotten. */
   redirectWindowMs?: number;
 }
+
+/**
+ * Inline hooks for in-scope traffic whose scope rule allows modify: breakpoints,
+ * match and replace, mocks and scripts. Hooks change the message in place and
+ * return the names of what changed it (they become `rule:` style tags), or a
+ * canned response / drop for requests.
+ */
+export interface ProxyHooks {
+  request?(msg: HookMessage, ctx: { key: string; source: ExchangeSource }): Promise<{ applied: string[]; respond?: { status: number; statusMessage?: string; headers: HeaderList; body: Uint8Array }; drop?: boolean }>;
+  response?(req: HookMessage, res: HookMessage, ctx: { key: string; source: ExchangeSource }): Promise<{ applied: string[]; drop?: boolean }>;
+}
+
+const toHeaderObject = (list: HeaderList): Record<string, string | string[]> => {
+  const out: Record<string, string | string[]> = {};
+  for (const [k, v] of list) {
+    const cur = out[k];
+    out[k] = cur === undefined ? v : Array.isArray(cur) ? [...cur, v] : [cur, v];
+  }
+  return out;
+};
 
 interface Live {
   exchangeId: string;
@@ -88,6 +109,9 @@ export class ProxyEngine extends EventEmitter<{
   private wsStreams = new Map<string, string>();
   private redirects = new Map<string, { exchangeId: string; flowId: string; expires: number }>();
   private listenPort?: number;
+  private hooks?: ProxyHooks;
+  /** Tags from hooks, by mockttp request id, waiting for the exchange to be recorded. */
+  private pendingTags = new Map<string, string[]>();
 
   constructor(
     private readonly store: CaptureStore,
@@ -97,6 +121,99 @@ export class ProxyEngine extends EventEmitter<{
     private readonly seen?: SeenHosts,
   ) {
     super();
+  }
+
+  /** Install hooks; takes effect on the next start or restart. */
+  setHooks(hooks: ProxyHooks | undefined): void {
+    this.hooks = hooks;
+  }
+
+  private addTags(reqId: string, tags: string[]): void {
+    if (!tags.length) return;
+    const live = this.live.get(reqId);
+    if (live) {
+      const ex = this.store.getSummary(live.exchangeId);
+      if (ex) this.store.tagExchange(ex.id, [...new Set([...ex.tags, ...tags])]);
+      return;
+    }
+    this.pendingTags.set(reqId, [...(this.pendingTags.get(reqId) ?? []), ...tags]);
+  }
+
+  private passthroughHooks() {
+    const hooks = this.hooks;
+    if (!hooks) return {};
+    const source = this.opts.source ?? 'proxy';
+    const modifiable = (url: string) => {
+      try {
+        return this.scope.evaluate(url).modify;
+      } catch {
+        return false;
+      }
+    };
+    const requestMsg = async (req: mockttp.CompletedRequest): Promise<HookMessage> => ({
+      method: req.method,
+      url: req.url,
+      headers: pairs(req.rawHeaders),
+      body: new Uint8Array((await req.body.getDecodedBuffer()) ?? req.body.buffer),
+    });
+    return {
+      beforeRequest: hooks.request
+        ? async (req: mockttp.CompletedRequest): Promise<mockttp.requestSteps.CallbackRequestResult | void> => {
+            if (!modifiable(req.url)) return;
+            try {
+              const msg = await requestMsg(req);
+              const before = JSON.stringify([msg.method, msg.url, msg.headers]);
+              const beforeBody = Buffer.from(msg.body);
+              const out = await hooks.request!(msg, { key: req.id, source });
+              this.addTags(req.id, out.applied.map((a) => (a.includes(':') ? a : `rule:${a}`)));
+              if (out.drop) return { response: 'close' };
+              if (out.respond) {
+                return { response: { statusCode: out.respond.status, statusMessage: out.respond.statusMessage, headers: toHeaderObject(out.respond.headers), rawBody: out.respond.body } };
+              }
+              const changedHead = before !== JSON.stringify([msg.method, msg.url, msg.headers]);
+              const changedBody = !beforeBody.equals(Buffer.from(msg.body));
+              if (!changedHead && !changedBody) return;
+              return {
+                method: msg.method,
+                url: msg.url,
+                // With a new body mockttp sets the length itself; a stale Content-Length makes the upstream reject it.
+                headers: toHeaderObject(msg.headers.filter(([k]) => !k.startsWith(':') && !(changedBody && /^(content-length|transfer-encoding)$/i.test(k)))),
+                ...(changedBody ? { body: msg.body } : {}),
+              };
+            } catch (err) {
+              this.emit('error', err instanceof Error ? err : new Error(String(err)));
+              return;
+            }
+          }
+        : undefined,
+      beforeResponse: hooks.response
+        ? async (res: mockttp.requestSteps.PassThroughResponse, req: mockttp.CompletedRequest): Promise<mockttp.requestSteps.CallbackResponseResult | void> => {
+            if (!modifiable(req.url)) return;
+            try {
+              const reqMsg = await requestMsg(req);
+              const msg: HookMessage = {
+                method: req.method,
+                url: req.url,
+                headers: pairs(res.rawHeaders),
+                body: new Uint8Array((await res.body.getDecodedBuffer()) ?? res.body.buffer),
+                status: res.statusCode,
+                statusMessage: res.statusMessage,
+              };
+              const before = JSON.stringify([msg.status, msg.statusMessage, msg.headers]);
+              const beforeBody = Buffer.from(msg.body);
+              const out = await hooks.response!(reqMsg, msg, { key: req.id, source });
+              this.addTags(req.id, out.applied.map((a) => (a.includes(':') ? a : `rule:${a}`)));
+              if (out.drop) return 'close';
+              const changedBody = !beforeBody.equals(Buffer.from(msg.body));
+              if (before === JSON.stringify([msg.status, msg.statusMessage, msg.headers]) && !changedBody) return;
+              return { statusCode: msg.status, statusMessage: msg.statusMessage, headers: toHeaderObject(changedBody ? msg.headers.filter(([k]) => !/^(content-length|transfer-encoding)$/i.test(k)) : msg.headers), ...(changedBody ? { body: msg.body } : {}) };
+            } catch (err) {
+              this.emit('error', err instanceof Error ? err : new Error(String(err)));
+              return;
+            }
+          }
+        : undefined,
+    };
   }
 
   get port(): number {
@@ -118,7 +235,7 @@ export class ProxyEngine extends EventEmitter<{
       cors: false,
     });
     const passthrough = { ignoreHostHttpsErrors: this.opts.ignoreUpstreamTlsErrors ?? false };
-    await server.forAnyRequest().thenPassThrough(passthrough);
+    await server.forAnyRequest().thenPassThrough({ ...passthrough, ...this.passthroughHooks() });
     await server.forAnyWebSocket().thenPassThrough(passthrough);
     await this.subscribe(server);
     const port = this.listenPort ?? (this.opts.port || (await freePort()));
@@ -211,6 +328,11 @@ export class ProxyEngine extends EventEmitter<{
       parentId: redirect?.exchangeId,
     });
     this.live.set(req.id, { exchangeId: ex.id, flowId: ex.flowId, url: req.url, clientAddr });
+    const tags = this.pendingTags.get(req.id);
+    if (tags) {
+      this.pendingTags.delete(req.id);
+      this.store.tagExchange(ex.id, [...new Set([...ex.tags, ...tags])]);
+    }
     this.emit('exchange', ex);
   }
 
@@ -222,6 +344,7 @@ export class ProxyEngine extends EventEmitter<{
       'response',
       this.guard((res) => {
         const live = this.live.get(res.id);
+        this.pendingTags.delete(res.id);
         if (!live) return;
         this.live.delete(res.id);
         const headers = pairs(res.rawHeaders);

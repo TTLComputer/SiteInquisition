@@ -1,4 +1,57 @@
-import type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage } from '@siteinquisition/core';
+import type {
+  ActivityEntry,
+  Approval,
+  AwsProfile,
+  Breakpoint,
+  Change,
+  CoverageReport,
+  Decision,
+  Exchange,
+  ExchangeSummary,
+  Extractor,
+  HeaderList,
+  JarCookie,
+  LogLine,
+  Macro,
+  McpSettings,
+  MockRule,
+  ParsedSigV4,
+  Paused,
+  RaceResult,
+  ReplaceRule,
+  RunResult,
+  ScopeConfig,
+  ScopeDecision,
+  Script,
+  ScriptStats,
+  SeenHost,
+  SendOptions,
+  StreamMessage,
+  VarValue,
+} from '@siteinquisition/core';
+
+export type {
+  ActivityEntry,
+  Approval,
+  AwsProfile,
+  Breakpoint,
+  CoverageReport,
+  Decision,
+  Extractor,
+  LogLine,
+  Macro,
+  McpSettings,
+  MockRule,
+  ParsedSigV4,
+  Paused,
+  RaceResult,
+  ReplaceRule,
+  RunResult,
+  Script,
+  ScriptStats,
+  SendOptions,
+  VarValue,
+};
 
 export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage };
 export type { ScopeRule } from '@siteinquisition/core';
@@ -94,7 +147,7 @@ export class CoreClient {
   private closedByUser = false;
   status: Status = 'connecting';
 
-  constructor(private readonly conn: Connection) {
+  constructor(readonly conn: Connection) {
     this.open();
   }
 
@@ -194,8 +247,77 @@ export class CoreClient {
     });
   cookies = () => this.call<JarCookie[]>('cookies.list');
   evaluate = (url: string) => this.call<ScopeDecision>('scope.evaluate', { url });
+  replayWith = (req: WireRequest, options: SendOptions) =>
+    this.call<ExchangeSummary>('replay.send', { ...wire(req), options });
+  replayBatch = (req: WireRequest, options: SendOptions & { concurrency?: number }) =>
+    this.call<{ batchId: string; sends: ExchangeSummary[]; errors: string[] }>('replay.batch', { ...wire(req), options, concurrency: options.concurrency });
+  previewTokens = (texts: string[], url: string) =>
+    this.call<{ sends: number; resolved: Array<{ ok: boolean; text?: string; error?: string }> }>('tokens.preview', { texts, url });
+  codecList = () => this.call<Array<{ id: string; label: string; terminal: boolean }>>('codecs.list');
+  detect = (bytes: Uint8Array) => this.call<string[]>('codecs.detect', { base64: bytesToBase64(bytes) });
+  layers = (chain: string[], bytes: Uint8Array) =>
+    this.call<Array<{ kind: 'bytes'; base64: string } | { kind: 'value'; value: unknown }>>('codecs.layers', { chain, base64: bytesToBase64(bytes) });
+  encode = (chain: string[], value: unknown) =>
+    this.call<{ base64: string }>('codecs.encode', value instanceof Uint8Array ? { chain, base64: bytesToBase64(value) } : { chain, value }).then((r) => base64ToBytes(r.base64));
+  replaceIn = (chain: string[], bytes: Uint8Array, o: { find: string; replace: string; regex?: boolean; matchCase?: boolean; keys?: boolean; scope?: 'layer' | 'all' }) =>
+    this.call<{ base64: string; counts: number[] }>('codecs.replace', { chain, base64: bytesToBase64(bytes), ...o }).then((r) => ({ output: base64ToBytes(r.base64), counts: r.counts }));
+  chains = () => this.call<SavedChain[]>('codecs.chains.get');
+  setChains = (chains: SavedChain[]) => this.call<boolean>('codecs.chains.set', { chains });
+  coverage = (host: string) => this.call<CoverageReport>('traffic.coverage', { host });
+  vars = () => this.call<{ vars: Record<string, VarValue>; extractors: Extractor[] }>('vars.list');
+  setVar = (name: string, value: string) => this.call<boolean>('vars.set', { name, value });
+  deleteVar = (name: string) => this.call<boolean>('vars.delete', { name });
+  setExtractors = (extractors: Array<Partial<Extractor>>) => this.call<Extractor[]>('vars.extractors', { extractors });
+  rules = () => this.call<{ rules: ReplaceRule[]; mocks: MockRule[]; breakpoints: Breakpoint[]; hits: Record<string, number> }>('rules.get');
+  setRules = (rules: Array<Partial<ReplaceRule>>) => this.call<ReplaceRule[]>('rules.set', { rules });
+  testRule = (rule: Partial<ReplaceRule>, exchangeId: string) => this.call<{ matched: boolean; count: number; before: string; after: string }>('rules.test', { rule, exchangeId });
+  setMocks = (mocks: Array<Partial<MockRule>>) => this.call<MockRule[]>('mocks.set', { mocks });
+  setBreakpoints = (breakpoints: Array<Partial<Breakpoint>>) => this.call<Breakpoint[]>('breakpoints.set', { breakpoints });
+  paused = () => this.call<Paused[]>('intercept.list');
+  resolvePaused = (id: string, action: 'forward' | 'drop' | 'forward-pause-response', edits?: Record<string, unknown>) => this.call<boolean>('intercept.resolve', { id, action, edits });
+  releaseAll = () => this.call<number>('intercept.releaseAll');
+  scripts = () => this.call<{ scripts: Script[]; stats: Record<string, ScriptStats>; errors: Record<string, string> }>('scripts.get');
+  setScripts = (scripts: Array<Partial<Script>>) => this.call<Script[]>('scripts.set', { scripts });
+  scriptLogs = (id: string) => this.call<LogLine[]>('scripts.logs', { id });
+  runScript = (p: { id?: string; code?: string }) => this.call<RunResult>('scripts.run', p);
+  macros = () => this.call<Macro[]>('macros.get');
+  setMacros = (macros: Array<Partial<Macro>>) => this.call<Macro[]>('macros.set', { macros });
+  runMacro = (id: string) => this.call<Array<{ step: number; exchangeId?: string; status: number | null; error?: string }>>('macros.run', { id });
+  aws = () => this.call<{ profiles: AwsProfile[]; sessionKeys: string[] }>('aws.get');
+  setAws = (profiles: AwsProfile[]) => this.call<AwsProfile[]>('aws.set', { profiles });
+  setAwsKeys = (k: { name: string; accessKeyId: string; secretAccessKey: string; sessionToken?: string }) => this.call<boolean>('aws.setKeys', k);
+  parseSigV4 = (id: string) => this.call<ParsedSigV4 | null>('aws.parse', { id });
+  race = (requests: Array<WireRequest & { offsetMs: number }>, opts: { sync: 'last-byte' | 'single-packet' | 'none'; repeat?: number; jitterMs?: number; ignoreTlsErrors?: boolean }) =>
+    this.call<RaceResult>('race.run', { requests: requests.map((r) => ({ ...wire(r), offsetMs: r.offsetMs })), ...opts });
+  liveStreams = () => this.call<{ mqtt: string[]; ws: string[] }>('stream.live');
+  streamConnect = (exchangeId: string, ignoreTlsErrors = false) => this.call<{ exchangeId: string }>('stream.connect', { exchangeId, ignoreTlsErrors });
+  streamSend = (exchangeId: string, payload: Uint8Array, opcode: 'text' | 'binary') => this.call<boolean>('stream.send', { exchangeId, base64: bytesToBase64(payload), opcode });
+  streamClose = (exchangeId: string) => this.call<boolean>('stream.close', { exchangeId });
+  streamIsOpen = (exchangeId: string) => this.call<boolean>('stream.isOpen', { exchangeId });
+  mqttPublish = (p: { exchangeId: string; to: 'broker' | 'device'; topic: string; payload: Uint8Array; qos: 0 | 1; retain: boolean }) =>
+    this.call<boolean>('mqtt.publish', { ...p, payload: undefined, base64: bytesToBase64(p.payload) });
+  mcpSettings = () => this.call<McpSettings>('mcp.settings');
+  setMcpSettings = (s: McpSettings) => this.call<McpSettings>('mcp.setSettings', s as unknown as Record<string, unknown>);
+  approvals = () => this.call<Approval[]>('mcp.approvals');
+  decide = (id: string, decision: Decision) => this.call<boolean>('mcp.decide', { id, decision });
+  mcpActivity = () => this.call<ActivityEntry[]>('mcp.activity');
   replayHistory = (of: string) => this.call<ExchangeSummary[]>('replay.history', { of });
 }
+
+export interface SavedChain {
+  name: string;
+  chain: string[];
+}
+
+export interface WireRequest {
+  method: string;
+  url: string;
+  headers: HeaderList;
+  body?: Uint8Array;
+  replayOf?: string | null;
+}
+
+const wire = (r: WireRequest) => ({ method: r.method, url: r.url, headers: r.headers, bodyBase64: r.body ? bytesToBase64(r.body) : undefined, replayOf: r.replayOf ?? undefined });
 
 export function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);

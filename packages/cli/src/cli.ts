@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Command, Option } from 'commander';
+import { Command, Option } from './args.js';
 import {
   CaptureStore,
   Core,
@@ -115,6 +115,10 @@ program
         }
       });
     }
+    // Headless there is no approval card: say what an agent is waiting for.
+    core.tools.mcp.on('approval', (a) =>
+      console.error(paint(33, `agent wants to ${a.tool}: ${a.summary}. Approve it in the app, or run \`siq agent-writes allow\` to stop asking. It is denied in 5 minutes.`)),
+    );
     core.proxy.on('error', (err) => console.error(paint(31, `capture error: ${err.message}`)));
     for (const relay of core.mqtt) relay.on('error', (err) => console.error(paint(31, `mqtt: ${err.message}`)));
     let closing = false;
@@ -200,23 +204,33 @@ program
     });
   });
 
+/** One JSON-RPC call to a running core over its WebSocket API (Node's built-in WebSocket client). */
+async function callRunningCore(running: { apiPort: number; token: string }, method: string, params: unknown): Promise<unknown> {
+  const ws = new WebSocket(`ws://127.0.0.1:${running.apiPort}/?token=${running.token}`);
+  try {
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true });
+      ws.addEventListener('error', () => reject(new Error(`cannot reach the running core on port ${running.apiPort}`)), { once: true });
+    });
+    const reply = new Promise<{ result?: unknown; error?: { message: string } }>((resolve) =>
+      ws.addEventListener('message', (ev) => resolve(JSON.parse(String(ev.data)) as { result?: unknown; error?: { message: string } }), { once: true }),
+    );
+    ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }));
+    const msg = await reply;
+    if (msg.error) throw new Error(msg.error.message);
+    return msg.result;
+  } finally {
+    ws.close();
+  }
+}
+
 const scope = program.command('scope').description('view and change which hosts are decrypted and recorded');
 
 const saveScope = async (config: ScopeConfig) => {
   const running = readRuntimeInfo(projectDir());
   if (running) {
     // A live core owns the scope (it may need to restart its listener), so ask it.
-    const { WebSocket } = await import('ws');
-    const ws = new WebSocket(`ws://127.0.0.1:${running.apiPort}/?token=${running.token}`);
-    await new Promise((r, j) => ws.once('open', r).once('error', j));
-    await new Promise<void>((r, j) => {
-      ws.once('message', (raw) => {
-        const msg = JSON.parse(raw.toString()) as { error?: { message: string } };
-        ws.close();
-        return msg.error ? j(new Error(msg.error.message)) : r();
-      });
-      ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'scope.set', params: { config } }));
-    });
+    await callRunningCore(running, 'scope.set', { config });
   } else {
     withStore((s) => s.setMeta('scope', config));
   }
@@ -298,6 +312,67 @@ program
       console.log(`expires      ${ca.expiresAt.toISOString().slice(0, 10)}`);
       console.log('Install this certificate as a trusted root on devices whose HTTPS traffic you want to inspect.');
     }
+  });
+
+program
+  .command('agent-writes')
+  .description('whether agents connected over MCP may send traffic and change settings without asking')
+  .argument('<mode>', 'ask | allow')
+  .action(async (mode: string) => {
+    if (mode !== 'ask' && mode !== 'allow') throw new Error('mode must be "ask" or "allow"');
+    const running = readRuntimeInfo(projectDir());
+    if (running) {
+      await callRunningCore(running, 'mcp.setSettings', { writeMode: mode });
+    } else withStore((s) => s.setMeta('mcpSettings', { writeMode: mode }));
+    console.log(mode === 'allow' ? 'Agents may now send traffic and change settings without asking.' : 'Agent write actions will wait for approval.');
+  });
+
+program
+  .command('mcp')
+  .description('MCP server over stdio for agents such as Claude Code; forwards to the running app or `siq proxy` for this project')
+  .action(async () => {
+    const { createInterface } = await import('node:readline');
+    const out = (msg: unknown) => process.stdout.write(`${JSON.stringify(msg)}\n`);
+    const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    let pending = 0;
+    let ended = false;
+    const maybeExit = () => ended && pending === 0 && process.exit(0);
+    rl.on('line', (raw) => {
+      if (!raw.trim()) return;
+      let msg: { id?: string | number | null; method?: string };
+      try {
+        msg = JSON.parse(raw) as typeof msg;
+      } catch {
+        return out({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } });
+      }
+      pending++;
+      (async () => {
+        // Read the runtime file every time: the app may have restarted on a new port and token.
+        const running = readRuntimeInfo(projectDir());
+        if (!running?.apiPort) throw new Error(`SiteInquisition is not running for ${projectDir()}. Open the project in the app, or run \`siq proxy\` there.`);
+        const res = await fetch(`http://127.0.0.1:${running.apiPort}/mcp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${running.token}` },
+          body: raw,
+        });
+        if (res.status === 202) return;
+        if (!res.ok) throw new Error(`the app answered ${res.status}`);
+        out(await res.json());
+      })()
+        .catch((e: Error) => {
+          if (msg.id !== undefined && msg.id !== null) out({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: e.message } });
+          else console.error(e.message);
+        })
+        .finally(() => {
+          pending--;
+          maybeExit();
+        });
+    });
+    rl.on('close', () => {
+      ended = true;
+      maybeExit();
+    });
+    await new Promise(() => undefined);
   });
 
 program.parseAsync().catch((err: unknown) => {

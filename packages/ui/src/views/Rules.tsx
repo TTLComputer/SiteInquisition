@@ -3,6 +3,7 @@ import type { ScopeConfig, ScopeRule, SeenHost } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { fmtTime } from '../format';
+import { Breakpoints, Mocks, ReplaceRules } from './RulesTools';
 
 type RuleDraft = Omit<ScopeRule, 'id'> & { id?: string; key: string };
 type RulesTab = 'scope' | 'replace' | 'mocks' | 'breakpoints';
@@ -230,15 +231,13 @@ function ScopeEditor() {
   );
 }
 
-const SOON: Record<Exclude<RulesTab, 'scope'>, string> = {
-  replace: 'Match and replace rules with conditions, codec layers and a live test against the selected exchange. Coming with the power tools milestone.',
-  mocks: 'Serve canned responses for endpoints that do not exist yet. Coming with the power tools milestone.',
-  breakpoints: 'Pause matching requests or responses and edit them before they continue. Coming with the built-in browser.',
-};
-
 export function Rules() {
-  const [tab, setTab] = useState<RulesTab>('scope');
-  const labels: Record<RulesTab, string> = { scope: 'Scope', replace: 'Match and replace', mocks: 'Mocks', breakpoints: 'Breakpoints' };
+  const { subTab, paused } = useApp();
+  const [tab, setTab] = useState<RulesTab>((subTab.rules as RulesTab) ?? 'scope');
+  useEffect(() => {
+    if (subTab.rules) setTab(subTab.rules as RulesTab);
+  }, [subTab]);
+  const labels: Record<RulesTab, string> = { scope: 'Scope', replace: 'Match and replace', mocks: 'Mocks', breakpoints: paused.length ? `Breakpoints (${paused.length} paused)` : 'Breakpoints' };
   return (
     <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
       <div className="tabs" role="tablist" aria-label="Rules">
@@ -248,14 +247,10 @@ export function Rules() {
           </button>
         ))}
       </div>
-      {tab === 'scope' ? (
-        <ScopeEditor />
-      ) : (
-        <div className="empty">
-          <div className="panel-title">{labels[tab]}</div>
-          <div style={{ maxWidth: 520 }}>{SOON[tab]}</div>
-        </div>
-      )}
+      {tab === 'scope' && <ScopeEditor />}
+      {tab === 'replace' && <ReplaceRules />}
+      {tab === 'mocks' && <Mocks />}
+      {tab === 'breakpoints' && <Breakpoints />}
     </div>
   );
 }

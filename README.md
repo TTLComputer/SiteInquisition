@@ -2,7 +2,7 @@
 
 An intercepting proxy, built-in browser and replay toolkit for testing websites, APIs and IoT devices before they are finished. It runs on Windows and Linux and is MIT licensed.
 
-> **Status:** early development. This repository contains the core engine, the `siq` CLI and the desktop app (built-in browser, History, inspector, replay, Timeline, cookie jar, scope and settings). The codec workbench, race tools, scripting and MCP server follow in later milestones. The full design is in the [design spec](https://claude.ai/artifact/HyHcJe2h7r7iCqLT3PmyEM).
+> **Status:** early development, feature complete for v1 on Linux. This repository contains the core engine, the `siq` CLI and the desktop app with the power tools (codecs, match and replace, mocks, breakpoints, race, Streams composer, scripts, login macros, variables, SigV4 and an MCP server). The full design is in the [design spec](https://claude.ai/artifact/HyHcJe2h7r7iCqLT3PmyEM).
 
 ## What works today
 
@@ -19,6 +19,16 @@ An intercepting proxy, built-in browser and replay toolkit for testing websites,
 - **Desktop app** (Electron): History with the search syntax, quick filters, saved views, site map and live follow; an inspector for requests, responses, WebSocket frames and MQTT packets; replay tabs with a raw editor, send history and a diff against the original; one-click replay from any row (Replay pill, Ctrl R, double click, right-click menu, or drag onto the tab bar) and "Resend now" (Ctrl Shift Enter); a scope editor with "seen but not in scope" hosts and certificate pinning warnings; theme that follows the system.
 - **Built-in browser**: Chromium tabs inside the app on their own proxy listener (traffic recorded as source `browser`, localhost included), trusting the project CA only for intercepted hosts; address bar scope badge, one-click "add this host to scope", DevTools, and a live traffic feed with replay links.
 - **Timeline**: exchanges on a time axis grouped by host, flow or client connection, with WebSocket and MQTT messages as ticks and replays dashed; drag a range to filter History (`since:` / `until:`).
+- **Endpoint coverage** (History, Coverage): every method and path template seen per host (ids collapsed to `{n}`, `{uuid}`, `{token}`...), with call counts, statuses, query and body parameters, content types and the slowest call; endpoints that never succeeded; and paths the app's own HTML, scripts and JSON mention that nobody has requested yet. Copy it as Markdown for a first draft of API docs.
+- **Codec workbench**: paste or send anything (Ctrl D on any selection, or Decode on a body), detect its layers (url, base64, hex, gzip, JSON, JWT, form...), edit the innermost one with a JSON tree and JSONPath bulk edits (set, increment, swap type, flip, append, delete), find and replace through every layer with a live count, insert tokens, and put the result back into the replay it came from.
+- **Tokens** in replays, rules, mocks and macros: `{{cookie:name}}`, `{{cookie:name@domain}}`, `{{var:name}}`, `{{uuid}}`, `{{now}}`, `{{random:16}}`, and batch tokens `{{counter:1..100}}` and `{{list:a,b,c}}` (or a file) that send once per value. Replay previews what they resolve to.
+- **Replay options**: fresh cookies from the jar, apply match and replace rules, log in again on 401/403 with a login macro, follow redirects, sign with AWS SigV4 (by profile or matched automatically), ignore TLS errors.
+- **Match and replace** on requests and responses (URL, header, body through a codec chain or a JSONPath, status), with hit counts and a test against the selected exchange; **mocks** made from any recorded response; **breakpoints** that pause requests or responses for editing, shown in the title bar wherever you are.
+- **Race**: line up requests with millisecond offsets and fire them with last-byte sync (HTTP/1.1), single-packet (HTTP/2) or plain timers, repeated, with per-run spreads and differing outcomes highlighted.
+- **Streams**: WebSocket and MQTT connections with a composer. WebSocket messages go out on a replay connection that copies the captured one's URL, cookies and headers; MQTT messages are injected into a live session towards the broker or the device.
+- **Scripts**: hooks on live traffic (with a time budget and stats), test suites with `test()` and `expect()`, one-off scripts and a console, all with the `siq` SDK (search, send, resend, race, cookies, variables, tags, macros).
+- **Login macros, variables and extractors**: record the login requests once; extractors keep variables such as a CSRF token or access token current from responses.
+- **MCP server** for agents such as Claude Code: search and read traffic, endpoint coverage, decode, cookies, scope, and (with approval) replay, resend, tag, add scope hosts and run scripts. Approvals appear in the title bar: approve once, for 10 minutes, deny, or open the request in Replay instead. Connect with `claude mcp add siteinquisition -- siq mcp --project <dir>` or over HTTP at `/mcp` on the core API port.
 - **Cookie jar**: every Set-Cookie seen, newest wins, with expiry highlighting, a decoded hint (url, base64, JSON, JWT), a link to the response that set it, and `{{cookie:name@domain}}` tokens to copy.
 
 ## Quick start
@@ -49,6 +59,13 @@ pnpm app -- --project ~/siq/shop --lan    # choose the project folder and accept
 ```
 
 The core runs in a separate utility process, and the window talks to it over the same local API as the CLI. Projects default to the app's user data folder.
+
+### Agents (MCP)
+
+```sh
+claude mcp add siteinquisition -- siq mcp --project ~/siq/shop   # stdio bridge to the running app or `siq proxy`
+siq agent-writes allow                                          # let agents send traffic without asking (default: ask)
+```
 
 ### MQTT
 

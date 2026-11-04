@@ -10,6 +10,14 @@ import { Placeholder } from './views/Placeholder';
 import { Browser } from './views/Browser';
 import { Timeline } from './views/Timeline';
 import { Cookies } from './views/Cookies';
+import { Codecs } from './views/Codecs';
+import { Race } from './views/Race';
+import { Streams } from './views/Streams';
+import { Scripts } from './views/Scripts';
+import { Aws, Macros, Variables } from './views/CookiesTools';
+import { ApprovalChip } from './views/Mcp';
+import { bodyText } from './actions';
+import { toRawRequest } from './format';
 
 const NAV: Array<{ id: ViewId; label: string }> = [
   { id: 'browser', label: 'Browser' },
@@ -28,7 +36,7 @@ const NAV: Array<{ id: ViewId; label: string }> = [
 const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 
 function TitleBar() {
-  const { info, connected, scope, setView } = useApp();
+  const { info, connected, scope, setView, paused, openAt } = useApp();
   const included = scope?.rules.filter((r) => r.action === 'include' && r.enabled !== false).length ?? 0;
   return (
     <header className="titlebar">
@@ -49,6 +57,13 @@ function TitleBar() {
       <button className="chip-btn" onClick={() => setView('rules')} title="Edit scope">
         Scope: {included === 0 ? (scope?.defaultAction === 'record' ? 'everything' : 'nothing yet') : `${included} ${included === 1 ? 'rule' : 'rules'}`}
       </button>
+      {paused.length > 0 && (
+        <button className="chip-btn attention" onClick={() => openAt('rules', 'breakpoints')} data-testid="paused-chip">
+          <span className="dot" style={{ background: 'var(--warn)' }} />
+          {paused.length} paused at a breakpoint
+        </button>
+      )}
+      <ApprovalChip />
       <button
         className="chip-btn search"
         onClick={() => {
@@ -65,11 +80,12 @@ function TitleBar() {
 }
 
 function NavRail() {
-  const { view, setView, info, replayTabs, savedViews, setQuery, scope } = useApp();
+  const { view, setView, info, replayTabs, savedViews, setQuery, scope, raceItems, paused } = useApp();
   const badge: Partial<Record<ViewId, string>> = {
     history: info ? fmtCount(info.stats.exchanges) : undefined,
     replay: replayTabs.length ? String(replayTabs.length) : undefined,
-    rules: scope ? String(scope.rules.length) : undefined,
+    race: raceItems.length ? String(raceItems.length) : undefined,
+    rules: paused.length ? `${paused.length} paused` : scope ? String(scope.rules.length) : undefined,
     streams: info?.mqtt.length ? `${info.mqtt.length} mqtt` : undefined,
   };
   return (
@@ -177,15 +193,18 @@ function WorkspaceTabs() {
   );
 }
 
-const PLACEHOLDERS: Partial<Record<ViewId, { title: string; text: string }>> = {
-  race: { title: 'Race-timed replay', text: 'Send several requests with exact offsets to hunt race conditions. Coming with the power tools milestone.' },
-  codecs: { title: 'Codec workbench', text: 'Chained decoders and encoders, JSON editing, find and replace across layers, and tokens like {{cookie:session}}. Coming with the power tools milestone.' },
-  streams: { title: 'WebSocket and MQTT', text: 'Connection list and composer. Until then, select a WebSocket or MQTT session in History to see its messages in the inspector.' },
-  scripts: { title: 'Scripts and console', text: 'Live hooks, test suites and a console against the SDK. Coming with the power tools milestone.' },
-};
+/** The text selected anywhere on the page, including inside a text field. */
+function selectedText(): string {
+  const el = document.activeElement;
+  if (el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && el.type === 'text')) {
+    const t = el.value.slice(el.selectionStart ?? 0, el.selectionEnd ?? 0);
+    if (t) return t;
+  }
+  return window.getSelection()?.toString() ?? '';
+}
 
 function useShortcuts() {
-  const { selectedId, openReplayById, resendNow, notify, setView } = useApp();
+  const { client, selectedId, openReplayById, resendNow, notify, setView, sendToCodecs, sendToRace } = useApp();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -195,6 +214,23 @@ function useShortcuts() {
         e.preventDefault();
         setView('history');
         window.setTimeout(() => document.getElementById('filter-input')?.focus(), 0);
+      } else if (key === 'd' && !e.shiftKey) {
+        e.preventDefault();
+        const sel = selectedText();
+        if (sel) sendToCodecs(sel, 'selection');
+        else if (selectedId)
+          bodyText(client, selectedId, 'response').then(
+            (t) => sendToCodecs(t, 'selected response'),
+            (err: Error) => notify(err.message),
+          );
+        else notify('Select some text, or an exchange in History, then press Ctrl D to decode it.');
+      } else if (key === 'r' && e.shiftKey && selectedId) {
+        e.preventDefault();
+        (async () => {
+          const ex = await client.get(selectedId);
+          const body = ex.reqBodySize ? await bodyText(client, ex.id, 'request').catch(() => '') : '';
+          sendToRace([{ label: ex.path.split('?')[0]!.split('/').pop() || '/', raw: toRawRequest(ex.method, ex.url, ex.requestHeaders, body), replayOf: ex.id }]);
+        })().catch((err: Error) => notify(err.message));
       } else if (key === 'r' && !e.shiftKey && selectedId) {
         e.preventDefault();
         openReplayById(selectedId).catch((err: Error) => notify(err.message));
@@ -205,13 +241,12 @@ function useShortcuts() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId, openReplayById, resendNow, notify, setView]);
+  }, [client, selectedId, openReplayById, resendNow, notify, setView, sendToCodecs, sendToRace]);
 }
 
 export function App() {
   const { view, connected, toast, activeTab, replayTabs } = useApp();
   useShortcuts();
-  const placeholder = PLACEHOLDERS[view];
   const activeReplay = replayTabs.find((t) => t.id === activeTab);
   return (
     <div className="app">
@@ -233,10 +268,13 @@ export function App() {
           )}
           {view === 'browser' && <Browser />}
           {view === 'timeline' && <Timeline />}
-          {view === 'cookies' && <Cookies />}
+          {view === 'cookies' && <Cookies macros={<Macros />} vars={<Variables />} aws={<Aws />} />}
+          {view === 'codecs' && <Codecs />}
+          {view === 'race' && <Race />}
+          {view === 'streams' && <Streams />}
+          {view === 'scripts' && <Scripts />}
           {view === 'rules' && <Rules />}
           {view === 'settings' && <Settings />}
-          {placeholder && <Placeholder title={placeholder.title} text={placeholder.text} />}
         </main>
       </div>
       {toast && (

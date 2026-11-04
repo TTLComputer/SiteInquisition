@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../state';
 import { applyTheme, storedTheme, type ThemeChoice } from '../theme';
+import { McpSection } from './Mcp';
 
 type Section = 'proxy' | 'mcp' | 'appearance' | 'keys' | 'together';
 
@@ -12,6 +13,8 @@ const SHORTCUTS: Array<[string, string]> = [
   ['Up / Down', 'Move the selection in History'],
   ['Shift F10', 'Open the row menu for the selected exchange'],
   ['Double click', 'Open a row in replay'],
+  ['Ctrl D', 'Decode the selected text (or the selected exchange\'s response body) in Codecs'],
+  ['Ctrl Shift R', 'Send the selected exchange to Race'],
 ];
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -24,8 +27,11 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 export function Settings() {
-  const { info } = useApp();
-  const [section, setSection] = useState<Section>('proxy');
+  const { info, subTab } = useApp();
+  const [section, setSection] = useState<Section>((subTab.settings as Section) ?? 'proxy');
+  useEffect(() => {
+    if (subTab.settings) setSection(subTab.settings as Section);
+  }, [subTab]);
   const [theme, setTheme] = useState<ThemeChoice>(storedTheme());
   const labels: Record<Section, string> = { proxy: 'Proxy and TLS', mcp: 'MCP and agents', appearance: 'Appearance', keys: 'Keyboard', together: 'Work together' };
   return (
@@ -84,14 +90,7 @@ export function Settings() {
               )}
             </>
           )}
-          {section === 'mcp' && (
-            <>
-              <div className="panel-title" style={{ padding: '12px 14px' }}>
-                MCP and agents
-              </div>
-              <Row label="Write actions">Ask each time (default). The approval chip, the approval card and the agent activity log arrive with the MCP server in the power tools milestone.</Row>
-            </>
-          )}
+          {section === 'mcp' && <McpSection Row={Row} />}
           {section === 'appearance' && (
             <>
               <div className="panel-title" style={{ padding: '12px 14px' }}>

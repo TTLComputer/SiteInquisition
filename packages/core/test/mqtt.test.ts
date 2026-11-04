@@ -1,38 +1,22 @@
-import { createServer, type Server } from 'node:net';
+import type { Server } from 'node:net';
 import { createServer as createTlsServer } from 'node:tls';
 import type { AddressInfo } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Aedes } from 'aedes';
-import mqtt from 'mqtt';
-import mqttPacket from 'mqtt-packet';
 import { generateCACertificate } from 'mockttp';
 import { Core, type ExchangeSummary } from '@siteinquisition/core';
+import { TestClient, createBroker, createBrokerHandler } from './mqtt-fixtures.js';
 
 let tmp: string;
 let core: Core;
-let broker: Aedes;
 let plainBroker: Server;
 let tlsBroker: Server;
 let plainPort: number;
 let tlsPort: number;
 let v5Broker: Server;
 let v5Port: number;
-
-/** Aedes only speaks MQTT 3.1.1, so MQTT 5 is checked against a minimal broker built on mqtt-packet. */
-function startV5Broker(): Server {
-  return createServer((sock) => {
-    const parser = mqttPacket.parser({ protocolVersion: 5 });
-    parser.on('packet', (p) => {
-      if (p.cmd === 'connect') sock.write(mqttPacket.generate({ cmd: 'connack', reasonCode: 0, sessionPresent: false }, { protocolVersion: 5 }));
-      if (p.cmd === 'disconnect') sock.end();
-    });
-    sock.on('data', (d) => parser.parse(d));
-    sock.on('error', () => undefined);
-  });
-}
 
 const listen = (s: Server) => new Promise<number>((r) => s.listen(0, '127.0.0.1', () => r((s.address() as AddressInfo).port)));
 
@@ -49,18 +33,12 @@ const messages = (exchangeId: string) => core.store.getStreamMessages(core.store
 
 beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'siq-mqtt-'));
-  broker = await Aedes.createBroker({
-    authenticate: (_client, username, _password, done) => {
-      if (username === 'blocked') done(Object.assign(new Error('nope'), { returnCode: 4 }) as never, false);
-      else done(null, true);
-    },
-  });
-  plainBroker = createServer(broker.handle);
+  plainBroker = createBroker();
   plainPort = await listen(plainBroker);
   const cert = await generateCACertificate({ subject: { commonName: 'localhost' } });
-  tlsBroker = createTlsServer({ key: cert.key, cert: cert.cert }, broker.handle) as unknown as Server;
+  tlsBroker = createTlsServer({ key: cert.key, cert: cert.cert }, createBrokerHandler()) as unknown as Server;
   tlsPort = await listen(tlsBroker);
-  v5Broker = startV5Broker();
+  v5Broker = createBroker();
   v5Port = await listen(v5Broker);
 
   core = await Core.open({
@@ -80,7 +58,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await core?.close();
-  await new Promise((r) => broker?.close(r));
   await new Promise((r) => plainBroker?.close(r));
   await new Promise((r) => tlsBroker?.close(r));
   await new Promise((r) => v5Broker?.close(r));
@@ -89,12 +66,12 @@ afterAll(async () => {
 
 describe('MQTT relay', () => {
   it('relays a session and records every packet with topic, QoS and payload', async () => {
-    const client = await mqtt.connectAsync(`mqtt://127.0.0.1:${core.mqtt[0]!.port}`, { clientId: 'sensor-1', username: 'dev', password: 'pw', reconnectPeriod: 0 });
-    await client.subscribeAsync('sensors/#', { qos: 1 });
+    const client = await TestClient.connect(core.mqtt[0]!.port, { clientId: 'sensor-1', username: 'dev', password: 'pw' });
+    await client.subscribe('sensors/#', 1);
     const got = new Promise<[string, string]>((r) => client.once('message', (t, p) => r([t, p.toString()])));
-    await client.publishAsync('sensors/temp', JSON.stringify({ c: 21.5 }), { qos: 1, retain: true });
+    await client.publish('sensors/temp', JSON.stringify({ c: 21.5 }), { qos: 1, retain: true });
     expect(await got).toEqual(['sensors/temp', '{"c":21.5}']);
-    await client.endAsync();
+    await client.end();
 
     const ex = await waitFor(`method:CONNECT url:127.0.0.1:${plainPort}`);
     const full = core.store.getExchange(ex.id)!;
@@ -117,9 +94,9 @@ describe('MQTT relay', () => {
   });
 
   it('terminates TLS from devices with the project CA and speaks TLS to the broker', async () => {
-    const client = await mqtt.connectAsync(`mqtts://localhost:${core.mqtt[1]!.port}`, { ca: core.ca.cert, clientId: 'tls-dev', reconnectPeriod: 0 });
-    await client.publishAsync('a/b', 'hi', { qos: 1 });
-    await client.endAsync();
+    const client = await TestClient.connect(core.mqtt[1]!.port, { ca: core.ca.cert, servername: 'localhost', clientId: 'tls-dev' });
+    await client.publish('a/b', 'hi', { qos: 1 });
+    await client.end();
     const ex = await waitFor('scheme:mqtts');
     expect(ex).toMatchObject({ host: 'localhost', state: 'complete', port: tlsPort });
     let msgs = messages(ex.id);
@@ -131,9 +108,9 @@ describe('MQTT relay', () => {
   });
 
   it('parses MQTT 5 sessions, including properties', async () => {
-    const client = await mqtt.connectAsync(`mqtt://127.0.0.1:${core.mqtt[2]!.port}`, { protocolVersion: 5, clientId: 'v5', reconnectPeriod: 0 });
-    await client.publishAsync('v5/topic', 'hello', { qos: 0, properties: { contentType: 'text/plain', userProperties: { trace: 'abc' } } });
-    await client.endAsync();
+    const client = await TestClient.connect(core.mqtt[2]!.port, { protocolVersion: 5, clientId: 'v5' });
+    await client.publish('v5/topic', 'hello', { qos: 0, properties: { contentType: 'text/plain', userProperties: { trace: 'abc' } } });
+    await client.end();
     const ex = await waitFor(`method:CONNECT url:127.0.0.1:${v5Port}`);
     expect(core.store.getExchange(ex.id)!.httpVersion).toBe('MQTT/5.0');
     let msgs = messages(ex.id);
@@ -148,7 +125,7 @@ describe('MQTT relay', () => {
   });
 
   it('marks refused sessions as errors', async () => {
-    await expect(mqtt.connectAsync(`mqtt://127.0.0.1:${core.mqtt[0]!.port}`, { username: 'blocked', reconnectPeriod: 0 })).rejects.toThrow();
+    await expect(TestClient.connect(core.mqtt[0]!.port, { username: 'blocked' })).rejects.toThrow();
     const ex = await waitFor('method:CONNECT state:error');
     expect(core.store.getExchange(ex.id)!.error).toMatch(/CONNACK refused with code 4/);
   });
@@ -157,10 +134,35 @@ describe('MQTT relay', () => {
     await core.setScope({ defaultAction: 'ignore', rules: [{ action: 'include', host: 'localhost' }] });
     const before = core.store.search('scheme:mqtt').length;
     expect(before).toBeGreaterThan(0);
-    const client = await mqtt.connectAsync(`mqtt://127.0.0.1:${core.mqtt[0]!.port}`, { reconnectPeriod: 0 });
-    await client.publishAsync('x', 'y');
-    await client.endAsync();
+    const client = await TestClient.connect(core.mqtt[0]!.port);
+    await client.publish('x', 'y');
+    await client.end();
     await new Promise((r) => setTimeout(r, 100));
     expect(core.store.search('scheme:mqtt').length).toBe(before);
+  });
+
+  it('publishes into a live session in either direction', async () => {
+    await core.setScope({ defaultAction: 'ignore', rules: [{ action: 'include', host: '127.0.0.1' }] });
+    const client = await TestClient.connect(core.mqtt[0]!.port, { clientId: 'inject-me' });
+    await client.subscribe('cmd/#', 0);
+    let id: string | undefined;
+    for (let i = 0; i < 100 && !id; i++) {
+      id = core.tools.liveStreams().mqtt.find((x) => core.store.getExchange(x)?.requestHeaders.some(([k, v]) => k === 'client-id' && v === 'inject-me'));
+      if (!id) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(id).toBeTruthy();
+    const got = new Promise<[string, string]>((r) => client.once('message', (t, p) => r([t, p.toString()])));
+    expect(core.tools.mqttPublish(id!, { to: 'device', topic: 'cmd/reboot', payload: Buffer.from('now') })).toBe(true);
+    expect(await got).toEqual(['cmd/reboot', 'now']);
+    // To the broker as the device: the broker routes it back to this subscriber.
+    const echoed = new Promise<[string, string]>((r) => client.once('message', (t, p) => r([t, p.toString()])));
+    expect(core.tools.mqttPublish(id!, { to: 'broker', topic: 'cmd/echo', payload: Buffer.from('as-device') })).toBe(true);
+    expect(await echoed).toEqual(['cmd/echo', 'as-device']);
+    const injected = messages(id!).filter((m) => (m.meta as { injected?: boolean } | null)?.injected);
+    expect(injected.map((m) => [m.direction, (m.meta as { topic: string }).topic])).toEqual([
+      ['server', 'cmd/reboot'],
+      ['client', 'cmd/echo'],
+    ]);
+    await client.end();
   });
 });

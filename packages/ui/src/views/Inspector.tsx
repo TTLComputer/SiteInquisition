@@ -3,7 +3,8 @@ import type { ExchangeDetail, HeaderList, WireStreamMessage } from '../api';
 import { base64ToBytes } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
-import { asText, fmtMs, fmtSize, fmtTime, hexDump, prettyBody, statusClass, statusText } from '../format';
+import { asText, fmtMs, fmtSize, fmtTime, hexDump, prettyBody, statusClass, statusText, toRawRequest } from '../format';
+import { breakOn, mockFromExchange } from '../actions';
 
 type Tab = 'exchange' | 'messages' | 'timings' | 'notes';
 type BodyMode = 'pretty' | 'raw' | 'hex';
@@ -37,7 +38,7 @@ function BodyView({ bytes, headers, mode, truncated }: { bytes: Uint8Array | nul
   );
 }
 
-function Side({ title, first, headers, bytes, truncated, extra }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode }) {
+function Side({ title, first, headers, bytes, truncated, extra, onDecode }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void }) {
   const [mode, setMode] = useState<BodyMode>('pretty');
   return (
     <section>
@@ -45,6 +46,18 @@ function Side({ title, first, headers, bytes, truncated, extra }: { title: strin
         <b style={{ color: 'var(--text)' }}>{title}</b>
         {extra}
         <span style={{ flex: 1 }} />
+        {onDecode && bytes && bytes.length > 0 && (
+          <button
+            className="btn small"
+            title="Decode the selected text, or the whole body, in Codecs (Ctrl D)"
+            onClick={() => {
+              const sel = window.getSelection()?.toString();
+              onDecode(sel && sel.length > 0 ? sel : (asText(bytes) ?? hexDump(bytes)));
+            }}
+          >
+            Decode
+          </button>
+        )}
         <div className="segmented" role="group" aria-label={`${title} body view`}>
           {(['pretty', 'raw', 'hex'] as const).map((m) => (
             <button key={m} className="seg" aria-pressed={mode === m} onClick={() => setMode(m)}>
@@ -63,8 +76,8 @@ function Side({ title, first, headers, bytes, truncated, extra }: { title: strin
   );
 }
 
-function Messages({ exchangeId, protocol }: { exchangeId: string; protocol: string }) {
-  const { client } = useApp();
+export function Messages({ exchangeId, protocol }: { exchangeId: string; protocol: string }) {
+  const { client, sendToCodecs, openStream } = useApp();
   const [msgs, setMsgs] = useState<WireStreamMessage[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const load = useCallback(() => client.streamMessages(exchangeId).then(setMsgs, () => undefined), [client, exchangeId]);
@@ -125,7 +138,20 @@ function Messages({ exchangeId, protocol }: { exchangeId: string; protocol: stri
         )}
       </section>
       <section>
-        <div className="sec-head">Payload</div>
+        <div className="sec-head">
+          Payload
+          <span style={{ flex: 1 }} />
+          {selBytes && (
+            <>
+              <button className="btn small" onClick={() => sendToCodecs(asText(selBytes) ?? hexDump(selBytes), `${isMqtt ? 'MQTT' : 'WebSocket'} message`)}>
+                Decode
+              </button>
+              <button className="btn small" onClick={() => openStream(exchangeId, { text: asText(selBytes) ?? '', topic: typeof sel?.meta?.topic === 'string' ? sel.meta.topic : undefined })} title="Edit and send this message from the Streams composer">
+                Send a copy
+              </button>
+            </>
+          )}
+        </div>
         <pre className="raw">{selBytes ? (asText(selBytes) !== null ? prettyBody(asText(selBytes)!, null) : hexDump(selBytes)) : <span className="faint">Select a message.</span>}</pre>
         {sel?.meta && Object.keys(sel.meta).length > 0 && (
           <dl className="kv">
@@ -212,7 +238,8 @@ function Notes({ ex }: { ex: ExchangeDetail }) {
 }
 
 export function Inspector({ id, height, onClose }: { id: string; height: number | null; onClose(): void }) {
-  const { client, openReplay, resendNow, notify } = useApp();
+  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream } = useApp();
+  const [sig, setSig] = useState<{ accessKeyId: string; region: string; service: string; date: string; signedHeaders: string[] } | null>(null);
   const [ex, setEx] = useState<ExchangeDetail | null>(null);
   const [reqBody, setReqBody] = useState<Uint8Array | null>(null);
   const [resBody, setResBody] = useState<Uint8Array | null>(null);
@@ -227,6 +254,8 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
       const [rq, rs] = await Promise.all([client.body(id, 'request'), detail.state === 'pending' ? Promise.resolve(new Uint8Array()) : client.body(id, 'response')]);
       setReqBody(rq);
       setResBody(rs);
+      const auth = detail.requestHeaders.find(([k]) => k.toLowerCase() === 'authorization')?.[1];
+      setSig(auth?.startsWith('AWS4-HMAC-SHA256') ? ((await client.parseSigV4(id)) as never) : null);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -277,9 +306,38 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
         <button className="btn small primary" onClick={() => openReplay(ex)}>
           <Icon name="replay" size={12} /> Send to replay
         </button>
-        <button className="btn small" onClick={() => resendNow(ex.id).catch((e: Error) => notify(e.message))} title="Ctrl Shift Enter">
-          Resend now
-        </button>
+        {ex.stream ? (
+          <button className="btn small" onClick={() => openStream(ex.id)} title="Open this connection in the Streams composer to send messages">
+            Open in Streams
+          </button>
+        ) : (
+          <>
+            <button className="btn small" onClick={() => resendNow(ex.id).catch((e: Error) => notify(e.message))} title="Ctrl Shift Enter">
+              Resend now
+            </button>
+            <button
+              className="btn small"
+              title="Line this request up in the Race view"
+              onClick={() => sendToRace([{ label: ex.path.split('?')[0]!.split('/').pop() || '/', raw: toRawRequest(ex.method, ex.url, ex.requestHeaders, (reqBody && asText(reqBody)) ?? ''), replayOf: ex.id }])}
+            >
+              Race
+            </button>
+            <button
+              className="btn small"
+              title="Serve this response as a mock from now on"
+              onClick={() => mockFromExchange(client, ex).then((n) => notify(`Mock "${n}" added. Edit it in Rules, Mocks.`), (e: Error) => notify(e.message))}
+            >
+              Mock
+            </button>
+            <button
+              className="btn small"
+              title="Pause the next request to this endpoint"
+              onClick={() => breakOn(client, ex).then(() => notify('Breakpoint added for this endpoint.'), (e: Error) => notify(e.message))}
+            >
+              Break
+            </button>
+          </>
+        )}
         <button className="icon-btn" aria-label="Close inspector" onClick={onClose}>
           <Icon name="close" size={14} />
         </button>
@@ -300,9 +358,26 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
               headers={ex.requestHeaders}
               bytes={reqBody}
               truncated={ex.requestBodyTruncated}
-              extra={ex.replayOf ? <span className="src-replay">replay</span> : undefined}
+              extra={
+                <>
+                  {ex.replayOf ? <span className="src-replay">replay</span> : null}
+                  {sig && (
+                    <span className="badge" title={`Signed headers: ${sig.signedHeaders.join(', ')}`}>
+                      SigV4 {sig.service} · {sig.region} · {sig.accessKeyId.slice(0, 8)}… · {sig.date}
+                    </span>
+                  )}
+                </>
+              }
+              onDecode={(t) => sendToCodecs(t, `${ex.method} ${ex.path.split('?')[0]} request`)}
             />
-            <Side title="Response" first={responseLine} headers={ex.responseHeaders} bytes={resBody} truncated={ex.responseBodyTruncated} />
+            <Side
+              title="Response"
+              first={responseLine}
+              headers={ex.responseHeaders}
+              bytes={resBody}
+              truncated={ex.responseBodyTruncated}
+              onDecode={(t) => sendToCodecs(t, `${ex.method} ${ex.path.split('?')[0]} response`)}
+            />
           </div>
         )}
         {tab === 'messages' && ex.stream && <Messages exchangeId={ex.id} protocol={ex.stream.protocol} />}

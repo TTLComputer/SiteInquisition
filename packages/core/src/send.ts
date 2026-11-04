@@ -1,0 +1,250 @@
+import { bytesToString, looksLikeText } from '@siteinquisition/codecs';
+import { cookieJar } from './cookies.js';
+import { newId } from './ids.js';
+import { sendReplay } from './replay.js';
+import { applyRule, conditionsMatch, type HookMessage, type ReplaceRule } from './rules.js';
+import { globToRegExp } from './scope.js';
+import { loadAwsProfile, parseSigV4, signSigV4, type AwsCredentials } from './sigv4.js';
+import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
+import { batchPlan, hasTokens, resolveTokens, TOKEN_RE } from './tokens.js';
+import type { Vars } from './vars.js';
+
+export interface SendOptions {
+  /** Resolve {{tokens}} (default true). */
+  tokens?: boolean;
+  /** Replace the Cookie header with the jar's current cookies for this URL. */
+  refreshCookies?: boolean;
+  /** Run enabled request-phase match and replace rules. */
+  applyRules?: boolean;
+  /** Follow up to this many redirects (each hop is recorded). */
+  followRedirects?: number;
+  /** Re-sign with SigV4: a saved profile name, or "auto" to use the profile matching the captured signature. */
+  sigv4?: string;
+  /** When the response is 401 or 403, run the login macro for this host and send once more. */
+  loginMacro?: boolean;
+  ignoreTlsErrors?: boolean;
+  timeoutMs?: number;
+}
+
+export interface SendRequest {
+  method: string;
+  url: string;
+  headers: HeaderList;
+  body?: Uint8Array;
+  replayOf?: string | null;
+}
+
+export interface Macro {
+  id: string;
+  name: string;
+  enabled?: boolean;
+  /** Hosts whose 401/403 responses trigger it. */
+  host: string;
+  /** Status codes that count as "logged out", default 401 and 403. */
+  statuses?: number[];
+  steps: Array<{ method: string; url: string; headers: HeaderList; body?: string }>;
+}
+
+export interface AwsProfile {
+  name: string;
+  /** "profile:<name>" reads ~/.aws/credentials, "env" reads AWS_* variables, "session" uses keys held in memory only. */
+  source: string;
+  region: string;
+  service: string;
+  /** Hosts this profile signs for (glob); used by "auto". */
+  host?: string;
+}
+
+export interface SendDeps {
+  store: CaptureStore;
+  vars: Vars;
+  projectDir: string;
+  rules: () => ReplaceRule[];
+  macros: () => Macro[];
+  awsProfiles: () => AwsProfile[];
+  sessionKeys: Map<string, AwsCredentials>;
+  countHit: (ruleId: string) => void;
+}
+
+const text = (b: Uint8Array | undefined) => (b && b.length && looksLikeText(b) ? bytesToString(b) : null);
+
+export function cookieHeaderFor(store: CaptureStore, url: string): string | null {
+  const u = new URL(url);
+  const host = u.hostname.toLowerCase();
+  const now = Date.now();
+  const list = cookieJar(store, now).filter((c) => {
+    if (c.expired) return false;
+    if (c.secure && u.protocol !== 'https:') return false;
+    const domainOk = c.hostOnly ? host === c.domain : host === c.domain || host.endsWith(`.${c.domain}`);
+    return domainOk && u.pathname.startsWith(c.path);
+  });
+  list.sort((a, b) => b.path.length - a.path.length);
+  return list.length ? list.map((c) => `${c.name}=${c.value}`).join('; ') : null;
+}
+
+export class Sender {
+  constructor(private readonly d: SendDeps) {}
+
+  /** Add tags to what the exchange has now (summaries in hand may be stale). */
+  private addTags(id: string, tags: string[]) {
+    if (tags.length) this.d.store.tagExchange(id, [...(this.d.store.getSummary(id)?.tags ?? []), ...tags]);
+  }
+
+  private resolveAll(req: SendRequest, batch?: Map<string, string>): SendRequest {
+    const ctx = { url: req.url, cookies: () => cookieJar(this.d.store), vars: () => this.d.vars.values(), projectDir: this.d.projectDir, batch };
+    // Resolve the URL first so cookie tokens in headers see the final host.
+    const url = resolveTokens(req.url, ctx);
+    const c2 = { ...ctx, url };
+    const body = text(req.body);
+    return {
+      ...req,
+      url,
+      headers: req.headers.map(([k, v]) => [resolveTokens(k, c2), resolveTokens(v, c2)]),
+      body: body !== null && hasTokens(body) ? new TextEncoder().encode(resolveTokens(body, c2)) : req.body,
+    };
+  }
+
+  private credentials(p: AwsProfile): AwsCredentials {
+    if (p.source === 'session') {
+      const k = this.d.sessionKeys.get(p.name);
+      if (!k) throw new Error(`no keys entered for AWS profile "${p.name}" this session`);
+      return k;
+    }
+    if (p.source === 'env') return loadAwsProfile('env');
+    return loadAwsProfile(p.source.replace(/^profile:/, '') || 'default');
+  }
+
+  private pickProfile(name: string, req: SendRequest): AwsProfile | undefined {
+    const profiles = this.d.awsProfiles();
+    if (name !== 'auto') return profiles.find((p) => p.name === name);
+    const host = new URL(req.url).hostname;
+    const parsed = parseSigV4(req.headers.find(([k]) => k.toLowerCase() === 'authorization')?.[1]);
+    return (
+      profiles.find((p) => p.host && globToRegExp(p.host).test(host)) ??
+      (parsed ? profiles.find((p) => p.region === parsed.region && p.service === parsed.service) : undefined)
+    );
+  }
+
+  /** Apply the send options that change the request itself, in a fixed order. */
+  prepare(req: SendRequest, opts: SendOptions, batch?: Map<string, string>): { req: SendRequest; applied: string[] } {
+    const applied: string[] = [];
+    let r = opts.tokens === false ? req : this.resolveAll(req, batch);
+    if (opts.refreshCookies) {
+      const cookie = cookieHeaderFor(this.d.store, r.url);
+      const headers = r.headers.filter(([k]) => k.toLowerCase() !== 'cookie');
+      if (cookie) headers.push(['Cookie', cookie]);
+      r = { ...r, headers };
+      applied.push('cookies from jar');
+    }
+    if (opts.applyRules) {
+      const msg: HookMessage = { method: r.method, url: r.url, headers: [...r.headers], body: r.body ?? new Uint8Array() };
+      for (const rule of this.d.rules()) {
+        if (rule.enabled === false || rule.phase !== 'request' || !conditionsMatch(rule, msg)) continue;
+        const n = applyRule(rule, msg, (s) => resolveTokens(s, { url: msg.url, cookies: () => cookieJar(this.d.store), vars: () => this.d.vars.values(), projectDir: this.d.projectDir }));
+        if (n) {
+          applied.push(`rule:${rule.name}`);
+          this.d.countHit(rule.id);
+        }
+      }
+      r = { ...r, method: msg.method, url: msg.url, headers: msg.headers, body: msg.body };
+    }
+    if (opts.sigv4) {
+      const profile = this.pickProfile(opts.sigv4, r);
+      if (!profile) throw new Error(opts.sigv4 === 'auto' ? 'no AWS profile matches this host or its captured signature' : `no AWS profile "${opts.sigv4}"`);
+      r = { ...r, headers: signSigV4(r, this.credentials(profile), profile) };
+      applied.push(`sigv4:${profile.name}`);
+    }
+    return { req: r, applied };
+  }
+
+  async send(req: SendRequest, opts: SendOptions = {}, batch?: Map<string, string>): Promise<ExchangeSummary> {
+    const { req: r, applied } = this.prepare(req, opts, batch);
+    let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+    this.addTags(res.id, applied);
+
+    if (opts.loginMacro && res.status !== null) {
+      const host = new URL(r.url).hostname;
+      const macro = this.d.macros().find((m) => m.enabled !== false && globToRegExp(m.host).test(host) && (m.statuses ?? [401, 403]).includes(res.status!));
+      if (macro) {
+        await this.runMacro(macro.id);
+        // Resend with fresh tokens and cookies; the macro's responses have updated both.
+        const again = this.prepare(req, { ...opts, refreshCookies: opts.refreshCookies ?? true }, batch);
+        res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+        this.addTags(res.id, [...again.applied, `after-login:${macro.name}`]);
+      }
+    }
+
+    let hops = Math.min(opts.followRedirects ?? 0, 20);
+    let current = res;
+    const flowRoot = res;
+    while (hops-- > 0 && current.status !== null && current.status >= 300 && current.status < 400) {
+      const ex = this.d.store.getExchange(current.id);
+      const location = ex?.responseHeaders?.find(([k]) => k.toLowerCase() === 'location')?.[1];
+      if (!location) break;
+      const next = new URL(location, current.url).href;
+      const keepBody = current.status === 307 || current.status === 308;
+      const headers = r.headers.filter(([k]) => !['host', 'content-length', 'cookie', ...(keepBody ? [] : ['content-type'])].includes(k.toLowerCase()));
+      const cookie = cookieHeaderFor(this.d.store, next);
+      if (cookie) headers.push(['Cookie', cookie]);
+      current = await sendReplay(this.d.store, {
+        method: keepBody ? r.method : current.status === 303 || r.method === 'POST' ? 'GET' : r.method,
+        url: next,
+        headers,
+        body: keepBody ? r.body : undefined,
+        replayOf: r.replayOf,
+        ignoreTlsErrors: opts.ignoreTlsErrors,
+        timeoutMs: opts.timeoutMs,
+      });
+      this.addTags(current.id, [`redirect-of:${flowRoot.id}`]);
+    }
+    return this.d.store.getSummary(res.id) ?? res;
+  }
+
+  /** One send per value of the batch tokens ({{counter}}, {{list}}). */
+  async sendBatch(req: SendRequest, opts: SendOptions & { concurrency?: number; max?: number } = {}): Promise<{ batchId: string; sends: ExchangeSummary[]; errors: string[] }> {
+    const texts = [req.url, ...req.headers.flat(), text(req.body) ?? ''];
+    const plan = batchPlan(texts, this.d.projectDir, opts.max ?? 10_000);
+    const batchId = newId();
+    const sends: ExchangeSummary[] = [];
+    const errors: string[] = [];
+    const concurrency = Math.max(1, Math.min(opts.concurrency ?? 1, 32));
+    let next = 0;
+    const worker = async () => {
+      while (next < plan.length) {
+        const i = next++;
+        try {
+          const s = await this.send(req, opts, plan[i]);
+          this.addTags(s.id, [`batch:${batchId}`]);
+          sends[i] = s;
+        } catch (e) {
+          errors[i] = (e as Error).message;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, plan.length) }, worker));
+    return { batchId, sends: sends.filter(Boolean), errors: errors.filter(Boolean) };
+  }
+
+  async runMacro(id: string): Promise<Array<{ step: number; exchangeId?: string; status: number | null; error?: string }>> {
+    const macro = this.d.macros().find((m) => m.id === id);
+    if (!macro) throw new Error('no such macro');
+    const out: Array<{ step: number; exchangeId?: string; status: number | null; error?: string }> = [];
+    for (let i = 0; i < macro.steps.length; i++) {
+      const s = macro.steps[i]!;
+      try {
+        // Each step sees the cookies and variables the previous steps produced.
+        const res = await this.send({ method: s.method, url: s.url, headers: s.headers, body: s.body ? new TextEncoder().encode(s.body) : undefined }, { refreshCookies: true });
+        this.addTags(res.id, [`macro:${macro.name}`]);
+        out.push({ step: i, exchangeId: res.id, status: res.status });
+        if (res.state !== 'complete') break;
+      } catch (e) {
+        out.push({ step: i, status: null, error: (e as Error).message });
+        break;
+      }
+    }
+    return out;
+  }
+}
+
+export const hasBatchTokens = (req: SendRequest): boolean =>
+  [req.url, ...req.headers.flat(), text(req.body) ?? ''].some((t) => [...t.matchAll(TOKEN_RE)].some((m) => /^(counter|list)$/i.test(m[1]!)));

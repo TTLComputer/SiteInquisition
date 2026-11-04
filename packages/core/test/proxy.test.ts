@@ -8,9 +8,8 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { generateCACertificate } from 'mockttp';
-import { ProxyAgent, fetch } from 'undici';
+import { ProxyClient, TunnelAgent } from './proxy-client.js';
 import { WebSocket, WebSocketServer } from 'ws';
-import { HttpsProxyAgent } from 'https-proxy-agent';
 import { Core, sendReplay, type ExchangeSummary } from '@siteinquisition/core';
 
 let tmp: string;
@@ -20,7 +19,7 @@ let httpTarget: Server;
 let httpsTarget: Server;
 let httpPort: number;
 let httpsPort: number;
-let agent: ProxyAgent;
+let agent: ProxyClient;
 
 const listen = (s: Server) => new Promise<number>((r) => s.listen(0, '127.0.0.1', () => r((s.address() as AddressInfo).port)));
 
@@ -81,11 +80,11 @@ beforeAll(async () => {
   });
   const { proxyPort } = await core.start();
   proxyUrl = `http://127.0.0.1:${proxyPort}`;
-  agent = new ProxyAgent({ uri: proxyUrl, requestTls: { ca: core.ca.cert } });
+  agent = new ProxyClient({ uri: proxyUrl, requestTls: { ca: core.ca.cert } });
 });
 
 afterAll(async () => {
-  await agent?.close();
+  agent?.close();
   await core?.close();
   httpTarget?.closeAllConnections();
   httpsTarget?.closeAllConnections();
@@ -96,7 +95,7 @@ afterAll(async () => {
 
 describe('proxy capture', () => {
   it('records plain HTTP with decoded, searchable bodies', async () => {
-    const res = await fetch(`http://127.0.0.1:${httpPort}/hello?q=plain`, { dispatcher: agent });
+    const res = await agent.fetch(`http://127.0.0.1:${httpPort}/hello?q=plain`);
     expect(await res.json()).toEqual({ hello: 'world', q: 'plain' });
     const [ex] = await waitFor('path:/hello?q=plain');
     const full = core.store.getExchange(ex!.id)!;
@@ -107,14 +106,14 @@ describe('proxy capture', () => {
   });
 
   it('decrypts in-scope HTTPS with the project CA', async () => {
-    const res = await fetch(`https://localhost:${httpsPort}/hello?q=tls`, { dispatcher: agent });
+    const res = await agent.fetch(`https://localhost:${httpsPort}/hello?q=tls`);
     expect(res.status).toBe(200);
     const [ex] = await waitFor('host:localhost path:/hello?q=tls');
     expect(ex).toMatchObject({ scheme: 'https', port: httpsPort, status: 200 });
   });
 
   it('links a redirect and the request that follows it into one flow', async () => {
-    const res = await fetch(`http://127.0.0.1:${httpPort}/redirect`, { dispatcher: agent });
+    const res = await agent.fetch(`http://127.0.0.1:${httpPort}/redirect`);
     expect(await res.json()).toMatchObject({ q: 'redirected' });
     const [hop] = await waitFor('path:/redirect');
     const flow = core.store.getFlow(hop!.flowId);
@@ -126,14 +125,14 @@ describe('proxy capture', () => {
   });
 
   it('passes excluded traffic through without recording it', async () => {
-    const res = await fetch(`http://127.0.0.1:${httpPort}/echo`, { method: 'POST', body: 'secret', dispatcher: agent });
+    const res = await agent.fetch(`http://127.0.0.1:${httpPort}/echo`, { method: 'POST', body: 'secret' });
     expect(await res.text()).toBe('secret');
     await new Promise((r) => setTimeout(r, 100));
     expect(core.store.search('path:/echo')).toEqual([]);
   });
 
   it('records WebSocket upgrades and every frame in both directions', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${httpPort}/socket`, { agent: new HttpsProxyAgent(proxyUrl) });
+    const ws = new WebSocket(`ws://127.0.0.1:${httpPort}/socket`, { agent: new TunnelAgent(proxyUrl) });
     await new Promise((r, j) => ws.once('open', r).once('error', j));
     const replies: string[] = [];
     ws.on('message', (d) => replies.push(d.toString()));
@@ -169,10 +168,10 @@ describe('proxy capture', () => {
     expect(core.info().decryptHosts).toEqual(['127.0.0.1']);
     // localhost is no longer decrypted, so the client sees the target's own cert and the request is not recorded.
     const before = core.store.search('host:localhost').length;
-    const plain = new ProxyAgent({ uri: proxyUrl, requestTls: { rejectUnauthorized: false } });
-    const res = await fetch(`https://localhost:${httpsPort}/hello?q=tunnel`, { dispatcher: plain });
+    const plain = new ProxyClient({ uri: proxyUrl, requestTls: { rejectUnauthorized: false } });
+    const res = await plain.fetch(`https://localhost:${httpsPort}/hello?q=tunnel`);
     expect(res.status).toBe(200);
-    await plain.close();
+    plain.close();
     await new Promise((r) => setTimeout(r, 100));
     expect(core.store.search('host:localhost').length).toBe(before);
     expect(core.seenNotInScope()).toEqual(expect.arrayContaining([expect.objectContaining({ host: 'localhost', kinds: ['tls'] })]));

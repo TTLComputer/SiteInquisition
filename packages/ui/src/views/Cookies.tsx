@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { JarCookie } from '../api';
+import type { JarCookie, JarCookieInfo } from '../api';
+import { CookieToggle } from './Tech';
 import { useApp } from '../state';
 import { fmtTime } from '../format';
 
@@ -55,7 +56,8 @@ function expiryText(c: JarCookie, now: number): { text: string; cls: string } {
 
 function Jar() {
   const { client, select, setView, setQuery, notify } = useApp();
-  const [cookies, setCookies] = useState<JarCookie[]>([]);
+  const [cookies, setCookies] = useState<JarCookieInfo[]>([]);
+  const [showInfra, setShowInfra] = useState(false);
   const [domain, setDomain] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [showExpired, setShowExpired] = useState(true);
@@ -64,6 +66,7 @@ function Jar() {
     void load();
     let t: number | undefined;
     const off = client.onChange((c) => {
+      if (c.kind === 'meta.set' && c.entityId === 'cookieOverrides') void load();
       if (c.kind === 'exchange.response' && t === undefined) t = window.setTimeout(() => ((t = undefined), void load()), 1000);
     });
     return () => {
@@ -78,7 +81,8 @@ function Jar() {
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [cookies]);
   const now = Date.now();
-  const shown = cookies.filter((c) => (!domain || c.domain === domain) && (showExpired || !c.expired) && (!filter || `${c.name} ${c.value}`.toLowerCase().includes(filter.toLowerCase())));
+  const infraCount = cookies.filter((c) => c.infra && (!domain || c.domain === domain)).length;
+  const shown = cookies.filter((c) => (!domain || c.domain === domain) && (showExpired || !c.expired) && (showInfra || !c.infra) && (!filter || `${c.name} ${c.value}`.toLowerCase().includes(filter.toLowerCase())));
 
   return (
     <div className="two-pane">
@@ -100,6 +104,9 @@ function Jar() {
           <input className="input mono" style={{ flex: '1 1 240px' }} placeholder="Filter by name or value" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter cookies" />
           <label className="muted" style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
             <input type="checkbox" checked={showExpired} onChange={(e) => setShowExpired(e.target.checked)} /> Show expired and deleted
+          </label>
+          <label className="muted" style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }} title="Load balancer, CDN and bot management cookies">
+            <input type="checkbox" checked={showInfra} onChange={(e) => setShowInfra(e.target.checked)} /> Show platform cookies{infraCount ? ` (${infraCount})` : ''}
           </label>
           <span className="faint" style={{ fontSize: 12 }}>Built from every Set-Cookie in recorded responses, newest wins.</span>
         </div>
@@ -128,7 +135,14 @@ function Jar() {
                   const token = `{{cookie:${c.name}@${c.domain}}}`;
                   return (
                     <tr key={`${c.domain}${c.path}${c.name}`} data-testid="cookie-row">
-                      <td>{c.name}</td>
+                      <td>
+                        {c.name}
+                        {c.infra && (
+                          <div className="faint" style={{ fontSize: 11 }} title="A platform cookie, not the app's">
+                            platform: {c.infra}
+                          </div>
+                        )}
+                      </td>
                       <td className="wrap">
                         {c.value.length > 120 ? `${c.value.slice(0, 120)}…` : c.value || <span className="faint">(empty)</span>}
                         {hint && <div className="src-script" style={{ fontSize: 11 }}>{hint}</div>}
@@ -156,7 +170,8 @@ function Jar() {
                       <td>
                         <button className="btn small" title={`Copy ${token} for use in replays`} onClick={() => navigator.clipboard.writeText(token).then(() => notify(`Copied ${token}`), () => notify(token))}>
                           Copy token
-                        </button>
+                        </button>{' '}
+                        <CookieToggle name={c.name} infra={!!c.infra} onDone={() => void load()} />
                       </td>
                     </tr>
                   );

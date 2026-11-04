@@ -11,6 +11,7 @@ interface Options {
   applyRules: boolean;
   loginMacro: boolean;
   followRedirects: boolean;
+  csrf: boolean;
   sigv4: string;
   ignoreTls: boolean;
   protocol: 'h1' | 'h3';
@@ -19,7 +20,7 @@ interface Options {
   /** Codec chain the body is encoded with after tokens are filled in, e.g. "base64,json". */
   encode: string;
 }
-const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, sigv4: '', ignoreTls: false, protocol: 'h1', flow: '', encode: '' };
+const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false, protocol: 'h1', flow: '', encode: '' };
 
 const binaryMarker = (n: number) => `<binary body: ${n} bytes, sent as captured>`;
 
@@ -162,6 +163,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         refreshCookies: opts.refreshCookies,
         applyRules: opts.applyRules,
         loginMacro: opts.loginMacro,
+        csrf: opts.csrf,
         followRedirects: opts.followRedirects ? 10 : 0,
         sigv4: opts.sigv4 || undefined,
         ignoreTlsErrors: opts.ignoreTls,
@@ -311,6 +313,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         {opt('refreshCookies', 'Fresh cookies', 'Replace the Cookie header with the current cookie jar')}
         {opt('applyRules', 'Apply rules', 'Run enabled request match and replace rules')}
         {opt('loginMacro', 'Log in on 401/403', 'Run the login macro for this host and send again')}
+        {opt('csrf', 'Fresh CSRF token', 'Put the latest captured CSRF token in; load a new one and retry if the server rejects it (set up in the Inspector, Tech and CSRF tab)')}
         {opt('followRedirects', 'Follow redirects', 'Follow up to 10 redirects; each hop is recorded')}
         {opt('ignoreTls', 'Ignore TLS errors', 'Accept any upstream certificate')}
         <label className="check" title="Sign with AWS SigV4">

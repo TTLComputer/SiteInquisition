@@ -9,6 +9,7 @@ import { loadAwsProfile, parseSigV4, signSigV4, type AwsCredentials } from './si
 import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
 import { batchPlan, flowRefs, hasTokens, resolveTokens, TOKEN_RE, type TokenContext } from './tokens.js';
 import { pickValue, pickValues, tagValue } from './values.js';
+import type { CsrfBinding, TechService } from './tech.js';
 import type { Vars } from './vars.js';
 
 export interface SendOptions {
@@ -24,6 +25,13 @@ export interface SendOptions {
   sigv4?: string;
   /** When the response is 401 or 403, run the login macro for this host and send once more. */
   loginMacro?: boolean;
+  /**
+   * Put the latest CSRF token into every place the request carries one (from
+   * the saved CSRF bindings). Loads a page for a token first when there is
+   * none yet, and when the server rejects the token (400, 403, 419 or 422)
+   * loads a fresh one and sends once more.
+   */
+  csrf?: boolean;
   ignoreTlsErrors?: boolean;
   timeoutMs?: number;
   /** Send over HTTP/3 ('h3') instead of HTTP/1.1. */
@@ -76,7 +84,11 @@ export interface SendDeps {
   awsProfiles: () => AwsProfile[];
   sessionKeys: Map<string, AwsCredentials>;
   countHit: (ruleId: string) => void;
+  tech?: TechService;
 }
+
+/** Statuses frameworks answer with when a CSRF token is missing or stale. */
+const CSRF_REJECTED = new Set([400, 403, 419, 422]);
 
 /** Encode a decoded body with a codec chain; terminal structured codecs (json, form, jwt) take the text as JSON. */
 export function encodeBody(chain: string[], text: string): Uint8Array {
@@ -189,8 +201,10 @@ export class Sender {
   }
 
   /** Apply the send options that change the request itself, in a fixed order. */
-  prepare(req: SendRequest, opts: SendOptions, batch?: Map<string, string>, flows?: Map<string, Record<string, string>>): { req: SendRequest; applied: string[] } {
+  prepare(req: SendRequest, opts: SendOptions, batch?: Map<string, string>, flows?: Map<string, Record<string, string>>): { req: SendRequest; applied: string[]; csrf: CsrfBinding[]; csrfMissing: CsrfBinding[] } {
     const applied: string[] = [];
+    let csrf: CsrfBinding[] = [];
+    let csrfMissing: CsrfBinding[] = [];
     let r = opts.tokens === false ? req : this.resolveAll(req, { vars: opts.vars, batch, flows });
     if (opts.bodyChain?.length) {
       r = { ...r, body: encodeBody(opts.bodyChain, text(r.body) ?? '') };
@@ -202,6 +216,13 @@ export class Sender {
       if (cookie) headers.push(['Cookie', cookie]);
       r = { ...r, headers };
       applied.push('cookies from jar');
+    }
+    if (opts.csrf && this.d.tech) {
+      const out = this.d.tech.applyCsrf(r);
+      r = { ...r, ...out.req };
+      csrf = out.used;
+      csrfMissing = out.missing;
+      applied.push(...csrf.map((b) => `csrf:${b.varName}`));
     }
     if (opts.applyRules) {
       const msg: HookMessage = { method: r.method, url: r.url, headers: [...r.headers], body: r.body ?? new Uint8Array() };
@@ -221,15 +242,47 @@ export class Sender {
       r = { ...r, headers: signSigV4(r, this.credentials(profile), profile) };
       applied.push(`sigv4:${profile.name}`);
     }
-    return { req: r, applied };
+    return { req: r, applied, csrf, csrfMissing };
+  }
+
+  /** Load the page a CSRF token comes from; the tech service picks the token out of the response. */
+  private async refreshCsrf(list: CsrfBinding[], url: string, opts: SendOptions): Promise<void> {
+    const seen = new Set<string>();
+    for (const b of list) {
+      const target = this.d.tech!.refreshUrlFor(b, url);
+      if (seen.has(target)) continue;
+      seen.add(target);
+      const res = await sendReplay(this.d.store, {
+        method: 'GET',
+        url: target,
+        headers: [['Accept', 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8'], ...(cookieHeaderFor(this.d.store, target) ? [['Cookie', cookieHeaderFor(this.d.store, target)!] as [string, string]] : [])],
+        ignoreTlsErrors: opts.ignoreTlsErrors,
+        timeoutMs: opts.timeoutMs,
+        protocol: opts.protocol,
+      });
+      this.addTags(res.id, ['csrf-refresh']);
+    }
   }
 
   async send(req: SendRequest, opts: SendOptions = {}, batch?: Map<string, string>): Promise<ExchangeSummary> {
     const fl = await this.runFlows(req, opts);
     const o = { ...opts, vars: fl.vars };
-    const { req: r, applied } = this.prepare(req, o, batch, fl.flows);
+    let prepared = this.prepare(req, o, batch, fl.flows);
+    if (prepared.csrfMissing.length) {
+      // No token captured yet: load one first.
+      await this.refreshCsrf(prepared.csrfMissing, prepared.req.url, opts);
+      prepared = this.prepare(req, { ...o, refreshCookies: opts.refreshCookies ?? true }, batch, fl.flows);
+    }
+    const { req: r, applied } = prepared;
     let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
     this.addTags(res.id, [...applied, ...[...fl.flows.keys()].map((n) => `used-flow:${n}`)]);
+
+    if (prepared.csrf.length && res.status !== null && CSRF_REJECTED.has(res.status)) {
+      await this.refreshCsrf(prepared.csrf, r.url, opts);
+      const again = this.prepare(req, { ...o, refreshCookies: opts.refreshCookies ?? true }, batch, fl.flows);
+      res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
+      this.addTags(res.id, [...again.applied, 'after-csrf-refresh']);
+    }
 
     if (opts.loginMacro && res.status !== null) {
       const host = new URL(r.url).hostname;
@@ -238,7 +291,7 @@ export class Sender {
       if (macro || loginFlow) {
         if (macro) await this.runMacro(macro.id);
         else {
-          const lr = await this.flows!.run(loginFlow!, {}, opts.flowDepth ?? 0, { ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
+          const lr = await this.flows!.run(loginFlow!, {}, opts.flowDepth ?? 0, { ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
           if (!lr.ok) throw new Error(`login flow "${loginFlow!.name}" failed: ${lr.error}`);
         }
         // Resend with fresh tokens and cookies; the login's responses have updated both.

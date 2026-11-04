@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, shell, utilityProcess, type UtilityProcess } from 'electron';
 import { writeFileSync } from 'node:fs';
+import { setupBrowser } from './browser.js';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -9,6 +10,8 @@ const require = createRequire(import.meta.url);
 
 interface Ready {
   proxyPort: number;
+  browserProxyPort: number;
+  caCertPath: string;
   apiPort: number;
   token: string;
 }
@@ -27,6 +30,9 @@ function options() {
     allowLan: argv.includes('--lan'),
   };
 }
+
+// Headless smoke runs (xvfb) have no GPU; software rendering keeps page capture reliable.
+if (process.env.SIQ_SMOKE_SCREENSHOT) app.disableHardwareAcceleration();
 
 let core: UtilityProcess | undefined;
 let ready: Promise<Ready> | undefined;
@@ -75,11 +81,22 @@ async function createWindow() {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.once('ready-to-show', () => win.show());
   await win.loadURL(pathToFileURL(rendererIndex()).href);
-  if (process.env.SIQ_SMOKE_SCREENSHOT) await smoke(win, process.env.SIQ_SMOKE_SCREENSHOT);
   return win;
 }
 
 /** CI and local smoke test: wait until the renderer is connected to the core, save a screenshot, quit. */
+async function capture(win: BrowserWindow, path: string) {
+  for (let i = 0; ; i++) {
+    try {
+      writeFileSync(path, (await win.webContents.capturePage()).toPNG());
+      return;
+    } catch (err) {
+      if (i >= 5) throw err;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+}
+
 async function smoke(win: BrowserWindow, path: string) {
   const deadline = Date.now() + 20_000;
   for (;;) {
@@ -93,8 +110,28 @@ async function smoke(win: BrowserWindow, path: string) {
     await new Promise((r) => setTimeout(r, 200));
   }
   await new Promise((r) => setTimeout(r, 500));
-  const image = await win.webContents.capturePage();
-  writeFileSync(path, image.toPNG());
+  await capture(win, path);
+  // Optionally drive the built-in browser too: open the Browser view, load a URL, and wait for it to be recorded.
+  const target = process.env.SIQ_SMOKE_BROWSER_URL;
+  if (target) {
+    await win.webContents.executeJavaScript(`[...document.querySelectorAll('.nav-item')].find((b) => b.textContent.trim().startsWith('Browser')).click()`);
+    await new Promise((r) => setTimeout(r, 800));
+    await win.webContents.executeJavaScript(`(async () => { const ts = await window.siq.browser.list(); await window.siq.browser.navigate(ts[0].id, ${JSON.stringify(target)}); })()`);
+    const until = Date.now() + 15_000;
+    for (;;) {
+      const n = await win.webContents.executeJavaScript(`document.querySelectorAll('[data-testid="feed-row"]').length`);
+      if (n > 0) break;
+      if (Date.now() > until) {
+        console.error('smoke: browser traffic never showed up in the feed');
+        app.exit(1);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    await new Promise((r) => setTimeout(r, 800));
+    await capture(win, path.replace(/\.png$/, '-browser.png'));
+    console.log('smoke: browser ok');
+  }
   console.log(`smoke: ok, screenshot at ${path}`);
   app.quit();
 }
@@ -125,7 +162,17 @@ if (!app.requestSingleInstanceLock()) {
       console.error(`SiteInquisition core failed to start: ${err.message}`);
       app.exit(1);
     });
-    await createWindow();
+    let resolveWindow!: (w: BrowserWindow) => void;
+    const windowReady = new Promise<BrowserWindow>((r) => (resolveWindow = r));
+    setupBrowser(Promise.all([ready, windowReady]).then(([r, window]) => ({ window, proxyPort: r.browserProxyPort, caCertPath: r.caCertPath })));
+    const win = await createWindow();
+    resolveWindow(win);
+    if (process.env.SIQ_SMOKE_SCREENSHOT) {
+      await smoke(win, process.env.SIQ_SMOKE_SCREENSHOT).catch((err: Error) => {
+        console.error(`smoke: ${err.message}`);
+        app.exit(1);
+      });
+    }
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) void createWindow();
     });

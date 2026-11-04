@@ -21,6 +21,11 @@ export interface CoreOptions {
   proxy?: ProxyOptions;
   /** MQTT listeners that relay to real brokers and record every packet. */
   mqtt?: MqttListenerConfig[];
+  /**
+   * A second, loopback-only listener for the built-in browser. Its traffic is
+   * recorded with source "browser" so the browser view can show its own feed.
+   */
+  browserProxy?: boolean;
   /** Core API settings, or false to run without it. */
   api?: { port?: number; token?: string } | false;
 }
@@ -40,6 +45,7 @@ export class Core {
   readonly store: CaptureStore;
   readonly scope: Scope;
   readonly proxy: ProxyEngine;
+  readonly browserProxy?: ProxyEngine;
   readonly api?: CoreApiServer;
   readonly mqtt: MqttRelay[];
   readonly seen = new SeenHosts();
@@ -52,6 +58,9 @@ export class Core {
     this.store = CaptureStore.openProject(this.projectDir, { ...opts.store, actor: opts.actor });
     this.scope = new Scope(this.store.getMeta<ScopeConfig>('scope') ?? DEFAULT_SCOPE);
     this.proxy = new ProxyEngine(this.store, this.scope, ca, opts.proxy, this.seen);
+    if (opts.browserProxy) {
+      this.browserProxy = new ProxyEngine(this.store, this.scope, ca, { ignoreUpstreamTlsErrors: opts.proxy?.ignoreUpstreamTlsErrors, source: 'browser' }, this.seen);
+    }
     this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg, this.seen));
     if (opts.api !== false) this.api = new CoreApiServer(this, opts.api?.token);
   }
@@ -61,8 +70,9 @@ export class Core {
     return new Core(opts, ca);
   }
 
-  async start(): Promise<{ proxyPort: number; apiPort?: number }> {
+  async start(): Promise<{ proxyPort: number; apiPort?: number; browserProxyPort?: number }> {
     const proxyPort = await this.proxy.start();
+    const browserProxyPort = this.browserProxy ? await this.browserProxy.start() : undefined;
     for (const relay of this.mqtt) await relay.start();
     let apiPort: number | undefined;
     if (this.api) {
@@ -70,12 +80,13 @@ export class Core {
       const info: CoreRuntimeInfo = { pid: process.pid, apiPort, token: this.api.token, proxyPort };
       writeFileSync(join(this.projectDir, RUNTIME_FILE), JSON.stringify(info, null, 2), { mode: 0o600 });
     }
-    return { proxyPort, apiPort };
+    return { proxyPort, apiPort, browserProxyPort };
   }
 
   async close(): Promise<void> {
     await this.api?.stop();
     await this.proxy.stop();
+    await this.browserProxy?.stop();
     for (const relay of this.mqtt) await relay.stop();
     if (this.api) rmSync(join(this.projectDir, RUNTIME_FILE), { force: true });
     this.store.close();
@@ -86,7 +97,9 @@ export class Core {
     const before = this.scope.decryptHosts().join('\n');
     this.scope.set(config);
     this.store.setMeta('scope', this.scope.get());
-    if (this.proxy.running && before !== this.scope.decryptHosts().join('\n')) await this.proxy.restart();
+    if (before === this.scope.decryptHosts().join('\n')) return;
+    if (this.proxy.running) await this.proxy.restart();
+    if (this.browserProxy?.running) await this.browserProxy.restart();
   }
 
   /** Hosts seen recently that the current scope does not record. */
@@ -103,6 +116,7 @@ export class Core {
       projectDir: this.projectDir,
       actor: this.store.actor,
       proxyPort: this.proxy.running ? this.proxy.port : null,
+      browserProxyPort: this.browserProxy?.running ? this.browserProxy.port : null,
       apiPort: this.api ? safe(() => this.api!.port) : null,
       ca: { certPath: this.ca.certPath, fingerprint: this.ca.fingerprint, expiresAt: this.ca.expiresAt.toISOString() },
       decryptHosts: this.scope.decryptHosts(),

@@ -2,7 +2,7 @@
 
 An intercepting proxy, built-in browser and replay toolkit for testing websites, APIs and IoT devices before they are finished. It runs on Windows and Linux and is MIT licensed.
 
-> **Status:** early development. This repository contains the core engine, the `siq` CLI and the first part of the desktop app (History, inspector, replay, scope and settings). The built-in browser, timeline, cookie jar, codec workbench, race tools, scripting and MCP server follow in later milestones. The full design is in the [design spec](https://claude.ai/artifact/HyHcJe2h7r7iCqLT3PmyEM).
+> **Status:** early development. This repository contains the core engine, the `siq` CLI and the desktop app (built-in browser, History, inspector, replay, Timeline, cookie jar, scope and settings). The codec workbench, race tools, scripting and MCP server follow in later milestones. The full design is in the [design spec](https://claude.ai/artifact/HyHcJe2h7r7iCqLT3PmyEM).
 
 ## What works today
 
@@ -17,6 +17,9 @@ An intercepting proxy, built-in browser and replay toolkit for testing websites,
 - A core API (JSON-RPC 2.0 over a token-protected local WebSocket) with live change notifications.
 - By default only loopback clients may connect. Pass `--lan` to accept phones and IoT devices.
 - **Desktop app** (Electron): History with the search syntax, quick filters, saved views, site map and live follow; an inspector for requests, responses, WebSocket frames and MQTT packets; replay tabs with a raw editor, send history and a diff against the original; one-click replay from any row (Replay pill, Ctrl R, double click, right-click menu, or drag onto the tab bar) and "Resend now" (Ctrl Shift Enter); a scope editor with "seen but not in scope" hosts and certificate pinning warnings; theme that follows the system.
+- **Built-in browser**: Chromium tabs inside the app on their own proxy listener (traffic recorded as source `browser`, localhost included), trusting the project CA only for intercepted hosts; address bar scope badge, one-click "add this host to scope", DevTools, and a live traffic feed with replay links.
+- **Timeline**: exchanges on a time axis grouped by host, flow or client connection, with WebSocket and MQTT messages as ticks and replays dashed; drag a range to filter History (`since:` / `until:`).
+- **Cookie jar**: every Set-Cookie seen, newest wins, with expiry highlighting, a decoded hint (url, base64, JSON, JWT), a link to the response that set it, and `{{cookie:name@domain}}` tokens to copy.
 
 ## Quick start
 
@@ -74,7 +77,8 @@ Projects live in `./.siq` by default; use `-p <dir>` to choose another folder. T
 | `path:` (prefix or glob) | `path:/api/`, `path:/v*/users` |
 | `url:` (substring) | `url:token=` |
 | `body:` / `header:` (full text) | `body:"session expired"` |
-| `ws:` `source:` `state:` `scheme:` `tag:` `flow:` | `ws:true`, `tag:bug-123` |
+| `ws:` `source:` `state:` `scheme:` `tag:` `flow:` `replayof:` | `ws:true`, `tag:bug-123`, `source:browser` |
+| `since:` / `until:` (epoch ms or ISO time) | `since:2026-11-04T09:30 until:2026-11-04T10:00` |
 | free text | `"invalid signature"` |
 
 Prefix any filter with `-` to negate it, as in `-status:304`.

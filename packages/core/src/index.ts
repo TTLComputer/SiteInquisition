@@ -1,5 +1,6 @@
 export * from './api.js';
 export * from './ca.js';
+export * from './cookies.js';
 export * from './core.js';
 export * from './ids.js';
 export * from './mqtt.js';

@@ -218,6 +218,10 @@ export class PowerTools {
       if (this.scripts.active) applied.push(...this.scripts.run('request', msg).map((n) => `script:${n}`));
       return { applied };
     },
+    wantsResponse: (req, ctx) =>
+      this.scripts.active ||
+      this.intercept.wouldPauseResponse(req, ctx.key) ||
+      this.replaceRules().some((r) => r.enabled !== false && r.phase === 'response' && conditionsMatch(r, req)),
     response: async (req, res, ctx) => {
       const applied = this.applyRules('response', res, req.url, req.method);
       if (this.scripts.active) applied.push(...this.scripts.run('response', req, res).map((n) => `script:${n}`));

@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { X509Certificate } from 'node:crypto';
-import { generateCACertificate } from 'mockttp';
+import { LeafIssuer, generateCA } from './x509.js';
 
 export interface CertificateAuthority {
   cert: string;
@@ -25,13 +25,7 @@ export async function loadOrCreateCA(dataDir: string): Promise<CertificateAuthor
   if (!existsSync(certPath) || !existsSync(keyPath)) {
     mkdirSync(dir, { recursive: true });
     const created = new Date().toISOString().slice(0, 10);
-    const { cert, key } = await generateCACertificate({
-      subject: {
-        commonName: `SiteInquisition CA (${hostname()}, ${created})`,
-        organizationName: 'SiteInquisition',
-      },
-      bits: 2048,
-    });
+    const { cert, key } = generateCA({ commonName: `SiteInquisition CA (${hostname()}, ${created})`, organizationName: 'SiteInquisition' });
     writeFileSync(keyPath, key, { mode: 0o600 });
     writeFileSync(certPath, cert);
     try {
@@ -44,4 +38,16 @@ export async function loadOrCreateCA(dataDir: string): Promise<CertificateAuthor
   const key = readFileSync(keyPath, 'utf8');
   const x509 = new X509Certificate(cert);
   return { cert, key, certPath, fingerprint: x509.fingerprint256, expiresAt: new Date(x509.validTo) };
+}
+
+const issuers = new WeakMap<CertificateAuthority, LeafIssuer>();
+
+/** The leaf certificate issuer for a CA, shared by every listener that uses it. */
+export function leafIssuer(ca: CertificateAuthority): LeafIssuer {
+  let issuer = issuers.get(ca);
+  if (!issuer) {
+    issuer = new LeafIssuer(ca);
+    issuers.set(ca, issuer);
+  }
+  return issuer;
 }

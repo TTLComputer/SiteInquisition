@@ -47,6 +47,11 @@ export class Intercept extends EventEmitter<{ paused: [Paused]; resolved: [strin
   }
 
   /** Pause if a breakpoint matches; resolves with what to do. `requestKey` links a request to its response. */
+  /** Whether check() could pause this response, so the proxy knows to buffer it rather than stream it. */
+  wouldPauseResponse(msg: { method: string; url: string; status?: number }, requestKey: string): boolean {
+    return this.pauseResponse.has(requestKey) || this.breakpoints().some((b) => b.enabled !== false && (b.phase === 'response' || b.phase === 'both') && conditionsMatch(b, msg));
+  }
+
   async check(phase: 'request' | 'response', msg: HookMessage, source: ExchangeSource, requestKey: string): Promise<Resolution | undefined> {
     const forced = phase === 'response' && this.pauseResponse.delete(requestKey);
     const bp = forced

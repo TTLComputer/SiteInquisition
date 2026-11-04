@@ -6,11 +6,11 @@ Counts are unique `name@version` entries in the pnpm tree (`pnpm -r list --json 
 
 ## Summary
 
-| | Before | After this PR | After replacing mockttp (next PR) |
+| | Before | After round 1 | After replacing mockttp |
 |---|---|---|---|
-| Shipped packages | 196 | 182 | about 8 |
-| All packages, dev included | 372 | 330 | about 162 |
-| Deepest shipped chain | 9 | 9 | 3 |
+| Shipped packages | 196 | 182 | 8 |
+| All packages, dev included | 372 | 330 | 162 |
+| Deepest shipped chain | 9 | 9 | 3 (react-dom > loose-envify > js-tokens) |
 
 ## Where the packages come from
 
@@ -27,7 +27,7 @@ Counts are unique `name@version` entries in the pnpm tree (`pnpm -r list --json 
 | react, react-dom | shipped, ui | 5 | 5 | 3 |
 | commander, ulid, ws, @fontsource/* | shipped | 1 each | | 1 |
 
-## Changes in this PR
+## Round 1: small replacements
 
 | Removed | What we used | Replacement |
 |---|---|---|
@@ -52,11 +52,31 @@ mockttp is 175 of the 182 shipped packages that remain, and the 9-deep chain abo
 
 It also has costs beyond the count: the MQTT relay imports `mockttp/dist/util/certificates`, a private path that can break on any update, and the proxy has to reach into mockttp's internal server to refuse LAN clients because mockttp has no bind option.
 
-Next PR (agreed): replace it with an in-house proxy on `node:http`, `node:http2`, `node:tls` and `node:net`, keeping `ws`. That leaves the shipped tree at about 8 packages (react, react-dom and their 3 helpers, ws, two font packages). New code to own: X.509 certificate generation (a small DER writer plus `crypto.sign`), the CONNECT, SOCKS5 and TLS-sniffing front end, and HTTP/2. The existing proxy, power-tools and UI tests are the safety net.
+## Round 2: mockttp replaced
+
+The proxy is now `core/src/interceptor.ts` (about 900 lines) on `node:net`, `node:tls`, `node:http` and `node:http2`, plus `core/src/x509.ts` (about 250 lines) for the CA and leaf certificates. The shipped tree is 8 packages: react, react-dom and their 3 helpers, ws, and the two font packages.
+
+What it does:
+
+- One port takes plain HTTP proxy requests, CONNECT tunnels, SOCKS5 and TLS sent straight to the port.
+- In a tunnel, a TLS ClientHello is read for its SNI. Hosts in decrypt scope get a leaf certificate from the project CA, with HTTP/2 or HTTP/1.1 chosen by ALPN. Other hosts pass through untouched and show up under "seen, not in scope".
+- WebSockets are relayed frame by frame, and the subprotocol and close codes are kept.
+- Handshake failures are recorded with the same causes as before (`cert-rejected`, `closed`, `reset`), so the certificate-pinning banner still works.
+- Upstream failures answer 502 and are recorded as errors rather than aborts.
+- The proxy binds to the port and refuses non-loopback clients before reading a byte, without reaching into library internals. The MQTT relay no longer imports a private mockttp path.
+
+What changed in behaviour:
+
+- **Responses stream.** Before, every response for a host with "modify" on was buffered whole. Now only responses that a response rule, breakpoint or script could touch are buffered, so server-sent events and large downloads flow normally.
+- **Upstream is always HTTP/1.1.** Clients can still speak HTTP/2 to the proxy.
+- **Gone, and can be added back small if needed:** chaining to an upstream proxy (including PAC files), SOCKS4, and TLS fingerprint impersonation toward servers.
+
+Tests: 147 pass. New tests cover HTTP/2 in a tunnel, SOCKS5 with plain HTTP and with TLS, streaming, 502 on an unreachable server, clients that reject our certificate, WebSocket subprotocols and close codes, SNI parsing, and certificate chains for names and IP addresses. I also drove real Chromium through the proxy. HTTPS came through as HTTP/2, a `wss:` connection relayed both frames, and a POST body arrived intact, all recorded.
 
 ## Kept, and why
 
-- **ws** (0 dependencies): the core API server and WebSocket replay. Node has a WebSocket client but no server, and the built-in client cannot set Cookie or Authorization headers.
+- **ws** (0 dependencies): the core API server, WebSocket relaying and WebSocket replay. Node has a WebSocket client but no server, and the built-in client cannot set Cookie or Authorization headers. Next: replace it with in-house framing, which also opens frame-level replay tools (fragmentation, control frames, malformed frames).
 - **react, react-dom** (5 packages): the UI.
 - **@fontsource/inter, @fontsource/jetbrains-mono** (0 dependencies): bundled fonts, so nothing loads from the network.
-- **electron, vite, @vitejs/plugin-react, typescript, vitest** (dev): build and test tooling that does not ship. vitest is the biggest at 65 packages of its own. Moving to `node:test` would remove them but means rewriting every test file; not worth it for dev-only packages.
+- **electron, typescript** (dev): the app shell and the compiler.
+- **vite, @vitejs/plugin-react, vitest** (dev, about 130 packages): planned for replacement. Tests would move to a small vitest-compatible runner on `node:test`, so the test files barely change.

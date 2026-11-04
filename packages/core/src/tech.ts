@@ -4,6 +4,7 @@ import { newId } from './ids.js';
 import { globToRegExp } from './scope.js';
 import type { CaptureStore, Exchange, HeaderList } from './store.js';
 import { GENERIC_CSRF_NAME, SIGNATURES, type CsrfSink, type CsrfSource, type Matcher, type Signature, type TechCategory, type TechCheck } from './techsigs.js';
+import type { ErrorService } from './errors.js';
 import type { Vars } from './vars.js';
 
 export * from './techsigs.js';
@@ -52,7 +53,7 @@ export interface CompiledSignature {
   matchers: CompiledMatcher[];
 }
 
-const CATEGORIES: TechCategory[] = ['cloud', 'cdn', 'hosting', 'server', 'language', 'framework', 'frontend', 'cms', 'auth', 'protocol', 'security'];
+const CATEGORIES: TechCategory[] = ['cloud', 'cdn', 'hosting', 'server', 'language', 'framework', 'frontend', 'cms', 'database', 'auth', 'protocol', 'security'];
 const MATCH_IN = ['header', 'requestHeader', 'cookie', 'host', 'path', 'body', 'requestBody'];
 
 /** Check a user-supplied signature and return it in canonical form; throws with a readable message. */
@@ -344,6 +345,7 @@ export class TechService {
   constructor(
     private readonly store: CaptureStore,
     private readonly vars: Vars,
+    private readonly errors?: ErrorService,
   ) {
     this.reload();
     store.techHosts = (tech) => this.hostsWith(tech);
@@ -475,7 +477,16 @@ export class TechService {
     const hits = detect(input, this.compiled);
     for (const h of hits) this.store.recordHostTech(ex.host.toLowerCase(), h.tech, h.confidence, h.evidence, ex.id, ex.startedAt);
     this.captureCsrf(ex, input.responseBody ?? null);
+    this.observeErrors(ex);
     return hits;
+  }
+
+  /** Record server errors in the response; an error that names its database tells us the database too. */
+  private observeErrors(ex: Exchange) {
+    if (!this.errors) return;
+    for (const f of this.errors.observe(ex)) {
+      if (f.tech && this.byId.has(f.tech)) this.store.recordHostTech(ex.host.toLowerCase(), f.tech, 0.9, [`error: ${f.name}`], ex.id, ex.startedAt);
+    }
   }
 
   /** Detections on a single exchange, without recording anything. */
@@ -495,6 +506,7 @@ export class TechService {
         if (!ex || ex.state === 'pending') continue;
         const input = this.inputFor(ex);
         for (const h of detect(input, this.compiled)) this.store.recordHostTech(ex.host.toLowerCase(), h.tech, h.confidence, h.evidence, ex.id, ex.startedAt);
+        this.observeErrors(ex);
       } catch {
         // skip an unreadable exchange
       }

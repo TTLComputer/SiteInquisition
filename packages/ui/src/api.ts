@@ -61,8 +61,9 @@ export type {
 
 export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage };
 export type { ScopeRule } from '@siteinquisition/core';
+export type { ErrorCause, ErrorFinding } from '@siteinquisition/core';
 export type { CookieOverride, CsrfBinding, CsrfFinding, EffectiveTech, HostTechReport, Signature, TechCategory, TechCheck, TechHit, TechOverride } from '@siteinquisition/core';
-import type { CookieOverride, CsrfBinding, CsrfFinding, HostTechReport, Signature, TechHit, TechOverride, EffectiveTech } from '@siteinquisition/core';
+import type { CookieOverride, CsrfBinding, CsrfFinding, ErrorFinding, HostTechReport, Signature, TechHit, TechOverride, EffectiveTech } from '@siteinquisition/core';
 
 /** A jar cookie, with why it belongs to the platform rather than the app (null when it is the app's). */
 export type JarCookieInfo = JarCookie & { infra?: string | null };
@@ -306,6 +307,8 @@ export class CoreClient {
   setCookieOverrides = (overrides: Array<Partial<CookieOverride>>) => this.call<CookieOverride[]>('tech.setCookieOverrides', { overrides });
   techRescan = () => this.call<{ exchanges: number; hosts: number }>('tech.rescan');
   techCheck = (host: string, tech: string, index: number, scheme: string) => this.call<ExchangeSummary>('tech.check', { host, tech, index, scheme });
+  errors = (id: string) => this.call<ErrorFinding[]>('errors.get', { id });
+  errorCounts = () => this.call<Array<{ kind: string; severity: string; count: number }>>('errors.counts');
   csrfBindings = () => this.call<CsrfBinding[]>('csrf.bindings');
   setCsrfBindings = (bindings: Array<Partial<CsrfBinding>>) => this.call<CsrfBinding[]>('csrf.setBindings', { bindings });
   evaluate = (url: string) => this.call<ScopeDecision>('scope.evaluate', { url });

@@ -22,6 +22,7 @@ const CHIPS: Array<{ label: string; query: string }> = [
   { label: 'XHR', query: 'header:"application/json"' },
   { label: 'WebSocket', query: 'ws:true' },
   { label: 'Errors', query: 'status:>=400' },
+  { label: 'Server errors', query: 'error:any' },
   { label: 'Replays', query: 'source:replay' },
 ];
 
@@ -238,6 +239,11 @@ function Row({ row, selected, top, onSelect, onMenu }: { row: ExchangeSummary; s
       <span className="muted">{fmtSize(row.resBodySize)}</span>
       <span className="muted">{fmtMs(row.durationMs)}</span>
       <span>
+        {row.errors?.map((k) => (
+          <span key={`err-${k}`} className="tag err-tag" title={`The response contains a ${k} error. Open it to see what in the request caused it.`}>
+            {k}
+          </span>
+        ))}
         {row.replayOf && <span className="tag">replay</span>}
         {row.tags.map((t) => (
           <span key={t} className="tag">

@@ -507,3 +507,13 @@ textarea.editor.composer-text { min-height: 90px; height: 110px; width: 100%; bo
   .h3-lane { grid-template-columns: 90px 1fr; }
   .h3-legend { padding-left: 0; }
 }
+
+/* Server errors */
+.err-tag { background: color-mix(in srgb, var(--error) 18%, transparent); color: var(--error); }
+.err-banner { border-bottom: 1px solid var(--line-soft); background: color-mix(in srgb, var(--error) 6%, transparent); font-size: 12px; }
+.err-banner details + details { border-top: 1px solid var(--line-soft); }
+.err-banner summary { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 12px; cursor: pointer; }
+.err-body { display: flex; flex-direction: column; gap: 4px; padding: 0 12px 8px 28px; }
+.err-excerpt { font-size: 11px; color: var(--text-muted); word-break: break-word; }
+.badge.sev-high { color: var(--error); border-color: color-mix(in srgb, var(--error) 50%, transparent); }
+.badge.sev-medium { color: var(--warn); border-color: var(--warn-line); }

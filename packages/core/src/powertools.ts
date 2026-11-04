@@ -15,6 +15,7 @@ import { Sender, type AwsProfile, type Macro, type SendOptions, type SendRequest
 import { parseSigV4, type AwsCredentials } from './sigv4.js';
 import type { Change, HeaderList } from './store.js';
 import { resolveTokens } from './tokens.js';
+import { ErrorService } from './errors.js';
 import { TechService } from './tech.js';
 import { Vars } from './vars.js';
 import { WsReplays } from './wsreplay.js';
@@ -29,6 +30,7 @@ import { WsReplays } from './wsreplay.js';
 export class PowerTools {
   readonly vars: Vars;
   readonly tech: TechService;
+  readonly errors: ErrorService;
   readonly scripts: ScriptEngine;
   readonly intercept: Intercept;
   readonly sender: Sender;
@@ -42,12 +44,20 @@ export class PowerTools {
   constructor(private readonly core: Core) {
     const store = core.store;
     this.vars = new Vars(store);
-    this.tech = new TechService(store, this.vars);
-    // Projects recorded before detection existed get scanned once, in the background.
-    if (!store.hostTech().length && store.stats().exchanges > 0) {
+    this.errors = new ErrorService(store);
+    this.tech = new TechService(store, this.vars, this.errors);
+    // Projects recorded before detection (or a newer set of detections) existed get scanned once, in the background.
+    // Bump SCAN_VERSION when a release adds detections that old traffic should get.
+    const SCAN_VERSION = 2;
+    if ((store.getMeta<number>('techScanVersion') ?? 0) >= SCAN_VERSION) {
+      // up to date
+    } else if (store.stats().exchanges === 0) store.setMeta('techScanVersion', SCAN_VERSION);
+    else {
       setImmediate(() => {
         try {
-          if (store.db.isOpen && !store.hostTech().length) this.tech.rescan(2000);
+          if (!store.db.isOpen) return;
+          this.tech.rescan(2000);
+          store.setMeta('techScanVersion', SCAN_VERSION);
         } catch {
           // the project may have closed in the meantime
         }
@@ -294,6 +304,7 @@ export class PowerTools {
       cookies: () => this.tech.annotateJar(),
       tech: (host?: string) => (host ? this.tech.hostReport(String(host)) : this.tech.allHosts()),
       csrf: (id: string) => this.tech.csrfFindings(String(id)),
+      errors: (id: string) => this.errors.findings(String(id)),
       tag: (id: string, tags: string[]) => store.tagExchange(String(id), tags.map(String)),
       notes: (id: string, notes: string) => store.setNotes(String(id), String(notes)),
       scope: () => this.core.scope.get(),
@@ -361,7 +372,7 @@ export class PowerTools {
       {
         name: 'search_traffic',
         description:
-          'Search recorded exchanges. Query syntax: host:*.example.com method:POST status:>=400 path:/api/ url:token= body:"text" header:"x-api-key" source:browser|proxy|replay ws:true tag:x since:<ISO or ms> "free text"; prefix a filter with - to negate. Newest first.',
+          'Search recorded exchanges. Query syntax: host:*.example.com method:POST status:>=400 path:/api/ url:token= body:"text" header:"x-api-key" source:browser|proxy|replay ws:true tag:x tech:django error:sql|high|any since:<ISO or ms> "free text"; prefix a filter with - to negate. Newest first.',
         inputSchema: { type: 'object', properties: { query: str, limit: { type: 'number', description: 'Default 50, max 500' } } },
         write: false,
         run: (a) => store.search(String(a.query ?? ''), { limit: Math.min(Number(a.limit ?? 50), 500) }).map((e) => ({ id: e.id, method: e.method, url: e.url, status: e.status, state: e.state, source: e.source, startedAt: new Date(e.startedAt).toISOString(), durationMs: e.durationMs, tags: e.tags })),
@@ -416,6 +427,24 @@ export class PowerTools {
         inputSchema: { type: 'object', properties: { host: str } },
         write: false,
         run: (a) => (a.host ? this.tech.hostReport(String(a.host)) : this.tech.allHosts()),
+      },
+      {
+        name: 'find_errors',
+        description:
+          'Server errors recognized in responses (SQL and NoSQL errors, template, XML, command and file errors, stack traces, framework debug pages), each with the request parts that most likely caused it and why. Pass an exchange id for one exchange, or a History query (default "error:any") to list them.',
+        inputSchema: { type: 'object', properties: { id: str, query: str, limit: { type: 'number' } } },
+        write: false,
+        run: (a) => {
+          if (a.id) return this.errors.findings(String(a.id));
+          const q = String(a.query ?? '') || 'error:any';
+          return store.search(q.includes('error:') ? q : `${q} error:any`, { limit: Math.min(Number(a.limit ?? 50), 200) }).map((e) => ({
+            id: e.id,
+            method: e.method,
+            url: e.url,
+            status: e.status,
+            errors: this.errors.findings(e.id).map((f) => ({ name: f.name, kind: f.kind, severity: f.severity, excerpt: f.excerpt, causes: f.causes.map((c) => ({ in: c.in, name: c.name, value: c.value, confidence: c.confidence, reasons: c.reasons })) })),
+          }));
+        },
       },
       {
         name: 'csrf_tokens',

@@ -44,6 +44,7 @@ export interface SavedView {
 
 const DEFAULT_VIEWS: SavedView[] = [
   { name: 'Errors', query: 'status:>=400' },
+  { name: 'Interesting errors', query: 'error:high' },
   { name: 'Replays', query: 'source:replay' },
   { name: 'WebSockets', query: 'ws:true' },
   { name: 'MQTT sessions', query: 'scheme:mqtt' },
@@ -211,6 +212,9 @@ export class CoreApiServer {
         const cookies = exchangeCookies(ex.requestHeaders, ex.responseHeaders).map((c) => ({ ...c, infra: t.infraReason(c.name, ex.host) }));
         return { hits: t.detectExchange(id), host: t.hostReport(ex.host), csrf: t.csrfFindings(id), cookies };
       },
+      'errors.get': (p) => core.tools.errors.findings(str(p, 'id')!),
+      'errors.counts': () => store.errorCounts(),
+      'errors.signatures': () => core.tools.errors.signatures(),
       'tech.overrides': () => core.tools.tech.overrides(),
       'tech.setOverrides': (p) => core.tools.tech.setOverrides(arr(p, 'overrides') as never),
       'tech.override': (p) => core.tools.tech.override(str(p, 'host')!, str(p, 'tech')!, (str(p, 'action')! as 'pin' | 'reject' | 'clear'), str(p, 'note', false)),

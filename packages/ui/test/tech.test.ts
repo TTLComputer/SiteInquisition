@@ -25,6 +25,8 @@ describe.skipIf(!ready)('technologies in the renderer', () => {
   beforeAll(async () => {
     h = await startHarness();
     await h.send('/account');
+    await h.send('/search?q=lamp');
+    await h.send("/search?q=lamp'%20OR%201=1");
     await h.send('/api/save', 'POST', JSON.stringify({ name: 'ada' }), { 'x-csrftoken': 'tok-abcdef123456', cookie: 'csrftoken=tok-abcdef123456; AWSALB=lb-sticky-1' });
     browser = await launch();
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
@@ -75,6 +77,21 @@ describe.skipIf(!ready)('technologies in the renderer', () => {
     expect(await page.getByTestId('cookie-row').filter({ hasText: 'AWSALB' }).count()).toBe(0);
     await page.getByLabel(/Show platform cookies/).check();
     await expect.poll(() => page.getByTestId('cookie-row').filter({ hasText: 'AWSALB' }).textContent()).toContain('platform: AWS load balancer');
+  });
+
+  it('flags a request whose response leaks a SQL error, and names the cause', async () => {
+    await nav('History');
+    await page.getByRole('button', { name: 'Server errors', exact: true }).click();
+    const row = page.locator('.row', { hasText: '/search' });
+    await expect.poll(() => row.count()).toBe(1);
+    expect(await row.locator('.err-tag').textContent()).toBe('sql');
+    await row.click();
+    await page.getByRole('tab', { name: 'Request and response' }).click();
+    const finding = page.getByTestId('error-finding');
+    await expect.poll(() => finding.textContent()).toContain('MySQL syntax error');
+    expect(await finding.textContent()).toContain("likely caused by the query parameter q = lamp' OR 1=1");
+    await shot('errors');
+    await page.getByRole('button', { name: 'All', exact: true }).click();
   });
 
   it('lists corrections and bindings in Settings', async () => {

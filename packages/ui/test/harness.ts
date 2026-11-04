@@ -27,6 +27,16 @@ async function startUpstream() {
         const cookies = req.url === '/api/cart' ? { 'set-cookie': ['session=eyJ1c2VyIjoibmljayJ9; Path=/; HttpOnly', 'cart=42; Max-Age=600'] } : {};
         res.writeHead(200, { 'content-type': 'application/json', ...cookies });
         res.end(JSON.stringify({ path: req.url, method: req.method, hits, echo: body || null }));
+      } else if (req.url?.startsWith('/search')) {
+        // Pastes the query into SQL and leaks the error, for the error banner.
+        const q = new URL(req.url, 'http://x').searchParams.get('q') ?? '';
+        if (q.includes("'")) {
+          res.writeHead(500, { 'content-type': 'text/html' });
+          res.end(`You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '${q.slice(q.indexOf("'") + 1)}' LIMIT 20' at line 1`);
+        } else {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('[]');
+        }
       } else if (req.url === '/account') {
         // A Django-style page behind an AWS load balancer, for the Tech tab.
         res.writeHead(200, { 'content-type': 'text/html', server: 'WSGIServer/0.2 CPython/3.12.1', 'set-cookie': ['csrftoken=tok-abcdef123456; Path=/', 'AWSALB=lb-sticky-1; Path=/'] });

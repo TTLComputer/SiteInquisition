@@ -44,7 +44,7 @@ describe.skipIf(!ready)('renderer against a real core', () => {
 
   it('filters with chips and search syntax', async () => {
     const chips = page.getByRole('group', { name: 'Quick filters' });
-    await chips.getByRole('button', { name: 'Errors' }).click();
+    await chips.getByRole('button', { name: 'Errors', exact: true }).click();
     await expect.poll(() => page.locator('.vlist .row').count()).toBe(1);
     await page.locator('#filter-input').fill('method:POST');
     await expect.poll(() => page.locator('.vlist .row').first().textContent()).toContain('/api/apply-coupon');

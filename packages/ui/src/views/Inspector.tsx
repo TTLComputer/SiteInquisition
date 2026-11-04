@@ -5,7 +5,7 @@ import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { asText, fmtMs, fmtSize, fmtTime, hexDump, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { breakOn, mockFromExchange } from '../actions';
-import { TechPanel } from './Tech';
+import { ErrorBanner, TechPanel } from './Tech';
 
 type Tab = 'exchange' | 'messages' | 'tech' | 'timings' | 'notes';
 type BodyMode = 'pretty' | 'raw' | 'hex';
@@ -361,6 +361,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
         ))}
       </div>
       <div className="insp-body">
+        {tab === 'exchange' && <ErrorBanner ex={ex} />}
         {tab === 'exchange' && (
           <div className="two-col">
             <Side

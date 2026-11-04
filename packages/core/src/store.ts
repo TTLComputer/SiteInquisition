@@ -42,6 +42,8 @@ export interface ExchangeSummary {
   resBodySize: number | null;
   durationMs: number | null;
   tags: string[];
+  /** Kinds of server error recognized in the response (sql, stack-trace, ...), when any. */
+  errors?: string[];
 }
 
 export interface Exchange extends ExchangeSummary {
@@ -123,6 +125,18 @@ export interface StoreOptions {
 }
 
 const SCHEMA_VERSION = 3;
+
+/** Selects the error kinds recognized in an exchange's response as one column. */
+const ERRS = '(SELECT group_concat(DISTINCT x.kind) FROM exchange_error x WHERE x.exchange_id = e.id) AS errs';
+
+export interface ErrorRecord {
+  exchangeId: string;
+  sig: string;
+  kind: string;
+  severity: string;
+  data: Record<string, unknown>;
+  at: number;
+}
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -222,6 +236,16 @@ CREATE TABLE IF NOT EXISTS host_tech (
   sample_id TEXT,
   PRIMARY KEY (host, tech)
 );
+CREATE TABLE IF NOT EXISTS exchange_error (
+  exchange_id TEXT NOT NULL,
+  sig TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  data TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (exchange_id, sig)
+);
+CREATE INDEX IF NOT EXISTS exchange_error_kind ON exchange_error(kind);
 CREATE VIRTUAL TABLE IF NOT EXISTS exchange_fts USING fts5(
   exchange_id UNINDEXED, url, headers, body, tokenize = 'unicode61'
 );
@@ -257,6 +281,8 @@ interface ExchangeRow {
   is_websocket: number;
   replay_of: string | null;
   tags: string;
+  /** Comma-separated error kinds, when the query selected them. */
+  errs?: string | null;
   notes: string | null;
   created_by: string;
 }
@@ -292,6 +318,7 @@ const toSummary = (r: ExchangeRow): ExchangeSummary => ({
   resBodySize: r.res_body_size,
   durationMs: (JSON.parse(r.timings) as Timings).total ?? null,
   tags: JSON.parse(r.tags) as string[],
+  ...(r.errs ? { errors: r.errs.split(',') } : {}),
 });
 
 /**
@@ -571,7 +598,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   }
 
   private getRow(id: string): ExchangeRow | undefined {
-    return this.q('SELECT * FROM exchange WHERE id = ?').get(id) as unknown as ExchangeRow | undefined;
+    return this.q(`SELECT e.*, ${ERRS} FROM exchange e WHERE e.id = ?`).get(id) as unknown as ExchangeRow | undefined;
   }
 
   getSummary(id: string): ExchangeSummary | undefined {
@@ -625,7 +652,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       where.push(newest ? 'e.id < ?' : 'e.id > ?');
       params.push(opts.before);
     }
-    const sql = `SELECT * FROM exchange e ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY e.id ${newest ? 'DESC' : 'ASC'} LIMIT ?`;
+    const sql = `SELECT e.*, ${ERRS} FROM exchange e ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY e.id ${newest ? 'DESC' : 'ASC'} LIMIT ?`;
     params.push(Math.min(Math.max(opts.limit ?? 100, 1), 10_000));
     return (this.q(sql).all(...(params as SQLInputValue[])) as unknown as ExchangeRow[]).map(toSummary);
   }
@@ -696,6 +723,29 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       sample_id: string | null;
     }>;
     return rows.map((r) => ({ host: r.host, tech: r.tech, confidence: r.confidence, evidence: JSON.parse(r.evidence) as string[], hits: r.hits, firstAt: r.first_at, lastAt: r.last_at, sampleId: r.sample_id }));
+  }
+
+  /** Replace the errors recorded for an exchange. Logs a change only when there are some, or there were. */
+  setExchangeErrors(exchangeId: string, list: Array<{ sig: string; kind: string; severity: string; data: Record<string, unknown> }>, at = Date.now()): void {
+    this.tx(() => {
+      const had = (this.q('SELECT COUNT(*) AS n FROM exchange_error WHERE exchange_id = ?').get(exchangeId) as unknown as { n: number }).n;
+      if (!had && !list.length) return;
+      this.q('DELETE FROM exchange_error WHERE exchange_id = ?').run(exchangeId);
+      const ins = this.q('INSERT INTO exchange_error (exchange_id, sig, kind, severity, data, at) VALUES (?, ?, ?, ?, ?, ?)');
+      for (const e of list) ins.run(exchangeId, e.sig, e.kind, e.severity, JSON.stringify(e.data), at);
+      // Carry the summary, as other exchange changes do, so lists can patch the row in place.
+      this.recordChange('exchange.errors', 'exchange', exchangeId, this.getSummary(exchangeId) ?? { id: exchangeId });
+    });
+  }
+
+  exchangeErrors(exchangeId: string): ErrorRecord[] {
+    const rows = this.q('SELECT * FROM exchange_error WHERE exchange_id = ? ORDER BY sig').all(exchangeId) as unknown as Array<{ exchange_id: string; sig: string; kind: string; severity: string; data: string; at: number }>;
+    return rows.map((r) => ({ exchangeId: r.exchange_id, sig: r.sig, kind: r.kind, severity: r.severity, data: JSON.parse(r.data) as Record<string, unknown>, at: r.at }));
+  }
+
+  /** How many exchanges have each error kind. */
+  errorCounts(): Array<{ kind: string; severity: string; count: number }> {
+    return this.q("SELECT kind, CASE max(CASE severity WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END) WHEN 3 THEN 'high' WHEN 2 THEN 'medium' ELSE 'low' END AS severity, COUNT(DISTINCT exchange_id) AS count FROM exchange_error GROUP BY kind ORDER BY count DESC").all() as unknown as Array<{ kind: string; severity: string; count: number }>;
   }
 
   clearHostTech(): void {

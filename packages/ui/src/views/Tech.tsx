@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { CsrfBinding, CsrfFinding, EffectiveTech, ExchangeDetail, ExchangeTech, Signature, TechOverride } from '../api';
+import type { ErrorFinding, CsrfBinding, CsrfFinding, EffectiveTech, ExchangeDetail, ExchangeTech, Signature, TechOverride } from '../api';
 import { useApp } from '../state';
 
 const STATUS_LABEL: Record<EffectiveTech['status'], string> = { detected: 'detected', possible: 'possible', pinned: 'pinned by you', implied: 'implied' };
@@ -17,6 +17,7 @@ const CATEGORY_GROUP: Record<string, string> = {
   framework: 'Server frameworks',
   frontend: 'Front-end frameworks',
   cms: 'CMS',
+  database: 'Databases',
   auth: 'Identity and auth',
   protocol: 'Protocols',
 };
@@ -508,5 +509,77 @@ export function TechSettings() {
         </div>
       </div>
     </>
+  );
+}
+
+const PLACE: Record<string, string> = { query: 'query parameter', path: 'path', form: 'form field', json: 'JSON field', header: 'header', cookie: 'cookie', body: 'request body' };
+
+/** Server errors found in the response, with the request parts that most likely caused them. */
+export function ErrorBanner({ ex }: { ex: ExchangeDetail }) {
+  const { client, setQuery, setView } = useApp();
+  const [list, setList] = useState<ErrorFinding[]>([]);
+  useEffect(() => {
+    if (!ex.errors?.length) {
+      setList([]);
+      return;
+    }
+    client.errors(ex.id).then(setList, () => setList([]));
+  }, [client, ex.id, ex.errors?.join(',')]);
+  if (!list.length) return null;
+  return (
+    <div className="err-banner" role="region" aria-label="Server errors in this response">
+      {list.map((f) => {
+        const [top, ...rest] = f.causes;
+        return (
+          <details key={f.sig} open data-testid="error-finding">
+            <summary>
+              <span className={`badge sev-${f.severity}`}>{f.severity}</span>
+              <b>{f.name}</b>
+              {top ? (
+                <span>
+                  {' '}
+                  likely caused by the {PLACE[top.in] ?? top.in} <span className="mono">{top.in === 'path' || top.in === 'body' ? '' : top.name}</span> = <span className="mono">{short(top.value, 60)}</span>{' '}
+                  <span className="faint">({pct(top.confidence)})</span>
+                </span>
+              ) : (
+                <span className="faint"> no single cause found in the request</span>
+              )}
+              <span style={{ flex: 1 }} />
+              <button
+                className="btn small"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setQuery(`error:${f.sig}`);
+                  setView('history');
+                }}
+              >
+                All like this
+              </button>
+            </summary>
+            <div className="err-body">
+              <div className="mono err-excerpt">{f.excerpt}</div>
+              {top && <div className="muted">Why: {top.reasons.join('; ')}.</div>}
+              {rest.length > 0 && (
+                <div className="muted">
+                  Also possible:{' '}
+                  {rest.map((c, i) => (
+                    <span key={i}>
+                      {i > 0 ? ', ' : ''}
+                      {PLACE[c.in] ?? c.in} <span className="mono">{c.in === 'path' || c.in === 'body' ? short(c.value, 30) : c.name}</span> ({pct(c.confidence)}, {c.reasons[0]})
+                    </span>
+                  ))}
+                </div>
+              )}
+              {(f.file || f.line) && (
+                <div className="muted">
+                  Fails in <span className="mono">{f.file}{f.line ? `:${f.line}` : ''}</span>
+                </div>
+              )}
+              <div className="faint">{f.hint}</div>
+            </div>
+          </details>
+        );
+      })}
+    </div>
   );
 }

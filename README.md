@@ -2,7 +2,7 @@
 
 An intercepting proxy, built-in browser and replay toolkit for testing websites, APIs and IoT devices before they are finished. It runs on Windows and Linux and is MIT licensed.
 
-> **Status:** early development. This repository currently contains the headless **core engine** and the `siq` CLI. The Electron UI, codec workbench, replay and race tools, scripting and MCP server follow in later milestones. The full design is in the [design spec](https://claude.ai/artifact/HyHcJe2h7r7iCqLT3PmyEM).
+> **Status:** early development. This repository contains the core engine, the `siq` CLI and the first part of the desktop app (History, inspector, replay, scope and settings). The built-in browser, timeline, cookie jar, codec workbench, race tools, scripting and MCP server follow in later milestones. The full design is in the [design spec](https://claude.ai/artifact/HyHcJe2h7r7iCqLT3PmyEM).
 
 ## What works today
 
@@ -12,14 +12,15 @@ An intercepting proxy, built-in browser and replay toolkit for testing websites,
 - **MQTT** 3.1, 3.1.1 and 5.0 relay: devices connect to SiteInquisition as their broker, every byte is passed to the real broker unchanged, and each packet (CONNECT, SUBSCRIBE, PUBLISH, acks, ...) is recorded with topic, QoS, retain flag, properties and payload. TLS is supported on both sides, with device-facing certificates signed by the project CA.
 - **Scope rules** (host glob, port, scheme, path prefix) that decide what is decrypted and what is recorded. A new project records nothing until you add a host.
 - Redirect chains linked into a single flow.
-- A capture database in SQLite with full-text search over URLs, headers and decoded bodies (gzip, deflate, brotli, zstd).
+- A capture database in SQLite (`node:sqlite`) with full-text search over URLs, headers and decoded bodies (gzip, deflate, brotli, zstd).
 - An append-only change log with ULID ids on every row, ready for the planned multi-user and replication work.
 - A core API (JSON-RPC 2.0 over a token-protected local WebSocket) with live change notifications.
 - By default only loopback clients may connect. Pass `--lan` to accept phones and IoT devices.
+- **Desktop app** (Electron): History with the search syntax, quick filters, saved views, site map and live follow; an inspector for requests, responses, WebSocket frames and MQTT packets; replay tabs with a raw editor, send history and a diff against the original; one-click replay from any row (Replay pill, Ctrl R, double click, right-click menu, or drag onto the tab bar) and "Resend now" (Ctrl Shift Enter); a scope editor with "seen but not in scope" hosts and certificate pinning warnings; theme that follows the system.
 
 ## Quick start
 
-Requires Node.js 22.12 or later and pnpm 10.
+Requires Node.js 22.13 or later and pnpm 10. There are no native modules: storage uses the `node:sqlite` module built into Node and Electron.
 
 ```sh
 pnpm install
@@ -34,6 +35,17 @@ curl -x http://127.0.0.1:8080 --cacert "$(node packages/cli/dist/main.js ca | aw
 node packages/cli/dist/main.js search host:api.example.com status:>=400
 node packages/cli/dist/main.js show <exchange-id>
 ```
+
+### Desktop app
+
+```sh
+pnpm install
+pnpm build
+pnpm app                                  # opens the app; the proxy listens on 127.0.0.1:8080 (or a free port if taken)
+pnpm app -- --project ~/siq/shop --lan    # choose the project folder and accept LAN devices
+```
+
+The core runs in a separate utility process, and the window talks to it over the same local API as the CLI. Projects default to the app's user data folder.
 
 ### MQTT
 
@@ -87,6 +99,8 @@ packages/
   codecs/  chainable encoders and decoders (url, base64, hex, gzip, deflate, br, zstd, json, ...)
   core/    proxy, MQTT relay, scope, capture store, search, core API
   cli/     the siq command
+  ui/      React renderer (runs in the app, or in any browser for development)
+  app/     Electron shell: hosts the core in a utility process and loads the renderer
 ```
 
 ## Development
@@ -95,5 +109,11 @@ packages/
 pnpm build   # type-checks and compiles every package
 pnpm test    # unit and integration tests (Vitest); spins up local HTTP, HTTPS and WebSocket servers
 ```
+
+The UI tests drive the built renderer in Chromium against a real core. They need `pnpm build` first and Playwright with Chromium (`npm i -g playwright && npx playwright install chromium`); without Playwright they are skipped. Set `SIQ_SCREENSHOTS=dir` to save screenshots.
+
+To work on the renderer in a normal browser, start a proxy with `siq proxy`, read the API port and token from `core.json` in the project folder, run `pnpm --filter @siteinquisition/ui dev` and open `http://localhost:5173/?api=ws://127.0.0.1:PORT&token=TOKEN`.
+
+Electron smoke test (Linux, headless): `SIQ_SMOKE_SCREENSHOT=/tmp/siq.png xvfb-run -a pnpm app` waits until the window is connected to the core, saves a screenshot and exits.
 
 CI runs only for release tags (`v*`) or when started by hand from the Actions tab, to conserve Actions minutes. Run the build and tests locally before pushing.

@@ -15,7 +15,7 @@ export interface CompiledQuery {
   match?: string;
 }
 
-const FILTER_KEYS = new Set(['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'body', 'header', 'state', 'flow', 'scheme']);
+const FILTER_KEYS = new Set(['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'body', 'header', 'state', 'flow', 'scheme', 'replayof']);
 
 interface Token {
   key?: string;
@@ -104,6 +104,9 @@ export function compileQuery(input: string): CompiledQuery {
         break;
       case 'flow':
         add(t, 'e.flow_id = ?', [t.value]);
+        break;
+      case 'replayof':
+        add(t, 'e.replay_of = ?', [t.value]);
         break;
       case 'ws':
         add(t, 'e.is_websocket = ?', [/^(1|true|yes)$/i.test(t.value) ? 1 : 0]);

@@ -21,14 +21,12 @@
   },
   "dependencies": {
     "@siteinquisition/codecs": "workspace:*",
-    "better-sqlite3": "^12.4.1",
     "mockttp": "^4.2.1",
     "mqtt-packet": "^9.0.2",
     "ulid": "^3.0.1",
     "ws": "^8.18.3"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/ws": "^8.18.1",
     "aedes": "^1.2.0",
     "https-proxy-agent": "^9.1.0",

@@ -73,6 +73,18 @@ describe('CaptureStore', () => {
     expect(store.search('', { before: c.id }).map((e) => e.id)).toEqual([b.id, a.id]);
   });
 
+  it('builds a site map and stats', () => {
+    add('https://a.test/api/users?id=1');
+    add('https://a.test/api/orders');
+    add('https://a.test/login?next=/');
+    add('https://b.test/');
+    expect(store.siteMap()).toEqual([
+      { host: 'a.test', count: 3, paths: [{ segment: '/api', count: 2 }, { segment: '/login', count: 1 }] },
+      { host: 'b.test', count: 1, paths: [{ segment: '/', count: 1 }] },
+    ]);
+    expect(store.stats()).toMatchObject({ exchanges: 4, databaseBytes: expect.any(Number) });
+  });
+
   it('links redirect chains into one flow', () => {
     const first = add('http://a.test/old');
     const second = store.addRequest({ source: 'proxy', startedAt: Date.now(), method: 'GET', url: 'http://a.test/new', httpVersion: '1.1', headers: [], flowId: first.flowId, parentId: first.id });
@@ -103,13 +115,14 @@ describe('CaptureStore', () => {
 });
 
 describe('schema migration', () => {
-  it('upgrades a version 1 project by adding stream_message.meta', () => {
-    store.db.exec("ALTER TABLE stream_message DROP COLUMN meta; UPDATE meta SET value = '1' WHERE key = 'schema_version'");
+  it('upgrades a version 1 project to the current schema', () => {
+    store.db.exec("DROP INDEX exchange_replay_of; ALTER TABLE exchange DROP COLUMN replay_of; ALTER TABLE stream_message DROP COLUMN meta; UPDATE meta SET value = '1' WHERE key = 'schema_version'");
     store.close();
     store = CaptureStore.openProject(dir);
     const cols = (store.db.prepare('PRAGMA table_info(stream_message)').all() as Array<{ name: string }>).map((c) => c.name);
     expect(cols).toContain('meta');
-    expect((store.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string }).value).toBe('2');
+    expect((store.db.prepare('PRAGMA table_info(exchange)').all() as Array<{ name: string }>).map((c) => c.name)).toContain('replay_of');
+    expect((store.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string }).value).toBe('3');
   });
 
   it('refuses projects from a newer version', () => {

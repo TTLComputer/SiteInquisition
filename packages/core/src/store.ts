@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
-import Database from 'better-sqlite3';
+import { DatabaseSync, type SQLInputValue, type StatementSync } from 'node:sqlite';
 import { bytesToString, decodeContentEncoding, looksLikeText } from '@siteinquisition/codecs';
 import { newId } from './ids.js';
 import { compileQuery } from './search.js';
@@ -37,6 +37,7 @@ export interface ExchangeSummary {
   status: number | null;
   state: ExchangeState;
   isWebSocket: boolean;
+  replayOf: string | null;
   reqBodySize: number;
   resBodySize: number | null;
   durationMs: number | null;
@@ -69,6 +70,8 @@ export interface NewRequest {
   headers: HeaderList;
   body?: Uint8Array;
   isWebSocket?: boolean;
+  /** The exchange this one is a replay of. */
+  replayOf?: string | null;
   tags?: string[];
 }
 
@@ -119,7 +122,7 @@ export interface StoreOptions {
   maxIndexBytes?: number;
 }
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -156,6 +159,7 @@ CREATE TABLE IF NOT EXISTS exchange (
   error TEXT,
   timings TEXT NOT NULL DEFAULT '{}',
   is_websocket INTEGER NOT NULL DEFAULT 0,
+  replay_of TEXT,
   tags TEXT NOT NULL DEFAULT '[]',
   notes TEXT,
   created_by TEXT NOT NULL
@@ -240,6 +244,7 @@ interface ExchangeRow {
   error: string | null;
   timings: string;
   is_websocket: number;
+  replay_of: string | null;
   tags: string;
   notes: string | null;
   created_by: string;
@@ -271,6 +276,7 @@ const toSummary = (r: ExchangeRow): ExchangeSummary => ({
   status: r.status,
   state: r.state,
   isWebSocket: !!r.is_websocket,
+  replayOf: r.replay_of ?? null,
   reqBodySize: r.req_body_size,
   resBodySize: r.res_body_size,
   durationMs: (JSON.parse(r.timings) as Timings).total ?? null,
@@ -283,7 +289,8 @@ const toSummary = (r: ExchangeRow): ExchangeSummary => ({
  * event, which is what the UI, the core API and (later) replication follow.
  */
 export class CaptureStore extends EventEmitter<{ change: [Change] }> {
-  readonly db: Database.Database;
+  readonly db: DatabaseSync;
+  private readonly statements = new Map<string, StatementSync>();
   readonly actor: string;
   private readonly maxBodyBytes: number;
   private readonly maxIndexBytes: number;
@@ -293,10 +300,9 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     this.actor = opts.actor ?? 'local';
     this.maxBodyBytes = opts.maxBodyBytes ?? 10 * 1024 * 1024;
     this.maxIndexBytes = opts.maxIndexBytes ?? 1024 * 1024;
-    this.db = new Database(file);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = NORMAL');
-    this.db.pragma('foreign_keys = ON');
+    // node:sqlite ships with Node and Electron, so there is no native module to rebuild per runtime.
+    this.db = new DatabaseSync(file, { enableForeignKeyConstraints: true });
+    this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;');
     try {
       this.migrate();
     } catch (err) {
@@ -312,18 +318,31 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   }
 
   close(): void {
-    this.db.close();
+    this.statements.clear();
+    if (this.db.isOpen) this.db.close();
+  }
+
+  /** Prepared statements are cached per SQL string. */
+  private q(sql: string): StatementSync {
+    let st = this.statements.get(sql);
+    if (!st) {
+      if (this.statements.size > 256) this.statements.clear();
+      st = this.db.prepare(sql);
+      this.statements.set(sql, st);
+    }
+    return st;
   }
 
   private migrate(): void {
     this.db.exec(SCHEMA);
-    const row = this.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string } | undefined;
+    const row = this.q("SELECT value FROM meta WHERE key = 'schema_version'").get() as unknown as { value: string } | undefined;
     const version = row ? Number(row.value) : SCHEMA_VERSION;
     if (version > SCHEMA_VERSION) throw new Error(`project was created by a newer SiteInquisition (schema ${row!.value})`);
-    if (version < 2) {
-      const cols = this.db.prepare('PRAGMA table_info(stream_message)').all() as Array<{ name: string }>;
-      if (!cols.some((c) => c.name === 'meta')) this.db.exec('ALTER TABLE stream_message ADD COLUMN meta TEXT');
-    }
+    const hasColumn = (table: string, col: string) =>
+      (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === col);
+    if (version < 2 && !hasColumn('stream_message', 'meta')) this.db.exec('ALTER TABLE stream_message ADD COLUMN meta TEXT');
+    if (version < 3 && !hasColumn('exchange', 'replay_of')) this.db.exec('ALTER TABLE exchange ADD COLUMN replay_of TEXT');
+    this.db.exec('CREATE INDEX IF NOT EXISTS exchange_replay_of ON exchange(replay_of)');
     this.db
       .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run(String(SCHEMA_VERSION));
@@ -332,13 +351,13 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   // ---------- meta ----------
 
   getMeta<T>(key: string): T | undefined {
-    const row = this.db.prepare('SELECT value FROM meta WHERE key = ?').get(key) as { value: string } | undefined;
+    const row = this.q('SELECT value FROM meta WHERE key = ?').get(key) as unknown as { value: string } | undefined;
     return row ? (JSON.parse(row.value) as T) : undefined;
   }
 
   setMeta(key: string, value: unknown): void {
     this.tx(() => {
-      this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, JSON.stringify(value));
+      this.q('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, JSON.stringify(value));
       this.recordChange('meta.set', 'meta', key, value);
     });
   }
@@ -354,7 +373,14 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     this.depth = 1;
     let out: T;
     try {
-      out = this.db.transaction(fn)();
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        out = fn();
+        this.db.exec('COMMIT');
+      } catch (err) {
+        this.db.exec('ROLLBACK');
+        throw err;
+      }
     } catch (err) {
       this.pending = [];
       throw err;
@@ -388,7 +414,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     const truncated = data.byteLength > this.maxBodyBytes;
     const body = truncated ? data.subarray(0, this.maxBodyBytes) : data;
     const sha = createHash('sha256').update(body).digest('hex');
-    const exists = this.db.prepare('SELECT 1 FROM blob WHERE sha256 = ?').get(sha);
+    const exists = this.q('SELECT 1 FROM blob WHERE sha256 = ?').get(sha);
     if (!exists) {
       let compression = 'none';
       let stored: Uint8Array = body;
@@ -399,13 +425,13 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
           compression = 'deflate-raw';
         }
       }
-      this.db.prepare('INSERT INTO blob (sha256, size, compression, data) VALUES (?, ?, ?, ?)').run(sha, body.byteLength, compression, stored);
+      this.q('INSERT INTO blob (sha256, size, compression, data) VALUES (?, ?, ?, ?)').run(sha, body.byteLength, compression, stored);
     }
     return { sha, size: data.byteLength, truncated };
   }
 
   getBlob(sha: string): Uint8Array | undefined {
-    const row = this.db.prepare('SELECT compression, data FROM blob WHERE sha256 = ?').get(sha) as { compression: string; data: Buffer } | undefined;
+    const row = this.q('SELECT compression, data FROM blob WHERE sha256 = ?').get(sha) as unknown as { compression: string; data: Uint8Array } | undefined;
     if (!row) return undefined;
     return new Uint8Array(row.compression === 'deflate-raw' ? inflateRawSync(row.data) : row.data);
   }
@@ -419,7 +445,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       let flowId = req.flowId;
       if (!flowId) {
         flowId = newId();
-        this.db.prepare('INSERT INTO flow (id, kind, created_at) VALUES (?, ?, ?)').run(flowId, 'single', req.startedAt);
+        this.q('INSERT INTO flow (id, kind, created_at) VALUES (?, ?, ?)').run(flowId, 'single', req.startedAt);
       }
       const body = req.body && req.body.byteLength ? this.putBlob(req.body) : undefined;
       const scheme = url.protocol.replace(/:$/, '');
@@ -427,8 +453,8 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       this.db
         .prepare(
           `INSERT INTO exchange (id, flow_id, parent_id, source, client_addr, started_at, method, url, scheme, host, port, path,
-             http_version, req_headers, req_body, req_body_size, req_truncated, state, is_websocket, tags, created_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+             http_version, req_headers, req_body, req_body_size, req_truncated, state, is_websocket, replay_of, tags, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -449,11 +475,12 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
           body?.size ?? 0,
           body?.truncated ? 1 : 0,
           req.isWebSocket ? 1 : 0,
+          req.replayOf ?? null,
           JSON.stringify(req.tags ?? []),
           this.actor,
         );
       if (req.parentId) {
-        this.db.prepare("UPDATE flow SET kind = 'redirect' WHERE id = ? AND kind = 'single'").run(flowId);
+        this.q("UPDATE flow SET kind = 'redirect' WHERE id = ? AND kind = 'single'").run(flowId);
       }
       this.db
         .prepare('INSERT INTO exchange_fts (exchange_id, url, headers, body) VALUES (?, ?, ?, ?)')
@@ -475,7 +502,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
         .run(res.status, res.statusMessage ?? null, JSON.stringify(res.headers), body?.sha ?? null, body?.size ?? 0, body?.truncated ? 1 : 0, JSON.stringify(res.timings ?? {}), id);
       if (info.changes === 0) throw new Error(`no exchange ${id}`);
       const resText = this.indexText(res.body, res.headers);
-      const ftsRow = this.db.prepare('SELECT rowid, headers, body FROM exchange_fts WHERE exchange_id = ?').get(id) as { rowid: number; headers: string; body: string } | undefined;
+      const ftsRow = this.q('SELECT rowid, headers, body FROM exchange_fts WHERE exchange_id = ?').get(id) as unknown as { rowid: number; headers: string; body: string } | undefined;
       if (ftsRow) {
         this.db
           .prepare('UPDATE exchange_fts SET headers = ?, body = ? WHERE rowid = ?')
@@ -490,7 +517,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   /** Mark a connection-style exchange (e.g. an MQTT session) as established, without an HTTP response. */
   markEstablished(id: string, timings?: Timings): ExchangeSummary {
     return this.tx(() => {
-      this.db.prepare("UPDATE exchange SET state = 'complete', timings = COALESCE(?, timings) WHERE id = ?").run(timings ? JSON.stringify(timings) : null, id);
+      this.q("UPDATE exchange SET state = 'complete', timings = COALESCE(?, timings) WHERE id = ?").run(timings ? JSON.stringify(timings) : null, id);
       const summary = this.getSummary(id)!;
       this.recordChange('exchange.established', 'exchange', id, summary);
       return summary;
@@ -499,21 +526,21 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   failExchange(id: string, state: 'aborted' | 'error', error: string, timings?: Timings): void {
     this.tx(() => {
-      this.db.prepare('UPDATE exchange SET state = ?, error = ?, timings = COALESCE(?, timings) WHERE id = ?').run(state, error, timings ? JSON.stringify(timings) : null, id);
+      this.q('UPDATE exchange SET state = ?, error = ?, timings = COALESCE(?, timings) WHERE id = ?').run(state, error, timings ? JSON.stringify(timings) : null, id);
       this.recordChange(`exchange.${state}`, 'exchange', id, { error });
     });
   }
 
   tagExchange(id: string, tags: string[]): void {
     this.tx(() => {
-      this.db.prepare('UPDATE exchange SET tags = ? WHERE id = ?').run(JSON.stringify([...new Set(tags)]), id);
+      this.q('UPDATE exchange SET tags = ? WHERE id = ?').run(JSON.stringify([...new Set(tags)]), id);
       this.recordChange('exchange.tags', 'exchange', id, { tags });
     });
   }
 
   setNotes(id: string, notes: string | null): void {
     this.tx(() => {
-      this.db.prepare('UPDATE exchange SET notes = ? WHERE id = ?').run(notes, id);
+      this.q('UPDATE exchange SET notes = ? WHERE id = ?').run(notes, id);
       this.recordChange('exchange.notes', 'exchange', id, { notes });
     });
   }
@@ -526,7 +553,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   }
 
   private getRow(id: string): ExchangeRow | undefined {
-    return this.db.prepare('SELECT * FROM exchange WHERE id = ?').get(id) as ExchangeRow | undefined;
+    return this.q('SELECT * FROM exchange WHERE id = ?').get(id) as unknown as ExchangeRow | undefined;
   }
 
   getSummary(id: string): ExchangeSummary | undefined {
@@ -579,19 +606,37 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     }
     const sql = `SELECT * FROM exchange e ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY e.id ${newest ? 'DESC' : 'ASC'} LIMIT ?`;
     params.push(Math.min(Math.max(opts.limit ?? 100, 1), 10_000));
-    return (this.db.prepare(sql).all(...params) as ExchangeRow[]).map(toSummary);
+    return (this.q(sql).all(...(params as SQLInputValue[])) as unknown as ExchangeRow[]).map(toSummary);
   }
 
   /** Every exchange in a flow (a redirect chain or a replay batch), in order. */
   getFlow(flowId: string): ExchangeSummary[] {
-    return (this.db.prepare('SELECT * FROM exchange WHERE flow_id = ? ORDER BY id').all(flowId) as ExchangeRow[]).map(toSummary);
+    return (this.q('SELECT * FROM exchange WHERE flow_id = ? ORDER BY id').all(flowId) as unknown as ExchangeRow[]).map(toSummary);
+  }
+
+  /** Hosts with their exchange counts and top first path segments, for the site map. */
+  siteMap(limit = 200, segmentsPerHost = 12): Array<{ host: string; count: number; paths: Array<{ segment: string; count: number }> }> {
+    const hosts = this.q('SELECT host, COUNT(*) AS count FROM exchange GROUP BY host ORDER BY count DESC LIMIT ?').all(limit) as unknown as Array<{ host: string; count: number }>;
+    const seg = this.q(
+      `SELECT CASE WHEN instr(substr(p, 2), '/') > 0 THEN substr(p, 1, instr(substr(p, 2), '/')) ELSE p END AS segment, COUNT(*) AS count
+       FROM (SELECT CASE WHEN instr(path, '?') > 0 THEN substr(path, 1, instr(path, '?') - 1) ELSE path END AS p FROM exchange WHERE host = ?)
+       GROUP BY segment ORDER BY count DESC LIMIT ?`,
+    );
+    return hosts.map((h) => ({ ...h, paths: seg.all(h.host, segmentsPerHost) as unknown as Array<{ segment: string; count: number }> }));
+  }
+
+  stats(): { exchanges: number; databaseBytes: number } {
+    const n = this.q('SELECT COUNT(*) AS n FROM exchange').get() as unknown as { n: number };
+    const pages = this.q('PRAGMA page_count').get() as unknown as { page_count: number };
+    const size = this.q('PRAGMA page_size').get() as unknown as { page_size: number };
+    return { exchanges: n.n, databaseBytes: pages.page_count * size.page_size };
   }
 
   // ---------- streams (WebSocket, later MQTT) ----------
 
   openStream(protocol: 'websocket' | 'mqtt', exchangeId: string | null, openedAt = Date.now(), id = newId()): string {
     this.tx(() => {
-      this.db.prepare('INSERT INTO stream (id, exchange_id, protocol, opened_at, created_by) VALUES (?, ?, ?, ?, ?)').run(id, exchangeId, protocol, openedAt, this.actor);
+      this.q('INSERT INTO stream (id, exchange_id, protocol, opened_at, created_by) VALUES (?, ?, ?, ?, ?)').run(id, exchangeId, protocol, openedAt, this.actor);
       this.recordChange('stream.open', 'stream', id, { protocol, exchangeId });
     });
     return id;
@@ -611,13 +656,13 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   closeStream(id: string, code?: number, reason?: string, closedAt = Date.now()): void {
     this.tx(() => {
-      this.db.prepare('UPDATE stream SET closed_at = ?, close_code = ?, close_reason = ? WHERE id = ?').run(closedAt, code ?? null, reason ?? null, id);
+      this.q('UPDATE stream SET closed_at = ?, close_code = ?, close_reason = ? WHERE id = ?').run(closedAt, code ?? null, reason ?? null, id);
       this.recordChange('stream.close', 'stream', id, { code, reason });
     });
   }
 
   getStreamForExchange(exchangeId: string): { id: string; protocol: string; openedAt: number; closedAt: number | null; closeCode: number | null } | undefined {
-    const r = this.db.prepare('SELECT * FROM stream WHERE exchange_id = ?').get(exchangeId) as
+    const r = this.q('SELECT * FROM stream WHERE exchange_id = ?').get(exchangeId) as
       | { id: string; protocol: string; opened_at: number; closed_at: number | null; close_code: number | null }
       | undefined;
     return r && { id: r.id, protocol: r.protocol, openedAt: r.opened_at, closedAt: r.closed_at, closeCode: r.close_code };
@@ -626,7 +671,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   getStreamMessages(streamId: string, opts: { after?: string; limit?: number } = {}): StreamMessage[] {
     const rows = this.db
       .prepare('SELECT * FROM stream_message WHERE stream_id = ? AND id > ? ORDER BY id LIMIT ?')
-      .all(streamId, opts.after ?? '', opts.limit ?? 1000) as Array<{ id: string; stream_id: string; direction: 'client' | 'server'; opcode: string; at: number; size: number; payload: Buffer; meta: string | null }>;
+      .all(streamId, opts.after ?? '', opts.limit ?? 1000) as Array<{ id: string; stream_id: string; direction: 'client' | 'server'; opcode: string; at: number; size: number; payload: Uint8Array; meta: string | null }>;
     return rows.map((r) => ({
       id: r.id,
       streamId: r.stream_id,
@@ -644,7 +689,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   addTlsFailure(f: { host?: string; clientAddr?: string; cause: string; at?: number }): void {
     const id = newId();
     this.tx(() => {
-      this.db.prepare('INSERT INTO tls_failure (id, at, host, client_addr, cause) VALUES (?, ?, ?, ?, ?)').run(id, f.at ?? Date.now(), f.host ?? null, f.clientAddr ?? null, f.cause);
+      this.q('INSERT INTO tls_failure (id, at, host, client_addr, cause) VALUES (?, ?, ?, ?, ?)').run(id, f.at ?? Date.now(), f.host ?? null, f.clientAddr ?? null, f.cause);
       this.recordChange('tls.failure', 'tls_failure', id, f);
     });
   }

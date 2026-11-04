@@ -44,7 +44,7 @@ describe.skipIf(!ready)('renderer against a real core', () => {
 
   it('filters with chips and search syntax', async () => {
     const chips = page.getByRole('group', { name: 'Quick filters' });
-    await chips.getByRole('button', { name: 'Errors' }).click();
+    await chips.getByRole('button', { name: 'Errors', exact: true }).click();
     await expect.poll(() => page.locator('.vlist .row').count()).toBe(1);
     await page.locator('#filter-input').fill('method:POST');
     await expect.poll(() => page.locator('.vlist .row').first().textContent()).toContain('/api/apply-coupon');
@@ -133,8 +133,14 @@ describe.skipIf(!ready)('renderer against a real core', () => {
     const session = page.getByTestId('cookie-row').filter({ hasText: 'session' });
     expect(await session.textContent()).toContain('base64 › json');
     expect(await session.textContent()).toContain('HttpOnly');
+    // Decode it as a framework session cookie: the payload is readable without a key.
+    await session.getByRole('button', { name: 'Decode' }).click();
+    const decoded = page.locator('.session-row');
+    await expect.poll(() => decoded.textContent()).toContain('express');
+    expect(await decoded.textContent()).toContain('nick');
     await shot('cookies');
-    await session.locator('.pill').click();
+    await session.getByRole('button', { name: 'Decode' }).click();
+    await session.locator('.pill').first().click();
     await expect.poll(() => page.getByLabel('Inspector', { exact: true }).textContent()).toContain('/api/cart');
   });
 

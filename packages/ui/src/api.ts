@@ -95,8 +95,10 @@ export type {
 
 export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage };
 export type { ScopeRule } from '@siteinquisition/core';
+export type { ErrorCause, ErrorFinding, ParsedJwt, JwtFlag, AwsRequestInfo, KeyInfo, SessionCookie, SessionFramework, SessionStructure } from '@siteinquisition/core';
+import type { ParsedJwt, AwsRequestInfo, KeyInfo, SessionCookie } from '@siteinquisition/core';
 export type { CookieOverride, CsrfBinding, CsrfFinding, EffectiveTech, HostTechReport, Signature, TechCategory, TechCheck, TechHit, TechOverride } from '@siteinquisition/core';
-import type { CookieOverride, CsrfBinding, CsrfFinding, HostTechReport, Signature, TechHit, TechOverride, EffectiveTech } from '@siteinquisition/core';
+import type { CookieOverride, CsrfBinding, CsrfFinding, ErrorFinding, HostTechReport, Signature, TechHit, TechOverride, EffectiveTech } from '@siteinquisition/core';
 
 /** A jar cookie, with why it belongs to the platform rather than the app (null when it is the app's). */
 export type JarCookieInfo = JarCookie & { infra?: string | null };
@@ -340,6 +342,19 @@ export class CoreClient {
   setCookieOverrides = (overrides: Array<Partial<CookieOverride>>) => this.call<CookieOverride[]>('tech.setCookieOverrides', { overrides });
   techRescan = () => this.call<{ exchanges: number; hosts: number }>('tech.rescan');
   techCheck = (host: string, tech: string, index: number, scheme: string) => this.call<ExchangeSummary>('tech.check', { host, tech, index, scheme });
+  errors = (id: string) => this.call<ErrorFinding[]>('errors.get', { id });
+  parseJwt = (token: string) => this.call<ParsedJwt>('jwt.parse', { token });
+  signJwt = (p: { header: Record<string, unknown>; payload: Record<string, unknown>; keyName?: string; secret?: string; alg?: string }) => this.call<string>('jwt.sign', p);
+  tryJwtSecrets = (token: string, secrets: string[]) => this.call<string | null>('jwt.trySecrets', { token, secrets });
+  keys = () => this.call<KeyInfo[]>('keys.list');
+  setKeySecret = (name: string, secret: string) => this.call<KeyInfo[]>('keys.setSecret', { name, secret });
+  setKeyPem = (name: string, pem: string, passphrase?: string) => this.call<KeyInfo[]>('keys.setPem', { name, pem, ...(passphrase ? { passphrase } : {}) });
+  deleteKey = (name: string) => this.call<KeyInfo[]>('keys.delete', { name });
+  awsRequestInfo = (id: string) => this.call<AwsRequestInfo>('aws.requestInfo', { id });
+  decodeSessionCookie = (name: string, value: string) => this.call<SessionCookie>('cookies.decodeSession', { name, value });
+  flaskTrySecrets = (value: string, secrets: string[]) => this.call<string | null>('cookies.flaskTrySecrets', { value, secrets });
+  signFlaskCookie = (p: { payload: unknown; keyName?: string; secret?: string; compress?: boolean }) => this.call<string>('cookies.flaskSign', p);
+  errorCounts = () => this.call<Array<{ kind: string; severity: string; count: number }>>('errors.counts');
   csrfBindings = () => this.call<CsrfBinding[]>('csrf.bindings');
   setCsrfBindings = (bindings: Array<Partial<CsrfBinding>>) => this.call<CsrfBinding[]>('csrf.setBindings', { bindings });
   evaluate = (url: string) => this.call<ScopeDecision>('scope.evaluate', { url });

@@ -7,10 +7,26 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./jsonpath": { "types": "./dist/jsonpath.d.ts", "default": "./dist/jsonpath.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./jsonpath": {
+      "types": "./dist/jsonpath.d.ts",
+      "default": "./dist/jsonpath.js"
+    },
+    "./protocols": {
+      "types": "./dist/protocols.d.ts",
+      "default": "./dist/protocols.js"
+    },
+    "./protobuf": {
+      "types": "./dist/protobuf.d.ts",
+      "default": "./dist/protobuf.js"
+    }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"

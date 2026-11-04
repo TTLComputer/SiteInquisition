@@ -2,7 +2,16 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
+import { createHmac } from 'node:crypto';
 import { DIST, startHarness, type Harness } from './harness';
+
+const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+function hs256(payload: object, secret: string): string {
+  const head = b64({ alg: 'HS256', typ: 'JWT' });
+  const body = b64(payload);
+  const sig = createHmac('sha256', secret).update(`${head}.${body}`).digest('base64url');
+  return `${head}.${body}.${sig}`;
+}
 
 // Technology detection, corrections and CSRF bindings, driven through the renderer.
 const SHOTS = process.env.SIQ_SCREENSHOTS;
@@ -25,6 +34,10 @@ describe.skipIf(!ready)('technologies in the renderer', () => {
   beforeAll(async () => {
     h = await startHarness();
     await h.send('/account');
+    await h.send('/search?q=lamp');
+    const token = hs256({ sub: 'u1', role: 'user', iss: 'acme' }, 'secret');
+    await h.send('/api/me', 'GET', undefined, { authorization: `Bearer ${token}` });
+    await h.send("/search?q=lamp'%20OR%201=1");
     await h.send('/api/save', 'POST', JSON.stringify({ name: 'ada' }), { 'x-csrftoken': 'tok-abcdef123456', cookie: 'csrftoken=tok-abcdef123456; AWSALB=lb-sticky-1' });
     browser = await launch();
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
@@ -75,6 +88,55 @@ describe.skipIf(!ready)('technologies in the renderer', () => {
     expect(await page.getByTestId('cookie-row').filter({ hasText: 'AWSALB' }).count()).toBe(0);
     await page.getByLabel(/Show platform cookies/).check();
     await expect.poll(() => page.getByTestId('cookie-row').filter({ hasText: 'AWSALB' }).textContent()).toContain('platform: AWS load balancer');
+  });
+
+  it('flags a request whose response leaks a SQL error, and names the cause', async () => {
+    await nav('History');
+    await page.getByRole('button', { name: 'Server errors', exact: true }).click();
+    const row = page.locator('.row', { hasText: '/search' });
+    await expect.poll(() => row.count()).toBe(1);
+    expect(await row.locator('.err-tag').textContent()).toBe('sql');
+    await row.click();
+    await page.getByRole('tab', { name: 'Request and response' }).click();
+    const finding = page.getByTestId('error-finding');
+    await expect.poll(() => finding.textContent()).toContain('MySQL syntax error');
+    expect(await finding.textContent()).toContain("likely caused by the query parameter q = lamp' OR 1=1");
+    await shot('errors');
+    await page.getByRole('button', { name: 'All', exact: true }).click();
+  });
+
+  it('decodes a JWT, flags the risks and re-signs an edited payload', async () => {
+    await nav('History');
+    await page.locator('.row', { hasText: '/api/me' }).click();
+    await page.getByRole('tab', { name: 'Tech and CSRF' }).click();
+    const jwt = page.locator('.jwt-panel');
+    await jwt.waitFor();
+    expect(await jwt.textContent()).toContain('sub: u1');
+    expect(await jwt.textContent()).toMatch(/symmetric/);
+    await jwt.getByRole('button', { name: 'Edit and re-sign' }).click();
+    const payload = page.getByLabel('JWT payload');
+    await payload.fill(JSON.stringify({ sub: 'u1', role: 'admin', iss: 'acme' }, null, 2));
+    await page.getByLabel('Signing secret').fill('secret');
+    await page.getByRole('button', { name: 'Test secret' }).click();
+    await expect.poll(() => page.locator('.toast').textContent()).toMatch(/forgeable/);
+    await page.getByRole('button', { name: 'Re-sign with secret' }).click();
+    const out = page.getByLabel('Re-signed token');
+    await expect.poll(() => out.inputValue()).toMatch(/^eyJ/);
+    // The new token really verifies and carries the edited claim.
+    const resigned = await out.inputValue();
+    expect(JSON.parse(Buffer.from(resigned.split('.')[1]!, 'base64url').toString()).role).toBe('admin');
+    expect(createHmac('sha256', 'secret').update(resigned.split('.').slice(0, 2).join('.')).digest('base64url')).toBe(resigned.split('.')[2]);
+    await shot('jwt');
+  });
+
+  it('holds a signing key for the session in Settings', async () => {
+    await nav('Settings');
+    await page.getByRole('tab', { name: 'Signing keys' }).click();
+    await page.getByLabel('Key name').fill('team-hmac');
+    await page.getByLabel('HMAC secret').fill('s3cr3t');
+    await page.getByRole('button', { name: 'Add key' }).click();
+    await expect.poll(() => h.core.tools.keys.names()).toContain('team-hmac');
+    await page.getByRole('tab', { name: 'Technologies' }).click();
   });
 
   it('lists corrections and bindings in Settings', async () => {

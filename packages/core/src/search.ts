@@ -6,6 +6,7 @@
  *   host:*.example.com path:/api/ body:token ws:true -status:304
  *   since:2026-11-04T09:00 until:1762246800000   (ISO time or epoch ms)
  *   tech:django tech:aws                          (hosts running a technology)
+ *   error:sql error:high error:any                (server errors recognized in responses)
  *
  * A leading `-` negates a filter. Quoted text is matched as a phrase.
  */
@@ -17,7 +18,7 @@ export interface CompiledQuery {
   match?: string;
 }
 
-const FILTER_KEYS = new Set(['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'body', 'header', 'state', 'flow', 'scheme', 'replayof', 'since', 'until', 'tech']);
+const FILTER_KEYS = new Set(['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'body', 'header', 'state', 'flow', 'scheme', 'replayof', 'since', 'until', 'tech', 'error']);
 
 interface Token {
   key?: string;
@@ -135,6 +136,12 @@ export function compileQuery(input: string, ctx: CompileContext = {}): CompiledQ
       case 'tech': {
         const hosts = ctx.techHosts?.(t.value.toLowerCase()) ?? [];
         add(t, hosts.length ? `e.host IN (${hosts.map(() => '?').join(', ')})` : '0', hosts);
+        break;
+      }
+      case 'error': {
+        const v = t.value.toLowerCase();
+        if (v === 'any' || v === 'true' || v === 'yes') add(t, 'EXISTS (SELECT 1 FROM exchange_error x WHERE x.exchange_id = e.id)', []);
+        else add(t, 'EXISTS (SELECT 1 FROM exchange_error x WHERE x.exchange_id = e.id AND (x.kind = ? OR x.sig = ? OR x.severity = ?))', [v, v, v]);
         break;
       }
       case 'tag':

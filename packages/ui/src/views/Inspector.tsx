@@ -5,7 +5,8 @@ import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { asText, fmtMs, fmtSize, fmtTime, hexDump, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { breakOn, mockFromExchange } from '../actions';
-import { TechPanel } from './Tech';
+import { ErrorBanner, TechPanel } from './Tech';
+import { decodeSignalR, decodeSocketIO, detectProtocol, summarizeFrame } from '@siteinquisition/codecs/protocols';
 
 type Tab = 'exchange' | 'messages' | 'tech' | 'timings' | 'notes';
 type BodyMode = 'pretty' | 'raw' | 'hex';
@@ -108,6 +109,16 @@ export function Messages({ exchangeId, protocol }: { exchangeId: string; protoco
   const isMqtt = protocol.startsWith('mqtt');
   const sel = msgs.find((m) => m.id === selected);
   const selBytes = sel ? base64ToBytes(sel.base64) : null;
+  const selText = !isMqtt && selBytes ? asText(selBytes) : null;
+  const selProto = selText ? detectProtocol(selText) : null;
+  const selDecoded = (() => {
+    if (!selText || !selProto) return null;
+    try {
+      return selProto === 'socketio' ? decodeSocketIO(selText) : decodeSignalR(selText);
+    } catch {
+      return null;
+    }
+  })();
   return (
     <div className="two-col">
       <section style={{ flex: '2 1 480px', overflow: 'auto' }}>
@@ -121,6 +132,7 @@ export function Messages({ exchangeId, protocol }: { exchangeId: string; protoco
                 <th>Time</th>
                 <th>{isMqtt ? 'Packet' : 'Opcode'}</th>
                 {isMqtt && <th>Topic</th>}
+                {!isMqtt && <th>Decoded</th>}
                 <th>Size</th>
                 <th>Preview</th>
               </tr>
@@ -129,6 +141,8 @@ export function Messages({ exchangeId, protocol }: { exchangeId: string; protoco
               {msgs.map((m) => {
                 const bytes = base64ToBytes(m.base64);
                 const meta = m.meta ?? {};
+                const frameText = isMqtt ? null : asText(bytes);
+                const summary = frameText ? summarizeFrame(frameText) : null;
                 return (
                   <tr key={m.id} aria-selected={m.id === selected} onClick={() => setSelected(m.id)} style={{ cursor: 'pointer', background: m.id === selected ? 'var(--bg-selected)' : undefined }}>
                     <td className={m.direction === 'client' ? 'dir-client' : 'dir-server'}>{m.direction === 'client' ? '↑ client' : '↓ server'}</td>
@@ -151,6 +165,7 @@ export function Messages({ exchangeId, protocol }: { exchangeId: string; protoco
                         {meta.retain === true ? <span className="faint"> retain</span> : null}
                       </td>
                     )}
+                    {!isMqtt && <td>{summary ? <span className="badge" title="Decoded realtime frame">{summary}</span> : <span className="faint" />}</td>}
                     <td className="muted">{fmtSize(m.size)}</td>
                     <td className="preview">{asText(bytes) ?? `<${bytes.length} bytes binary>`}</td>
                   </tr>
@@ -175,6 +190,14 @@ export function Messages({ exchangeId, protocol }: { exchangeId: string; protoco
             </>
           )}
         </div>
+        {selDecoded && (
+          <details open className="decoded-frame">
+            <summary>
+              Decoded <span className="badge">{selProto === 'socketio' ? 'Socket.IO' : 'SignalR'}</span>
+            </summary>
+            <pre className="raw">{JSON.stringify(selDecoded, null, 2)}</pre>
+          </details>
+        )}
         <pre className="raw">{selBytes ? (asText(selBytes) !== null ? prettyBody(asText(selBytes)!, null) : hexDump(selBytes)) : <span className="faint">Select a message.</span>}</pre>
         {sel?.meta && Object.keys(sel.meta).length > 0 && (
           <dl className="kv">
@@ -482,6 +505,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
         ))}
       </div>
       <div className="insp-body">
+        {tab === 'exchange' && <ErrorBanner ex={ex} />}
         {tab === 'exchange' && <ApiStrip ex={ex} onNotes={() => setTab('notes')} />}
         {tab === 'exchange' && (
           <div className="two-col">

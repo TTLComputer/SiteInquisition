@@ -8,7 +8,7 @@
  * captured. Probes under `checks` are sent only when the user clicks them.
  */
 
-export type TechCategory = 'cloud' | 'cdn' | 'hosting' | 'server' | 'language' | 'framework' | 'frontend' | 'cms' | 'auth' | 'protocol' | 'security';
+export type TechCategory = 'cloud' | 'cdn' | 'hosting' | 'server' | 'language' | 'framework' | 'frontend' | 'cms' | 'database' | 'auth' | 'protocol' | 'security';
 
 export type MatchIn =
   /** A response header; `name` is the header (glob), `match` a regex on its value. */
@@ -368,6 +368,14 @@ const LIST: Signature[] = [
     checks: [{ text: 'The REST API lists users at /wp-json/wp/v2/users unless restricted.', probe: { method: 'GET', path: '/wp-json/wp/v2/users' } }],
   },
   { id: 'drupal', name: 'Drupal', category: 'cms', implies: ['php'], matchers: [h('x-generator', '^Drupal', 0.95), h('x-drupal-cache', undefined, 0.95), h('x-drupal-dynamic-cache', undefined, 0.95)] },
+
+  // ---------- Databases (seen through the errors they leak) ----------
+  { id: 'mysql', name: 'MySQL or MariaDB', category: 'database', matchers: [] },
+  { id: 'postgres', name: 'PostgreSQL', category: 'database', matchers: [] },
+  { id: 'mssql', name: 'Microsoft SQL Server', category: 'database', matchers: [] },
+  { id: 'oracle', name: 'Oracle Database', category: 'database', matchers: [] },
+  { id: 'sqlite', name: 'SQLite', category: 'database', matchers: [] },
+  { id: 'mongodb', name: 'MongoDB', category: 'database', matchers: [] },
 
   // ---------- Auth ----------
   { id: 'jwt', name: 'JWT bearer tokens', category: 'auth', matchers: [rh('authorization', '^Bearer\\s+eyJ[\\w-]*\\.[\\w-]*\\.[\\w-]*$', 0.95)] },

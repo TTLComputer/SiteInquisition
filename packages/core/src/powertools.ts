@@ -24,6 +24,11 @@ import { Sender, type AwsProfile, type Macro, type SendOptions, type SendRequest
 import { parseSigV4, type AwsCredentials } from './sigv4.js';
 import type { Change, HeaderList } from './store.js';
 import { resolveTokens } from './tokens.js';
+import { ErrorService } from './errors.js';
+import { awsRequestInfo, parsePresignedUrl } from './awsinfo.js';
+import { EXAMPLE_SECRETS, parseJwt, signJwt, tryHmacSecrets, verifyJwt, type SigningKey } from './jwt.js';
+import { SessionKeyStore } from './keys.js';
+import { decodeSessionCookie, signFlaskCookie, tryFlaskSecrets, verifyFlaskCookie } from './sessioncookies.js';
 import { TechService } from './tech.js';
 import { Vars } from './vars.js';
 import { WsReplays } from './wsreplay.js';
@@ -38,6 +43,7 @@ import { WsReplays } from './wsreplay.js';
 export class PowerTools {
   readonly vars: Vars;
   readonly tech: TechService;
+  readonly errors: ErrorService;
   readonly scripts: ScriptEngine;
   readonly intercept: Intercept;
   readonly sender: Sender;
@@ -48,16 +54,26 @@ export class PowerTools {
   readonly live = new EventEmitter<{ change: [Change] }>();
   private hits = new Map<string, number>();
   readonly awsKeys = new Map<string, AwsCredentials>();
+  /** Session-only signing keys; replaced by the real key store when it lands. */
+  readonly keys = new SessionKeyStore();
 
   constructor(private readonly core: Core) {
     const store = core.store;
     this.vars = new Vars(store);
-    this.tech = new TechService(store, this.vars);
-    // Projects recorded before detection existed get scanned once, in the background.
-    if (!store.hostTech().length && store.stats().exchanges > 0) {
+    this.errors = new ErrorService(store);
+    this.tech = new TechService(store, this.vars, this.errors);
+    // Projects recorded before detection (or a newer set of detections) existed get scanned once, in the background.
+    // Bump SCAN_VERSION when a release adds detections that old traffic should get.
+    const SCAN_VERSION = 2;
+    if ((store.getMeta<number>('techScanVersion') ?? 0) >= SCAN_VERSION) {
+      // up to date
+    } else if (store.stats().exchanges === 0) store.setMeta('techScanVersion', SCAN_VERSION);
+    else {
       setImmediate(() => {
         try {
-          if (store.db.isOpen && !store.hostTech().length) this.tech.rescan(2000);
+          if (!store.db.isOpen) return;
+          this.tech.rescan(2000);
+          store.setMeta('techScanVersion', SCAN_VERSION);
         } catch {
           // the project may have closed in the meantime
         }
@@ -512,6 +528,15 @@ export class PowerTools {
       cookies: () => this.tech.annotateJar(),
       tech: (host?: string) => (host ? this.tech.hostReport(String(host)) : this.tech.allHosts()),
       csrf: (id: string) => this.tech.csrfFindings(String(id)),
+      errors: (id: string) => this.errors.findings(String(id)),
+      jwt: (token: string) => parseJwt(String(token)),
+      signJwt: (header: Record<string, unknown>, payload: Record<string, unknown>, key: SigningKey, alg?: string) => signJwt(header, payload, key, alg),
+      sessionCookie: (name: string, value: string) => decodeSessionCookie(String(name), String(value)),
+      aws: (id: string) => {
+        const ex = this.core.store.getExchange(String(id));
+        if (!ex) throw new Error(`no exchange ${id}`);
+        return awsRequestInfo({ url: ex.url, headers: ex.requestHeaders });
+      },
       tag: (id: string, tags: string[]) => store.tagExchange(String(id), tags.map(String)),
       notes: (id: string, notes: string) => store.setNotes(String(id), String(notes)),
       scope: () => this.core.scope.get(),
@@ -597,6 +622,63 @@ export class PowerTools {
     return { mqtt: this.core.mqtt.flatMap((m) => m.liveSessions()), ws: [...this.ws.openIds(), ...proxied], wsProxied: proxied };
   }
 
+  /** The bearer JWT on an exchange's Authorization header, else throw. */
+  private bearerOf(id: string): string {
+    const ex = this.core.store.getExchange(id);
+    const auth = ex?.requestHeaders.find(([k]) => k.toLowerCase() === 'authorization')?.[1] ?? '';
+    const m = /^Bearer\s+(\S+)/i.exec(auth);
+    if (!m) throw new Error('no bearer token on this request');
+    return m[1]!;
+  }
+
+  // ---------- JWT and signing keys ----------
+
+  /** Re-sign a token after the user edited its header or payload, with a key they hold. */
+  resignJwt(header: Record<string, unknown>, payload: Record<string, unknown>, keyRef: { keyName?: string; secret?: string }, alg?: string): string {
+    let key: SigningKey;
+    if (keyRef.secret !== undefined) key = { kind: 'hmac', secret: keyRef.secret };
+    else if (keyRef.keyName) {
+      const resolved = this.keys.resolve(keyRef.keyName);
+      if (!resolved) throw new Error(`no signing key "${keyRef.keyName}"`);
+      key = resolved;
+    } else throw new Error('a secret or a key name is required');
+    return signJwt(header, payload, key, alg);
+  }
+
+  /** Confirm a token is signed with one of the given secrets (plus a few framework placeholders). */
+  jwtSecret(token: string, extra: string[] = []): string | null {
+    return tryHmacSecrets(token, [...extra, ...this.hmacSecrets(), ...EXAMPLE_SECRETS]);
+  }
+
+  // ---------- Session cookies ----------
+
+  /** The HMAC secrets held in the key store, for confirming a signed cookie or token. */
+  private hmacSecrets(): string[] {
+    return this.keys
+      .names()
+      .map((n) => this.keys.resolve(n))
+      .filter((k): k is { kind: 'hmac'; secret: string | Buffer } => k?.kind === 'hmac')
+      .map((k) => (typeof k.secret === 'string' ? k.secret : k.secret.toString('utf8')));
+  }
+
+  /** Confirm a Flask session cookie is signed with a held or supplied secret. */
+  flaskSecret(value: string, extra: string[] = []): string | null {
+    return tryFlaskSecrets(value, [...extra, ...this.hmacSecrets(), ...EXAMPLE_SECRETS]);
+  }
+
+  /** Re-sign a Flask session cookie after the user edited it, with a key they hold. */
+  resignFlaskCookie(payload: unknown, keyRef: { keyName?: string; secret?: string }, opts: { compress?: boolean } = {}): string {
+    let secret: string;
+    if (keyRef.secret !== undefined) secret = keyRef.secret;
+    else if (keyRef.keyName) {
+      const resolved = this.keys.resolve(keyRef.keyName);
+      if (!resolved) throw new Error(`no signing key "${keyRef.keyName}"`);
+      if (resolved.kind !== 'hmac') throw new Error('a Flask cookie needs an HMAC secret, not a PEM key');
+      secret = typeof resolved.secret === 'string' ? resolved.secret : resolved.secret.toString('utf8');
+    } else throw new Error('a secret or a key name is required');
+    return signFlaskCookie(payload, secret, opts);
+  }
+
   // ---------- MCP tools ----------
   private mcpTools(): ToolDef[] {
     const store = this.core.store;
@@ -611,7 +693,7 @@ export class PowerTools {
       {
         name: 'search_traffic',
         description:
-          'Search recorded exchanges. Query syntax: host:*.example.com method:POST status:>=400 path:/api/ url:token= body:"text" header:"x-api-key" source:browser|proxy|replay ws:true tag:x since:<ISO or ms> "free text"; prefix a filter with - to negate. Newest first.',
+          'Search recorded exchanges. Query syntax: host:*.example.com method:POST status:>=400 path:/api/ url:token= body:"text" header:"x-api-key" source:browser|proxy|replay ws:true tag:x tech:django error:sql|high|any since:<ISO or ms> "free text"; prefix a filter with - to negate. Newest first.',
         inputSchema: { type: 'object', properties: { query: str, limit: { type: 'number', description: 'Default 50, max 500' } } },
         write: false,
         run: (a) => store.search(String(a.query ?? ''), { limit: Math.min(Number(a.limit ?? 50), 500) }).map((e) => ({ id: e.id, method: e.method, url: e.url, status: e.status, state: e.state, source: e.source, startedAt: new Date(e.startedAt).toISOString(), durationMs: e.durationMs, tags: e.tags })),
@@ -777,6 +859,49 @@ export class PowerTools {
         inputSchema: { type: 'object', properties: { host: str } },
         write: false,
         run: (a) => (a.host ? this.tech.hostReport(String(a.host)) : this.tech.allHosts()),
+      },
+      {
+        name: 'find_errors',
+        description:
+          'Server errors recognized in responses (SQL and NoSQL errors, template, XML, command and file errors, stack traces, framework debug pages), each with the request parts that most likely caused it and why. Pass an exchange id for one exchange, or a History query (default "error:any") to list them.',
+        inputSchema: { type: 'object', properties: { id: str, query: str, limit: { type: 'number' } } },
+        write: false,
+        run: (a) => {
+          if (a.id) return this.errors.findings(String(a.id));
+          const q = String(a.query ?? '') || 'error:any';
+          return store.search(q.includes('error:') ? q : `${q} error:any`, { limit: Math.min(Number(a.limit ?? 50), 200) }).map((e) => ({
+            id: e.id,
+            method: e.method,
+            url: e.url,
+            status: e.status,
+            errors: this.errors.findings(e.id).map((f) => ({ name: f.name, kind: f.kind, severity: f.severity, excerpt: f.excerpt, causes: f.causes.map((c) => ({ in: c.in, name: c.name, value: c.value, confidence: c.confidence, reasons: c.reasons })) })),
+          }));
+        },
+      },
+      {
+        name: 'decode_jwt',
+        description: 'Decode a JWT (header, payload, claims) and list what is risky about it (alg none, symmetric alg, jku/x5u/jwk, no expiry, expired). Pass a token, or an exchange id to read the Authorization bearer token.',
+        inputSchema: { type: 'object', properties: { token: str, id: str } },
+        write: false,
+        run: (a) => parseJwt(a.token ? String(a.token) : this.bearerOf(String(a.id))),
+      },
+      {
+        name: 'decode_session_cookie',
+        description: 'Decode a framework session cookie (Flask, Django, Rails, Laravel, Express): name the framework, split the parts, and show the payload when it is signed-but-readable. Pass the cookie name and value.',
+        inputSchema: { type: 'object', properties: { name: str, value: str }, required: ['name', 'value'] },
+        write: false,
+        run: (a) => decodeSessionCookie(String(a.name), String(a.value)),
+      },
+      {
+        name: 'aws_request_info',
+        description: 'AWS-specific details of a request: a presigned URL and when it expires, the service operation an X-Amz-Target call makes, the S3 bucket and key, and API Gateway api id and stage.',
+        inputSchema: { type: 'object', properties: { id: str }, required: ['id'] },
+        write: false,
+        run: (a) => {
+          const ex = store.getExchange(String(a.id));
+          if (!ex) throw new Error(`no exchange ${a.id}`);
+          return awsRequestInfo({ url: ex.url, headers: ex.requestHeaders });
+        },
       },
       {
         name: 'csrf_tokens',

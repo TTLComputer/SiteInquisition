@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import * as net from 'node:net';
 import * as tls from 'node:tls';
-import mqttPacket from 'mqtt-packet';
+import { MqttParser, encodePacket, type ConnackPacket, type ConnectPacket, type Packet, type PublishPacket } from './mqttcodec.js';
 import { getCA } from 'mockttp/dist/util/certificates';
 import type { CertificateAuthority } from './ca.js';
 import type { Scope } from './scope.js';
@@ -35,8 +35,6 @@ export interface MqttListenerConfig {
 
 const LOOPBACK = /^(127\.|::1$|::ffff:127\.)/;
 
-type Packet = mqttPacket.Packet;
-
 /** The parts of a packet worth showing and searching, minus the payload. */
 export function packetMeta(p: Packet): Record<string, unknown> {
   const { cmd: _cmd, length: _length, ...rest } = p as Packet & { payload?: unknown; password?: unknown };
@@ -54,15 +52,14 @@ export function packetMeta(p: Packet): Record<string, unknown> {
 
 const payloadOf = (p: Packet): Uint8Array => {
   if (p.cmd !== 'publish') return new Uint8Array();
-  const payload = (p as mqttPacket.IPublishPacket).payload;
-  return typeof payload === 'string' ? Buffer.from(payload) : new Uint8Array(payload);
+  return new Uint8Array((p as PublishPacket).payload);
 };
 
 export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] }> {
   private server?: net.Server;
   private sockets = new Set<net.Socket>();
   /** Live sessions by exchange id, for publishing into them. */
-  private sessions = new Map<string, { inject(direction: 'client' | 'server', packet: mqttPacket.IPublishPacket): void }>();
+  private sessions = new Map<string, { inject(direction: 'client' | 'server', packet: PublishPacket): void }>();
   private nextPacketId = 65_000;
 
   constructor(
@@ -178,8 +175,8 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
 
     // Parse copies of both directions. Parsing problems stop recording for this
     // session but never touch the relayed bytes.
-    const fromClient = mqttPacket.parser();
-    const fromBroker = mqttPacket.parser();
+    const fromClient = new MqttParser();
+    const fromBroker = new MqttParser();
     const startedAt = Date.now();
     const clientAddr = client.remoteAddress ?? null;
 
@@ -187,9 +184,9 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
       this.guard((p: Packet) => {
         if (!recording) return;
         if (direction === 'client' && p.cmd === 'connect' && !exchangeId) {
-          const c = p as mqttPacket.IConnectPacket;
+          const c = p as ConnectPacket;
           const version = c.protocolVersion ?? 4;
-          (fromBroker as unknown as { settings: { protocolVersion: number } }).settings.protocolVersion = version;
+          fromBroker.protocolVersion = version;
           const headers: HeaderList = [
             ['client-id', c.clientId],
             ['protocol', `${c.protocolId ?? 'MQTT'} ${version}`],
@@ -211,15 +208,14 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
           exchangeId = ex.id;
           streamId = this.store.openStream('mqtt', ex.id, startedAt);
           const sessionId = ex.id;
-          const writeWhenIdle = (socket: net.Socket, parser: mqttPacket.Parser, bytes: Buffer, tries = 0) => {
+          const writeWhenIdle = (socket: net.Socket, parser: MqttParser, bytes: Buffer, tries = 0) => {
             // Only write between whole packets: a half-received packet in this direction means wait.
-            const pending = (parser as unknown as { _list?: { length: number } })._list?.length ?? 0;
-            if (pending && tries < 50) return void setTimeout(() => writeWhenIdle(socket, parser, bytes, tries + 1), 10);
+            if (parser.pending && tries < 50) return void setTimeout(() => writeWhenIdle(socket, parser, bytes, tries + 1), 10);
             socket.write(bytes);
           };
           this.sessions.set(sessionId, {
             inject: (direction, packet) => {
-              const bytes = mqttPacket.generate(packet, { protocolVersion: version });
+              const bytes = encodePacket(packet, version);
               // "server" means sent by us to the broker as if the device sent it; "client" means to the device as if from the broker.
               if (direction === 'server') writeWhenIdle(upstream, fromClient, bytes);
               else writeWhenIdle(client, fromBroker, bytes);
@@ -233,7 +229,7 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
         this.store.addStreamMessage({ streamId, direction, opcode: p.cmd, at: Date.now(), payload: payloadOf(p), meta: packetMeta(p) });
         if (direction === 'server' && p.cmd === 'connack' && exchangeId && !established) {
           established = true;
-          const code = (p as mqttPacket.IConnackPacket).reasonCode ?? (p as mqttPacket.IConnackPacket).returnCode ?? 0;
+          const code = (p as ConnackPacket).reasonCode ?? (p as ConnackPacket).returnCode ?? 0;
           if (code === 0) this.store.markEstablished(exchangeId, { responseHeaders: Date.now() - startedAt });
           else this.store.failExchange(exchangeId, 'error', `CONNACK refused with code ${code}`);
         }
@@ -243,12 +239,21 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
       recording = false;
       this.emit('error', new Error(`mqtt parse error, recording stopped for this session: ${err.message}`));
     };
-    fromClient.on('packet', record('client'));
-    fromBroker.on('packet', record('server'));
-    fromClient.on('error', stopRecording);
-    fromBroker.on('error', stopRecording);
-    client.on('data', (chunk: Buffer) => recording && fromClient.parse(chunk));
-    upstream.on('data', (chunk: Buffer) => recording && fromBroker.parse(chunk));
+    const feed = (parser: MqttParser, direction: 'client' | 'server') => {
+      const onPacket = record(direction);
+      return (chunk: Buffer) => {
+        if (!recording) return;
+        let packets: Packet[];
+        try {
+          packets = parser.parse(chunk);
+        } catch (err) {
+          return stopRecording(err instanceof Error ? err : new Error(String(err)));
+        }
+        for (const p of packets) onPacket(p);
+      };
+    };
+    client.on('data', feed(fromClient, 'client'));
+    upstream.on('data', feed(fromBroker, 'server'));
     client.on(
       'close',
       this.guard(() => {
@@ -272,7 +277,7 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
     const session = this.sessions.get(exchangeId);
     if (!session) return false;
     const qos = msg.qos === 1 ? 1 : 0;
-    const packet: mqttPacket.IPublishPacket = { cmd: 'publish', topic: msg.topic, payload: Buffer.from(msg.payload), qos, retain: !!msg.retain, dup: false };
+    const packet: PublishPacket = { cmd: 'publish', topic: msg.topic, payload: Buffer.from(msg.payload), qos, retain: !!msg.retain, dup: false };
     if (qos) {
       packet.messageId = this.nextPacketId++;
       if (this.nextPacketId > 65_535) this.nextPacketId = 65_000;

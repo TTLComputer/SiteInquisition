@@ -8,6 +8,8 @@ import type { AddressInfo } from 'node:net';
 import { OPEN, serveWebSockets, type WsConnection as WebSocket } from './websocket.js';
 import { PRESETS, buildPlan, validatePlan } from './wsplan.js';
 import { cookieJar } from './cookies.js';
+import { awsRequestInfo } from './awsinfo.js';
+import { parseJwt as parseJwtApi } from './jwt.js';
 import { exchangeCookies } from './tech.js';
 import { readBrowserHttp3Hosts, writeBrowserHttp3Hosts, type Core } from './core.js';
 import { sendReplay } from './replay.js';
@@ -211,6 +213,18 @@ export class CoreApiServer {
         const t = core.tools.tech;
         const cookies = exchangeCookies(ex.requestHeaders, ex.responseHeaders).map((c) => ({ ...c, infra: t.infraReason(c.name, ex.host) }));
         return { hits: t.detectExchange(id), host: t.hostReport(ex.host), csrf: t.csrfFindings(id), cookies };
+      },
+      'jwt.parse': (p) => core.tools.keys && parseJwtApi(str(p, 'token')!),
+      'jwt.sign': (p) => core.tools.resignJwt(p.header as Record<string, unknown>, p.payload as Record<string, unknown>, { keyName: str(p, 'keyName', false), secret: str(p, 'secret', false) }, str(p, 'alg', false)),
+      'jwt.trySecrets': (p) => core.tools.jwtSecret(str(p, 'token')!, (p.secrets as string[]) ?? []),
+      'keys.list': () => core.tools.keys.list(),
+      'keys.setSecret': (p) => (core.tools.keys.setSecret(str(p, 'name')!, str(p, 'secret')!), core.tools.keys.list()),
+      'keys.setPem': (p) => (core.tools.keys.setPem(str(p, 'name')!, str(p, 'pem')!, str(p, 'passphrase', false)), core.tools.keys.list()),
+      'keys.delete': (p) => (core.tools.keys.delete(str(p, 'name')!), core.tools.keys.list()),
+      'aws.requestInfo': (p) => {
+        const ex = store.getExchange(str(p, 'id')!);
+        if (!ex) throw new RpcError(404, 'exchange not found');
+        return awsRequestInfo({ url: ex.url, headers: ex.requestHeaders });
       },
       'errors.get': (p) => core.tools.errors.findings(str(p, 'id')!),
       'errors.counts': () => store.errorCounts(),

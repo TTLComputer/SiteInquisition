@@ -16,6 +16,9 @@ import { parseSigV4, type AwsCredentials } from './sigv4.js';
 import type { Change, HeaderList } from './store.js';
 import { resolveTokens } from './tokens.js';
 import { ErrorService } from './errors.js';
+import { awsRequestInfo, parsePresignedUrl } from './awsinfo.js';
+import { EXAMPLE_SECRETS, parseJwt, signJwt, tryHmacSecrets, verifyJwt, type SigningKey } from './jwt.js';
+import { SessionKeyStore } from './keys.js';
 import { TechService } from './tech.js';
 import { Vars } from './vars.js';
 import { WsReplays } from './wsreplay.js';
@@ -40,6 +43,8 @@ export class PowerTools {
   readonly live = new EventEmitter<{ change: [Change] }>();
   private hits = new Map<string, number>();
   readonly awsKeys = new Map<string, AwsCredentials>();
+  /** Session-only signing keys; replaced by the real key store when it lands. */
+  readonly keys = new SessionKeyStore();
 
   constructor(private readonly core: Core) {
     const store = core.store;
@@ -305,6 +310,13 @@ export class PowerTools {
       tech: (host?: string) => (host ? this.tech.hostReport(String(host)) : this.tech.allHosts()),
       csrf: (id: string) => this.tech.csrfFindings(String(id)),
       errors: (id: string) => this.errors.findings(String(id)),
+      jwt: (token: string) => parseJwt(String(token)),
+      signJwt: (header: Record<string, unknown>, payload: Record<string, unknown>, key: SigningKey, alg?: string) => signJwt(header, payload, key, alg),
+      aws: (id: string) => {
+        const ex = this.core.store.getExchange(String(id));
+        if (!ex) throw new Error(`no exchange ${id}`);
+        return awsRequestInfo({ url: ex.url, headers: ex.requestHeaders });
+      },
       tag: (id: string, tags: string[]) => store.tagExchange(String(id), tags.map(String)),
       notes: (id: string, notes: string) => store.setNotes(String(id), String(notes)),
       scope: () => this.core.scope.get(),
@@ -356,6 +368,34 @@ export class PowerTools {
   liveStreams(): { mqtt: string[]; ws: string[]; wsProxied: string[] } {
     const proxied = [...this.core.proxy.liveWebSockets(), ...(this.core.browserProxy?.liveWebSockets() ?? [])];
     return { mqtt: this.core.mqtt.flatMap((m) => m.liveSessions()), ws: [...this.ws.openIds(), ...proxied], wsProxied: proxied };
+  }
+
+  /** The bearer JWT on an exchange's Authorization header, else throw. */
+  private bearerOf(id: string): string {
+    const ex = this.core.store.getExchange(id);
+    const auth = ex?.requestHeaders.find(([k]) => k.toLowerCase() === 'authorization')?.[1] ?? '';
+    const m = /^Bearer\s+(\S+)/i.exec(auth);
+    if (!m) throw new Error('no bearer token on this request');
+    return m[1]!;
+  }
+
+  // ---------- JWT and signing keys ----------
+
+  /** Re-sign a token after the user edited its header or payload, with a key they hold. */
+  resignJwt(header: Record<string, unknown>, payload: Record<string, unknown>, keyRef: { keyName?: string; secret?: string }, alg?: string): string {
+    let key: SigningKey;
+    if (keyRef.secret !== undefined) key = { kind: 'hmac', secret: keyRef.secret };
+    else if (keyRef.keyName) {
+      const resolved = this.keys.resolve(keyRef.keyName);
+      if (!resolved) throw new Error(`no signing key "${keyRef.keyName}"`);
+      key = resolved;
+    } else throw new Error('a secret or a key name is required');
+    return signJwt(header, payload, key, alg);
+  }
+
+  /** Confirm a token is signed with one of the given secrets (plus a few framework placeholders). */
+  jwtSecret(token: string, extra: string[] = []): string | null {
+    return tryHmacSecrets(token, [...extra, ...EXAMPLE_SECRETS]);
   }
 
   // ---------- MCP tools ----------
@@ -444,6 +484,24 @@ export class PowerTools {
             status: e.status,
             errors: this.errors.findings(e.id).map((f) => ({ name: f.name, kind: f.kind, severity: f.severity, excerpt: f.excerpt, causes: f.causes.map((c) => ({ in: c.in, name: c.name, value: c.value, confidence: c.confidence, reasons: c.reasons })) })),
           }));
+        },
+      },
+      {
+        name: 'decode_jwt',
+        description: 'Decode a JWT (header, payload, claims) and list what is risky about it (alg none, symmetric alg, jku/x5u/jwk, no expiry, expired). Pass a token, or an exchange id to read the Authorization bearer token.',
+        inputSchema: { type: 'object', properties: { token: str, id: str } },
+        write: false,
+        run: (a) => parseJwt(a.token ? String(a.token) : this.bearerOf(String(a.id))),
+      },
+      {
+        name: 'aws_request_info',
+        description: 'AWS-specific details of a request: a presigned URL and when it expires, the service operation an X-Amz-Target call makes, the S3 bucket and key, and API Gateway api id and stage.',
+        inputSchema: { type: 'object', properties: { id: str }, required: ['id'] },
+        write: false,
+        run: (a) => {
+          const ex = store.getExchange(String(a.id));
+          if (!ex) throw new Error(`no exchange ${a.id}`);
+          return awsRequestInfo({ url: ex.url, headers: ex.requestHeaders });
         },
       },
       {

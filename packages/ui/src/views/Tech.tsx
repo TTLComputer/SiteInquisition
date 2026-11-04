@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { ErrorFinding, CsrfBinding, CsrfFinding, EffectiveTech, ExchangeDetail, ExchangeTech, Signature, TechOverride } from '../api';
+import type { AwsRequestInfo, ErrorFinding, CsrfBinding, CsrfFinding, EffectiveTech, ExchangeDetail, ExchangeTech, JwtFlag, KeyInfo, ParsedJwt, Signature, TechOverride } from '../api';
 import { useApp } from '../state';
 
 const STATUS_LABEL: Record<EffectiveTech['status'], string> = { detected: 'detected', possible: 'possible', pinned: 'pinned by you', implied: 'implied' };
@@ -274,6 +274,9 @@ export function TechPanel({ ex }: { ex: ExchangeDetail }) {
           </ul>
         )}
       </section>
+
+      <JwtPanel ex={ex} />
+      <AwsPanel ex={ex} />
 
       {data.hits.length > 0 && (
         <section>
@@ -581,5 +584,253 @@ export function ErrorBanner({ ex }: { ex: ExchangeDetail }) {
         );
       })}
     </div>
+  );
+}
+
+const bearerOf = (ex: ExchangeDetail): { token: string; where: string } | null => {
+  const auth = ex.requestHeaders.find(([k]) => k.toLowerCase() === 'authorization')?.[1];
+  const m = auth && /^Bearer\s+(eyJ[\w-]*\.eyJ[\w-]*\.[\w-]*)$/i.exec(auth);
+  if (m) return { token: m[1]!, where: 'Authorization: Bearer' };
+  for (const [k, v] of ex.requestHeaders) {
+    const t = /(eyJ[\w-]*\.eyJ[\w-]*\.[\w-]*)/.exec(v);
+    if (t && k.toLowerCase() !== 'cookie') return { token: t[1]!, where: `header ${k}` };
+  }
+  return null;
+};
+
+const FLAG_CLASS: Record<JwtFlag['severity'], string> = { high: 'badge sev-high', medium: 'badge sev-medium', low: 'badge', info: 'badge' };
+const fmtClaimTime = (ms?: number) => (ms === undefined ? '—' : new Date(ms).toLocaleString());
+
+/** JWT bearer token: claims, risks, expiry, and re-signing with a held key. */
+export function JwtPanel({ ex }: { ex: ExchangeDetail }) {
+  const { client, notify } = useApp();
+  const found = useMemo(() => bearerOf(ex), [ex.id, ex.requestHeaders]);
+  const [jwt, setJwt] = useState<ParsedJwt | null>(null);
+  const [keys, setKeys] = useState<KeyInfo[]>([]);
+  const [open, setOpen] = useState(false);
+  const [secret, setSecret] = useState('');
+  const [resigned, setResigned] = useState<string | null>(null);
+  const [edited, setEdited] = useState('');
+
+  useEffect(() => {
+    setJwt(null);
+    setResigned(null);
+    if (!found) return;
+    client.parseJwt(found.token).then((p) => {
+      setJwt(p);
+      setEdited(JSON.stringify(p.payload, null, 2));
+    }, () => setJwt(null));
+    client.keys().then(setKeys, () => undefined);
+  }, [client, found?.token]);
+
+  if (!found) return null;
+  const now = Date.now();
+
+  const resign = async (keyName?: string) => {
+    if (!jwt) return;
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(edited) as Record<string, unknown>;
+    } catch (e) {
+      notify(`Payload is not valid JSON: ${(e as Error).message}`);
+      return;
+    }
+    try {
+      const token = await client.signJwt({ header: jwt.header, payload, ...(keyName ? { keyName } : { secret }), alg: String(jwt.header.alg) });
+      setResigned(token);
+      notify('Token re-signed. Copy it into Replay.');
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  const checkSecret = async () => {
+    if (!secret) return;
+    try {
+      const hit = await client.tryJwtSecrets(found.token, [secret]);
+      notify(hit ? `The token verifies with "${hit}" — it is forgeable.` : 'That secret does not verify this token.');
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  return (
+    <section>
+      <div className="sec-head">
+        <b style={{ color: 'var(--text)' }}>JWT</b>
+        <span className="faint">{found.where}</span>
+      </div>
+      {!jwt ? (
+        <div className="faint tech-note">Reading token…</div>
+      ) : (
+        <div className="jwt-panel">
+          <div className="tech-line">
+            <span className="badge">{String(jwt.header.alg)}</span>
+            {jwt.subject && <span className="mono">sub: {jwt.subject}</span>}
+            {jwt.issuer && <span className="mono">iss: {jwt.issuer}</span>}
+            <span className={jwt.expired ? 'expired' : 'muted'}>exp: {fmtClaimTime(jwt.expiresAt)}{jwt.expired ? ' (expired)' : ''}</span>
+          </div>
+          {jwt.flags.map((f) => (
+            <div key={f.id} className="tech-check">
+              <span className={FLAG_CLASS[f.severity]}>{f.severity}</span>
+              <span className="muted">{f.text}</span>
+            </div>
+          ))}
+          <div className="tech-check">
+            <button className="btn small" onClick={() => setOpen((o) => !o)}>
+              {open ? 'Hide' : 'Edit and re-sign'}
+            </button>
+          </div>
+          {open && (
+            <div className="jwt-edit">
+              <label className="label">Payload</label>
+              <textarea className="input mono" style={{ height: 140, padding: 8, width: '100%' }} value={edited} onChange={(e) => setEdited(e.target.value)} aria-label="JWT payload" />
+              <div className="tech-line">
+                <input className="input mono" style={{ flex: '1 1 200px' }} placeholder="HMAC secret (for HS*)" value={secret} onChange={(e) => setSecret(e.target.value)} aria-label="Signing secret" />
+                <button className="btn small" onClick={() => void checkSecret()} disabled={!secret}>
+                  Test secret
+                </button>
+                <button className="btn small primary" onClick={() => void resign()} disabled={!secret && !String(jwt.header.alg).match(/^none$/i)}>
+                  Re-sign with secret
+                </button>
+              </div>
+              {keys.length > 0 && (
+                <div className="tech-line">
+                  <span className="faint">or a stored key:</span>
+                  {keys.map((k) => (
+                    <button key={k.name} className="btn small" onClick={() => void resign(k.name)}>
+                      {k.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {resigned && (
+                <div className="jwt-out">
+                  <label className="label">Re-signed token</label>
+                  <textarea className="input mono" style={{ height: 70, padding: 8, width: '100%' }} readOnly value={resigned} aria-label="Re-signed token" onFocus={(e) => e.currentTarget.select()} />
+                  <button className="btn small" onClick={() => navigator.clipboard.writeText(resigned).then(() => notify('Copied'), () => undefined)}>
+                    Copy
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+const fmtLeft = (ms: number) => {
+  const s = Math.round(ms / 1000);
+  if (s < 0) return 'expired';
+  if (s < 90) return `${s}s`;
+  if (s < 5400) return `${Math.round(s / 60)} min`;
+  return `${Math.round(s / 3600)} h`;
+};
+
+/** AWS-specific details of a request. */
+export function AwsPanel({ ex }: { ex: ExchangeDetail }) {
+  const { client } = useApp();
+  const [info, setInfo] = useState<AwsRequestInfo | null>(null);
+  useEffect(() => {
+    client.awsRequestInfo(ex.id).then(setInfo, () => setInfo(null));
+  }, [client, ex.id]);
+  if (!info || (!info.presigned && !info.amzTarget && !info.s3 && !info.apiGateway)) return null;
+  const now = Date.now();
+  return (
+    <section>
+      <div className="sec-head">
+        <b style={{ color: 'var(--text)' }}>AWS</b>
+      </div>
+      <dl className="kv">
+        {info.amzTarget && (
+          <>
+            <dt>Operation</dt>
+            <dd>{info.amzTarget.operation} <span className="faint">({info.amzTarget.service})</span></dd>
+          </>
+        )}
+        {info.s3 && (
+          <>
+            <dt>S3</dt>
+            <dd>{info.s3.bucket}/{info.s3.key} <span className="faint">({info.s3.style})</span></dd>
+          </>
+        )}
+        {info.apiGateway && (
+          <>
+            <dt>API Gateway</dt>
+            <dd>{info.apiGateway.apiId}{info.apiGateway.stage ? ` · stage ${info.apiGateway.stage}` : ''}</dd>
+          </>
+        )}
+        {info.presigned && (
+          <>
+            <dt>Presigned URL</dt>
+            <dd>
+              <span className={info.presigned.expiresAt <= now ? 'expired' : info.presigned.expiresAt - now < 60_000 ? 'expiring' : ''}>
+                {info.presigned.expiresAt <= now ? `expired ${new Date(info.presigned.expiresAt).toLocaleString()}` : `valid for ${fmtLeft(info.presigned.expiresAt - now)} (until ${new Date(info.presigned.expiresAt).toLocaleTimeString()})`}
+              </span>
+              <div className="faint">{info.presigned.service} · {info.presigned.region} · {info.presigned.accessKeyId}</div>
+            </dd>
+          </>
+        )}
+      </dl>
+      {info.presigned && info.presigned.expiresAt <= now && <div className="tech-note faint">This presigned URL has expired, so a replay will be rejected. Generate a fresh one, or re-sign with credentials.</div>}
+    </section>
+  );
+}
+
+/** Settings: signing keys for JWT and cookies. Session only until the key store lands. */
+export function KeySettings() {
+  const { client, notify } = useApp();
+  const [keys, setKeys] = useState<KeyInfo[]>([]);
+  const [name, setName] = useState('');
+  const [secret, setSecret] = useState('');
+  const [pem, setPem] = useState('');
+  useEffect(() => {
+    client.keys().then(setKeys, (e: Error) => notify(e.message));
+  }, [client, notify]);
+  const run = (p: Promise<KeyInfo[]>, msg: string) => p.then((k) => (setKeys(k), notify(msg)), (e: Error) => notify(e.message));
+  return (
+    <>
+      <div className="panel-title" style={{ padding: '12px 14px' }}>
+        Signing keys
+      </div>
+      <p className="muted" style={{ padding: '0 14px', margin: 0, fontSize: 13 }}>
+        Secrets and private keys used to re-sign JWTs (and, later, signed cookies). They are held for this session only and never written to disk. Reference them by name when re-signing.
+      </p>
+      <div className="settings-block">
+        <div className="label">Your keys</div>
+        {keys.length === 0 ? (
+          <div className="faint">None yet.</div>
+        ) : (
+          <table className="data-table">
+            <tbody>
+              {keys.map((k) => (
+                <tr key={k.name}>
+                  <td className="mono">{k.name}</td>
+                  <td>{k.kind === 'hmac' ? 'HMAC secret' : 'private key (PEM)'}</td>
+                  <td>
+                    <button className="btn small" onClick={() => void run(client.deleteKey(k.name), `${k.name} removed`)}>
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <div className="settings-block">
+        <div className="label">Add a key</div>
+        <input className="input mono" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} aria-label="Key name" />
+        <input className="input mono" placeholder="HMAC secret (for HS256/384/512)" value={secret} onChange={(e) => setSecret(e.target.value)} aria-label="HMAC secret" />
+        <textarea className="input mono" style={{ height: 120, padding: 8 }} placeholder={'-----BEGIN PRIVATE KEY-----\n… (for RS/PS/ES/EdDSA)'} value={pem} onChange={(e) => setPem(e.target.value)} aria-label="Private key PEM" />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn primary" disabled={!name.trim() || (!secret && !pem.trim())} onClick={() => void run(pem.trim() ? client.setKeyPem(name, pem) : client.setKeySecret(name, secret), `${name} added`).then(() => { setName(''); setSecret(''); setPem(''); })}>
+            Add key
+          </button>
+        </div>
+      </div>
+    </>
   );
 }

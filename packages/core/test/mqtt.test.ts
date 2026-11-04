@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { generateCACertificate } from 'mockttp';
+import { generateCA } from '../src/x509.js';
 import { Core, type ExchangeSummary } from '@siteinquisition/core';
 import { TestClient, createBroker, createBrokerHandler } from './mqtt-fixtures.js';
 
@@ -35,7 +35,7 @@ beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'siq-mqtt-'));
   plainBroker = createBroker();
   plainPort = await listen(plainBroker);
-  const cert = await generateCACertificate({ subject: { commonName: 'localhost' } });
+  const cert = generateCA({ commonName: 'localhost' });
   tlsBroker = createTlsServer({ key: cert.key, cert: cert.cert }, createBrokerHandler()) as unknown as Server;
   tlsPort = await listen(tlsBroker);
   v5Broker = createBroker();

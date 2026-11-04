@@ -2,8 +2,7 @@ import { EventEmitter } from 'node:events';
 import * as net from 'node:net';
 import * as tls from 'node:tls';
 import { MqttParser, encodePacket, type ConnackPacket, type ConnectPacket, type Packet, type PublishPacket } from './mqttcodec.js';
-import { getCA } from 'mockttp/dist/util/certificates';
-import type { CertificateAuthority } from './ca.js';
+import { leafIssuer, type CertificateAuthority } from './ca.js';
 import type { Scope } from './scope.js';
 import type { SeenHosts } from './seen.js';
 import type { CaptureStore, ExchangeSource, HeaderList } from './store.js';
@@ -92,8 +91,7 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
     const onSocket = (socket: net.Socket) => this.handle(socket);
     let server: net.Server;
     if (this.config.listenTls) {
-      const ca = await getCA({ cert: this.ca.cert, key: this.ca.key });
-      const leaf = await ca.generateCertificate(this.config.tlsHostname ?? this.config.upstreamHost);
+      const leaf = leafIssuer(this.ca).issue(this.config.tlsHostname ?? this.config.upstreamHost);
       server = tls.createServer({ key: leaf.key, cert: leaf.cert, ca: [this.ca.cert] }, onSocket);
     } else {
       server = net.createServer(onSocket);

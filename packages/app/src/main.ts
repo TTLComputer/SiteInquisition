@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, shell, utilityProcess, type UtilityProcess } from 'electron';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { createSocket } from 'node:dgram';
+import { createServer } from 'node:net';
 import { setupBrowser } from './browser.js';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
@@ -31,6 +33,55 @@ function options() {
   };
 }
 
+/** Hosts the built-in browser should reach over HTTP/3 (project browser.json, or SIQ_BROWSER_H3_HOSTS). */
+function http3Hosts(projectDir: string): string[] {
+  const env = process.env.SIQ_BROWSER_H3_HOSTS;
+  if (env !== undefined) return env.split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  try {
+    const v = JSON.parse(readFileSync(join(projectDir, 'browser.json'), 'utf8')) as { http3Hosts?: unknown };
+    return Array.isArray(v.http3Hosts) ? v.http3Hosts.filter((h): h is string => typeof h === 'string' && /^[a-z0-9.-]+$/.test(h)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** A port number free for both TCP and UDP, so the browser listener can take QUIC and TLS on one port. */
+async function freeDualPort(): Promise<number> {
+  for (let i = 0; i < 20; i++) {
+    const port = await new Promise<number>((res, rej) => {
+      const s = createServer();
+      s.once('error', rej);
+      s.listen(0, '127.0.0.1', () => {
+        const p = (s.address() as { port: number }).port;
+        s.close(() => res(p));
+      });
+    });
+    const udpFree = await new Promise<boolean>((res) => {
+      const u = createSocket('udp4');
+      u.once('error', () => res(false));
+      u.bind(port, '127.0.0.1', () => u.close(() => res(true)));
+    });
+    if (udpFree) return port;
+  }
+  throw new Error('no free port for the browser listener');
+}
+
+/**
+ * Chromium only uses QUIC for a host when it connects directly, so for each
+ * HTTP/3 host the browser maps host:443 to the browser listener (which takes
+ * QUIC on UDP and TLS on TCP), forces QUIC for that origin, and skips the
+ * proxy (see browser.ts). These switches must be set before the app is ready.
+ */
+const browserH3 = await (async () => {
+  const hosts = http3Hosts(options().projectDir);
+  if (!hosts.length) return { hosts, port: undefined };
+  const port = await freeDualPort();
+  app.commandLine.appendSwitch('enable-quic');
+  app.commandLine.appendSwitch('host-resolver-rules', hosts.flatMap((h) => [`MAP ${h}:443 127.0.0.1:${port}`, `MAP ${h}:80 127.0.0.1:${port}`]).join(','));
+  app.commandLine.appendSwitch('origin-to-force-quic-on', hosts.map((h) => `${h}:443`).join(','));
+  return { hosts, port };
+})();
+
 // Headless smoke runs (xvfb) have no GPU; software rendering keeps page capture reliable.
 if (process.env.SIQ_SMOKE_SCREENSHOT) app.disableHardwareAcceleration();
 
@@ -46,7 +97,7 @@ function startCore(): Promise<Ready> {
       if (msg.type === 'error') reject(new Error(msg.message));
     });
     core!.once('exit', (code) => reject(new Error(`core exited with code ${code}`)));
-    core!.postMessage({ type: 'start', ...opts });
+    core!.postMessage({ type: 'start', ...opts, browserPort: browserH3.port });
   });
 }
 
@@ -164,7 +215,7 @@ if (!app.requestSingleInstanceLock()) {
     });
     let resolveWindow!: (w: BrowserWindow) => void;
     const windowReady = new Promise<BrowserWindow>((r) => (resolveWindow = r));
-    setupBrowser(Promise.all([ready, windowReady]).then(([r, window]) => ({ window, proxyPort: r.browserProxyPort, caCertPath: r.caCertPath })));
+    setupBrowser(Promise.all([ready, windowReady]).then(([r, window]) => ({ window, proxyPort: r.browserProxyPort, caCertPath: r.caCertPath, http3Hosts: browserH3.hosts })));
     const win = await createWindow();
     resolveWindow(win);
     if (process.env.SIQ_SMOKE_SCREENSHOT) {

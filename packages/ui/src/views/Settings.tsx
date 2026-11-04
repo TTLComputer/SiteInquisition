@@ -26,6 +26,55 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
+/** Hosts the built-in browser reaches over QUIC. Chromium reads them at launch, so saving asks for a restart. */
+function BrowserHttp3() {
+  const { client, notify } = useApp();
+  const [hosts, setHosts] = useState('');
+  const [port, setPort] = useState<number | null>(null);
+  const [saved, setSaved] = useState<string | null>(null);
+  useEffect(() => {
+    void client
+      .browserHttp3()
+      .then((r) => {
+        setHosts(r.hosts.join(', '));
+        setSaved(r.hosts.join(', '));
+        setPort(r.port);
+      })
+      .catch(() => undefined);
+  }, [client]);
+  const save = async () => {
+    try {
+      const r = await client.setBrowserHttp3Hosts(hosts.split(/[\s,]+/).filter(Boolean));
+      setHosts(r.hosts.join(', '));
+      setSaved(r.hosts.join(', '));
+      notify('Saved. Restart SiteInquisition for the built-in browser to pick up the change.');
+    } catch (err) {
+      notify((err as Error).message);
+    }
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input
+          className="input mono"
+          style={{ flex: 1 }}
+          value={hosts}
+          placeholder="shop.example.com, api.example.com"
+          onChange={(e) => setHosts(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && void save()}
+          aria-label="Browser HTTP/3 hosts"
+        />
+        <button className="btn small" onClick={() => void save()} disabled={hosts === saved}>
+          Save
+        </button>
+      </div>
+      <span className="muted">
+        The browser talks QUIC to these hosts through {port ? <span className="mono">UDP 127.0.0.1:{port}</span> : 'the browser listener'}, and each request is recorded as HTTP/3 and sent on over HTTP/3 (or HTTPS when the site has no QUIC). Exact host names only. Takes effect after a restart.
+      </span>
+    </div>
+  );
+}
+
 export function Settings() {
   const { info, subTab } = useApp();
   const [section, setSection] = useState<Section>((subTab.settings as Section) ?? 'proxy');
@@ -68,6 +117,9 @@ export function Settings() {
                   </Row>
                   <Row label="CA expires">{new Date(info.ca.expiresAt).toLocaleDateString()}</Row>
                   <Row label="Decrypting">{info.decryptHosts.length ? <span className="mono">{info.decryptHosts.join(', ')}</span> : 'No hosts (add include rules in Rules › Scope)'}</Row>
+                  <Row label="Browser over HTTP/3">
+                    <BrowserHttp3 />
+                  </Row>
                   <Row label="MQTT relays">
                     {info.mqtt.length === 0
                       ? 'None (start with --mqtt PORT=BROKER)'

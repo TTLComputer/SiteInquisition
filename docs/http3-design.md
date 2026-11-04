@@ -1,6 +1,13 @@
 # HTTP/3 testing controls: design and feasibility
 
-Status: design for review (2026-11-04), implementation in progress on the same branch.
+Status: implemented (2026-11-04). Everything below is built and tested except
+where "Not in this round" says otherwise. Tests: RFC 9001 and RFC 7541 vectors,
+loopback transport tests with a lossy relay, stream plans, browser capture, and
+an interop suite against aioquic in both directions (it runs when a Python with
+aioquic is available and skips otherwise; aioquic is never a dependency).
+
+Throughput on one connection is about 11 MB/s on loopback. That is plenty for
+testing; it is not a bulk transfer tool.
 
 ## Goal
 
@@ -113,19 +120,50 @@ stream lanes inside one connection.
 
 ### Elsewhere in the app
 
-- **Replay**: protocol choice HTTP/1.1, HTTP/2 or HTTP/3. HTTP/3 sends are
-  recorded with `httpVersion: '3'`.
+- **Replay**: protocol choice HTTP/1.1 or HTTP/3. HTTP/3 sends are recorded
+  with `httpVersion: '3'`.
 - **Race**: a fourth sync method, "Single datagram (HTTP/3)".
-- **History and inspector**: Alt-Svc header shown as an "HTTP/3 available" badge
-  with one click to open the request in the HTTP/3 lab.
-- **Scripts and MCP**: `h3.run` takes the same plan as the UI.
+- **Scripts and MCP**: `h3.run` takes the same plan as the UI; `siq.h3` in scripts.
+- **Settings › Proxy and TLS**: the list of hosts the built-in browser reaches
+  over HTTP/3 (next section).
+
+## Capturing HTTP/3 from the built-in browser
+
+Chromium never sends QUIC through a proxy, so the browser's proxy setting alone
+only ever captures HTTP/1.1 and HTTP/2. For hosts the user lists, the app
+instead points Chromium straight at the browser listener:
+
+- `host-resolver-rules` maps `host:443` (and `host:80`) to `127.0.0.1:<port>`,
+  `origin-to-force-quic-on` makes Chromium use QUIC for `host:443` without
+  waiting for Alt-Svc, and the session's `proxyBypassRules` skip the proxy for
+  those hosts.
+- The browser listener takes TLS on TCP and QUIC on UDP on the same port
+  number, so if QUIC fails Chromium's TCP fallback is still captured.
+- The UDP side (`packages/core/src/quic/capture.ts`) terminates QUIC with a
+  leaf from the project CA (Chromium trusts it through the same
+  `setCertificateVerifyProc` as for TCP), records each request with source
+  `browser` and `httpVersion: '3'`, runs the same rules and hooks as the TCP
+  interceptor, and forwards upstream over HTTP/3. Origins that do not finish a
+  QUIC handshake within 3 seconds are sent over HTTPS instead and remembered as
+  TCP-only for five minutes.
+
+Limits: Chromium reads these switches at launch, so a changed host list takes
+effect after a restart. Hosts must be exact names (the force-QUIC switch takes
+no wildcards). Listed hosts are always decrypted on UDP; scope still decides
+what is recorded. Responses are buffered rather than streamed, so server-sent
+events over HTTP/3 arrive in one piece. The list lives in `browser.json` in the
+project folder; `SIQ_BROWSER_H3_HOSTS=a.test,b.test` overrides it for one launch.
+
+This was checked end to end with Electron 45 under xvfb: a page on a listed host
+loaded over QUIC through the listener and was recorded as HTTP/3 with the real
+upstream's response.
 
 ## Not in this round
 
-- Intercepting HTTP/3 from the built-in browser. Browsers never use QUIC
-  through an HTTP proxy, so captured traffic stays HTTP/1.1 and HTTP/2. The
-  server half of the stack exists (tests need it), so a UDP listener for
-  transparent IoT capture can come later.
+- HTTP/3 capture from other devices (IoT, phones). The browser listener's UDP
+  side could serve them with DNS pointed at this machine, but nothing sets
+  that up yet.
+- An "HTTP/3 available" badge from Alt-Svc in History, and HTTP/2 in Replay.
 - WebTransport sessions, ECN, CUBIC and pacing, QUIC v2 and multipath.
 
 ## Build order
@@ -136,3 +174,4 @@ stream lanes inside one connection.
 4. Plan runner and `h3.run`; Race single-datagram sync.
 5. UI: HTTP/3 lab view, Replay protocol picker, Race sync option.
 6. aioquic interop suite (runs when aioquic is installed).
+7. HTTP/3 capture from the built-in browser.

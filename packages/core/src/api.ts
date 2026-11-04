@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { OPEN, serveWebSockets, type WsConnection as WebSocket } from './websocket.js';
 import { PRESETS, buildPlan, validatePlan } from './wsplan.js';
 import { cookieJar } from './cookies.js';
-import type { Core } from './core.js';
+import { readBrowserHttp3Hosts, writeBrowserHttp3Hosts, type Core } from './core.js';
 import { sendReplay } from './replay.js';
 import type { HeaderList } from './store.js';
 import type { Change } from './store.js';
@@ -254,6 +254,8 @@ export class CoreApiServer {
         core.tools.clearH3Tickets();
         return true;
       },
+      'browser.http3': () => ({ hosts: readBrowserHttp3Hosts(core.projectDir), port: core.browserProxy?.http3Port ?? null }),
+      'browser.setHttp3Hosts': (p) => ({ hosts: writeBrowserHttp3Hosts(core.projectDir, arr(p, 'hosts').map(String)), restartNeeded: true }),
       'stream.live': () => core.tools.liveStreams(),
       'stream.connect': async (p) => {
         const id = str(p, 'exchangeId', false);

@@ -119,6 +119,12 @@ interface AppState {
   /** Look up where a value came from (opens API > Values with it). */
   traceValue(value: string, beforeId?: string): void;
   traceInput: { value: string; beforeId?: string; nonce: number } | null;
+  /** An exchange marked in History to compare another one with. */
+  compareMark: string | null;
+  setCompareMark(id: string | null): void;
+  /** Open API > Compare, Auth matrix or Negative tests with these exchanges. */
+  sendToApi(kind: 'compare' | 'auth' | 'negative', ids: string[]): void;
+  apiInput: { kind: 'compare' | 'auth' | 'negative'; ids: string[]; nonce: number } | null;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -157,6 +163,8 @@ export function AppProvider({ client, children }: { client: CoreClient; children
   const [subTab, setSubTab] = useState<Partial<Record<ViewId, string>>>({});
   const [flowPicks, setFlowPicks] = useState<string[]>([]);
   const [traceInput, setTraceInput] = useState<AppState['traceInput']>(null);
+  const [compareMark, setCompareMark] = useState<string | null>(null);
+  const [apiInput, setApiInput] = useState<AppState['apiInput']>(null);
   const openAt = useCallback((v: ViewId, tab: string) => {
     setSubTab((s) => ({ ...s, [v]: tab }));
     setViewState(v);
@@ -304,6 +312,14 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     [openAt],
   );
 
+  const sendToApi = useCallback(
+    (kind: 'compare' | 'auth' | 'negative', ids: string[]) => {
+      setApiInput({ kind, ids, nonce: Date.now() });
+      openAt('api', kind === 'compare' ? 'compare' : 'probes');
+    },
+    [openAt],
+  );
+
   const value = useMemo<AppState>(
     () => ({
       client,
@@ -348,8 +364,12 @@ export function AppProvider({ client, children }: { client: CoreClient; children
       setFlowPicks,
       traceInput,
       traceValue,
+      compareMark,
+      setCompareMark,
+      sendToApi,
+      apiInput,
     }),
-    [client, info, connected, view, setView, activeTab, replayTabs, openReplay, closeReplay, resendNow, selectedId, query, savedViews, saveView, refreshInfo, scope, openReplayById, toast, notify, openDraft, codecInput, sendToCodecs, raceItems, sendToRace, h3Items, sendToH3, streamId, streamPrefill, openStream, paused, approvals, subTab, openAt, flowPicks, traceInput, traceValue],
+    [client, info, connected, view, setView, activeTab, replayTabs, openReplay, closeReplay, resendNow, selectedId, query, savedViews, saveView, refreshInfo, scope, openReplayById, toast, notify, openDraft, codecInput, sendToCodecs, raceItems, sendToRace, h3Items, sendToH3, streamId, streamPrefill, openStream, paused, approvals, subTab, openAt, flowPicks, traceInput, traceValue, compareMark, sendToApi, apiInput],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

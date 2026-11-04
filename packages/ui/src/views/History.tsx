@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import type { ExchangeSummary, SiteMapHost } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
-import { fmtMs, fmtSize, fmtTime, statusClass, statusText, toRawRequest } from '../format';
+import { fmtMs, fmtSize, fmtTime, statusClass, statusText, toRawRequest, downloadText } from '../format';
 import { bodyText, breakOn, mockFromExchange } from '../actions';
 import { Coverage } from './Coverage';
 import { Inspector } from './Inspector';
@@ -90,7 +90,7 @@ interface MenuState {
 }
 
 function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): void; setQuery(q: string): void; query: string }) {
-  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select, flowPicks, setFlowPicks, openAt } = useApp();
+  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select, flowPicks, setFlowPicks, openAt, compareMark, setCompareMark, sendToApi } = useApp();
   const ref = useRef<HTMLDivElement>(null);
   const [tagging, setTagging] = useState(false);
   const [tagName, setTagName] = useState('');
@@ -213,8 +213,36 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
           Move a reference tag here...
         </button>
       )}
+      {compareMark && compareMark !== row.id ? (
+        <button role="menuitem" onClick={run(() => sendToApi('compare', [compareMark, row.id]))}>
+          Compare with the marked request
+        </button>
+      ) : (
+        <button
+          role="menuitem"
+          onClick={run(() => {
+            setCompareMark(row.id);
+            notify('Marked. Right-click another request and choose Compare with the marked request.');
+          })}
+        >
+          Mark to compare
+        </button>
+      )}
+      {!row.isWebSocket && !row.scheme.startsWith('mqtt') && (
+        <>
+          <button role="menuitem" onClick={run(() => sendToApi('auth', [row.id]))} title="Send it again as each identity (other users, no auth) and compare the answers">
+            Try as other users (auth matrix)
+          </button>
+          <button role="menuitem" onClick={run(() => sendToApi('negative', [row.id]))} title="Send broken variants: wrong types, missing fields, huge and special values">
+            Run negative tests
+          </button>
+        </>
+      )}
       <button role="menuitem" onClick={run(() => navigator.clipboard.writeText(row.url).then(() => notify('URL copied')))}>
         Copy URL
+      </button>
+      <button role="menuitem" onClick={run(async () => navigator.clipboard.writeText(await client.curl(row.id)).then(() => notify('Copied as curl')))}>
+        Copy as curl
       </button>
       <button role="menuitem" onClick={run(() => setQuery(withFilter(query, 'host', row.host)))}>
         Only this host
@@ -503,6 +531,22 @@ export function History() {
           }}
         >
           Save view
+        </button>
+        <button
+          className="btn small"
+          title="Save the requests that match the filter as a HAR file"
+          onClick={() =>
+            void client.exportHar({ query }).then(
+              (har) => {
+                const n = ((har.log as { entries: unknown[] }).entries ?? []).length;
+                downloadText(`siteinquisition-${new Date().toISOString().slice(0, 10)}.har`, JSON.stringify(har, null, 2));
+                notify(`Exported ${n} requests as HAR`);
+              },
+              (e: Error) => notify(e.message),
+            )
+          }
+        >
+          Export HAR
         </button>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }} className="muted">
           <button className="switch" role="switch" aria-checked={follow} aria-label="Live follow" onClick={() => setFollow((f) => !f)} />

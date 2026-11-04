@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ApiFlow, ApiSpec, FlowDraft, FlowRunResult, HeaderList, SiteMapHost, ValueField, ValueOrigin } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
-import { fmtMs, fmtTime } from '../format';
+import { downloadText, fmtMs, fmtTime } from '../format';
+import { AuthAndNegative, Compare, ContractScan, Glossary, GraphQL, Resources, useHosts } from './ApiExtras';
 
-type ApiTab = 'values' | 'flows' | 'specs';
+type ApiTab = 'values' | 'flows' | 'specs' | 'graphql' | 'resources' | 'glossary' | 'probes' | 'compare';
 
 const copy = (text: string, notify: (m: string) => void, what = 'Copied') =>
   navigator.clipboard.writeText(text).then(
@@ -15,15 +16,6 @@ const copy = (text: string, notify: (m: string) => void, what = 'Copied') =>
 /** "{{pick:...}}" for a catalog field. */
 export const pickToken = (f: Pick<ValueField, 'method' | 'template' | 'side' | 'path'>, kind: 'pick' | 'each' = 'pick') =>
   `{{${kind}:${f.method} ${f.template}${f.side === 'request' ? ' req' : ''} ${f.path}}}`;
-
-function useHosts() {
-  const { client } = useApp();
-  const [hosts, setHosts] = useState<SiteMapHost[]>([]);
-  useEffect(() => {
-    client.siteMap().then(setHosts, () => undefined);
-  }, [client]);
-  return hosts;
-}
 
 // ---------- Values ----------
 
@@ -306,6 +298,30 @@ function FlowEditor({ flow, onSaved, onDeleted, draft }: { flow: Partial<ApiFlow
         </button>
         <button className="btn small" onClick={() => void save()}>
           Save
+        </button>
+        <button
+          className="btn small"
+          disabled={!f.id}
+          title="Download as a Postman v2.1 collection, with test scripts that pass each value on"
+          onClick={() =>
+            void client.exportPostman({ flow: f.name }).then(
+              (c) => {
+                downloadText(`${f.name}.postman_collection.json`, JSON.stringify(c, null, 2));
+                notify('Exported as a Postman collection');
+              },
+              (e: Error) => notify(e.message),
+            )
+          }
+        >
+          Export Postman
+        </button>
+        <button
+          className="btn small"
+          disabled={!f.id}
+          title="Save a test script that runs this flow and checks every step; run it after each deploy in Scripts"
+          onClick={() => void client.flowToTest(f.name!).then((sc) => notify(`Saved test script "${sc.name}". Run it in Scripts.`), (e: Error) => notify(e.message))}
+        >
+          Make test
         </button>
         <button className="btn primary" onClick={() => void run()} disabled={running}>
           {running ? 'Running...' : 'Save and run'}
@@ -653,6 +669,7 @@ function Specs() {
         </div>
       </div>
       <div className="api-scroll">
+        {specs.some((s) => s.format !== 'graphql') && <ContractScan />}
         {specs.map((s) => {
           const f = filter.toLowerCase();
           const eps = s.endpoints.filter((e) => !f || `${e.key} ${e.summary ?? ''} ${e.tags.join(' ')}`.toLowerCase().includes(f));
@@ -663,7 +680,7 @@ function Specs() {
                   {open === s.id ? 'Hide' : 'Show'}
                 </button>
                 <b>{s.name}</b>
-                <span className="chip">{s.format === 'openapi3' ? 'OpenAPI 3' : s.format === 'swagger2' ? 'Swagger 2' : 'Postman'}</span>
+                <span className="chip">{s.format === 'openapi3' ? 'OpenAPI 3' : s.format === 'swagger2' ? 'Swagger 2' : s.format === 'graphql' ? 'GraphQL' : 'Postman'}</span>
                 {s.version && <span className="faint">v{s.version}</span>}
                 <span className="faint">{s.endpoints.length} endpoints</span>
                 <span className="mono faint" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -724,7 +741,7 @@ export function Api() {
   useEffect(() => {
     if (subTab.api) setTab(subTab.api as ApiTab);
   }, [subTab]);
-  const labels: Record<ApiTab, string> = { values: 'Values', flows: flowPicks.length ? `Flows (${flowPicks.length} picked)` : 'Flows', specs: 'API files' };
+  const labels: Record<ApiTab, string> = { values: 'Values', flows: flowPicks.length ? `Flows (${flowPicks.length} picked)` : 'Flows', specs: 'API files', graphql: 'GraphQL', resources: 'Resources', glossary: 'Glossary', probes: 'Auth and negative tests', compare: 'Compare' };
   return (
     <div className="page" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div className="tabs" role="tablist" aria-label="API">
@@ -737,6 +754,11 @@ export function Api() {
       {tab === 'values' && <Values />}
       {tab === 'flows' && <Flows />}
       {tab === 'specs' && <Specs />}
+      {tab === 'graphql' && <GraphQL />}
+      {tab === 'resources' && <Resources />}
+      {tab === 'glossary' && <Glossary />}
+      {tab === 'probes' && <AuthAndNegative />}
+      {tab === 'compare' && <Compare />}
     </div>
   );
 }

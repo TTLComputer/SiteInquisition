@@ -514,3 +514,25 @@ textarea.editor.composer-text { min-height: 90px; height: 110px; width: 100%; bo
 .menu-form { display: flex; gap: 6px; padding: 6px 8px; }
 .menu-form .input { flex: 1; min-width: 0; }
 .chip { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); white-space: nowrap; }
+.chip-bad { color: var(--error); border-color: var(--error); }
+.chip-warn { color: var(--warn-text); background: var(--warn-bg); border-color: var(--warn-line); }
+.chip-good { color: var(--ok); border-color: var(--ok); }
+.api-strip { padding: 6px 12px; border-bottom: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.api-strip-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.api-note-text { flex: 1; min-width: 0; white-space: pre-wrap; }
+.api-issue { padding-left: 12px; font-size: 12px; }
+.api-issue.error { color: var(--error); }
+.api-issue.warning { color: var(--warn-text); }
+.matrix td.v-same { background: var(--diff-del-bg); color: var(--diff-del); font-weight: 600; }
+.matrix td.v-allowed { color: var(--warn-text); }
+.matrix td.v-denied, .matrix td.v-not-found { color: var(--ok); }
+.matrix td.v-error, .matrix td.v-other { color: var(--text-muted); }
+.lc-cell { text-align: center; font-size: 12px; }
+.lc-cell.seen { color: var(--ok); }
+.lc-cell.failed { color: var(--error); }
+.lc-cell.doc { color: var(--text-muted); }
+.lc-cell.missing { color: var(--text-faint); }
+.diff-path { font-family: var(--font-mono); font-size: 12px; }
+.diff-before { color: var(--diff-del); background: var(--diff-del-bg); font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+.diff-after { color: var(--diff-add); background: var(--diff-add-bg); font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+.form-grid { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 6px 10px; align-items: center; font-size: 12px; }

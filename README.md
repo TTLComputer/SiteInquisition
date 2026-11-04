@@ -37,6 +37,15 @@ An intercepting proxy, built-in browser and replay toolkit for testing websites,
   - **Pipes and encoded bodies**: `{{var:po | base64}}`, `| url`, `| json`, `| jsonesc`, `| hex`, `| upper`. Replay and flow steps can keep a body decoded and encode it with a codec chain (for example `base64,json`) after the tokens are filled in.
   - **API files**: import OpenAPI 3, Swagger 2 (JSON or YAML), Postman v2.1 collections, or a HAR file (added to History). Coverage then marks undocumented endpoints and lists the documented ones nobody has called. *Open in Replay* fills path parameters from real recorded calls. **Export OpenAPI** writes an OpenAPI 3.1 file from what was seen, with schemas inferred from real bodies.
   - Scripts get `siq.flows.run()`, `siq.pick()`, `siq.origin()`, `siq.tagged()`, `siq.moveTag()`, `siq.resolve()` and `siq.specs()`. MCP gets `api_values`, `value_origin`, `tag_value`, `api_specs`, `list_flows` and `run_flow`.
+  - **Contract check**: each exchange that matches an endpoint in an API file is checked against its schema (types, required fields, enums, formats, ranges, undocumented fields and statuses). The Inspector shows the result, and API files, Contract check scans a whole host.
+  - **GraphQL**: get a schema by introspection, from a different server than the one you test (pull it from a beta server with introspection on and point the requests at pre-prod, each with its own headers), by rebuilding it from "Did you mean" errors when introspection is off, or from the operations the app sent (including persisted query hashes and queries in loaded scripts). *Check drift* lists fields the target rejected.
+  - **Auth matrix**: send requests again as each identity (other users' headers, or no auth). An identity that gets the same data back is flagged as possible broken access control.
+  - **Negative tests**: broken variants of a request (wrong types, missing and extra fields, huge and special values, other ids), using the API file's schema when there is one. Server errors and accepted bad input come first.
+  - **Compare**: mark one request in History and compare another with it: URL, query, headers and JSON bodies by path.
+  - **Resources**: list, create, read, replace, update and delete per resource, from traffic and API files, so the untested operations stand out.
+  - **Glossary**: every field name with its types, nullability, values seen (an enum in all but name), ranges, lengths and formats.
+  - **Endpoint notes**: notes and tags on an endpoint (Inspector, Notes) are shared and shown on every call to it.
+  - **Export**: copy a request as curl, export History (by filter) as HAR, a flow as a Postman collection whose test scripts pass values on, or a flow as a test script that checks every step and that ids are fresh each run.
 - **Cookie jar**: every Set-Cookie seen, newest wins, with expiry highlighting, a decoded hint (url, base64, JSON, JWT), a link to the response that set it, and `{{cookie:name@domain}}` tokens to copy.
 
 ## Quick start

@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { useApp } from '../state';
 import { applyTheme, storedTheme, type ThemeChoice } from '../theme';
 import { McpSection } from './Mcp';
+import { TechSettings } from './Tech';
 
-type Section = 'proxy' | 'mcp' | 'appearance' | 'keys' | 'together';
+type Section = 'proxy' | 'tech' | 'mcp' | 'appearance' | 'keys' | 'together';
 
 const SHORTCUTS: Array<[string, string]> = [
   ['Ctrl K', 'Filter traffic (focus the History filter)'],
@@ -82,7 +83,7 @@ export function Settings() {
     if (subTab.settings) setSection(subTab.settings as Section);
   }, [subTab]);
   const [theme, setTheme] = useState<ThemeChoice>(storedTheme());
-  const labels: Record<Section, string> = { proxy: 'Proxy and TLS', mcp: 'MCP and agents', appearance: 'Appearance', keys: 'Keyboard', together: 'Work together' };
+  const labels: Record<Section, string> = { proxy: 'Proxy and TLS', tech: 'Technologies', mcp: 'MCP and agents', appearance: 'Appearance', keys: 'Keyboard', together: 'Work together' };
   return (
     <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
       <div className="tabs" role="tablist" aria-label="Settings">
@@ -94,6 +95,7 @@ export function Settings() {
       </div>
       <div className="page-inner">
         <div className="card" style={{ flex: '1 1 640px', maxWidth: 900 }}>
+          {section === 'tech' && <TechSettings />}
           {section === 'proxy' && (
             <>
               <div className="panel-title" style={{ padding: '12px 14px' }}>

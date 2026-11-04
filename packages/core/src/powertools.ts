@@ -18,6 +18,7 @@ import { Sender, type AwsProfile, type Macro, type SendOptions, type SendRequest
 import { parseSigV4, type AwsCredentials } from './sigv4.js';
 import type { Change, HeaderList } from './store.js';
 import { resolveTokens } from './tokens.js';
+import { TechService } from './tech.js';
 import { Vars } from './vars.js';
 import { WsReplays } from './wsreplay.js';
 
@@ -30,6 +31,7 @@ import { WsReplays } from './wsreplay.js';
  */
 export class PowerTools {
   readonly vars: Vars;
+  readonly tech: TechService;
   readonly scripts: ScriptEngine;
   readonly intercept: Intercept;
   readonly sender: Sender;
@@ -44,6 +46,17 @@ export class PowerTools {
   constructor(private readonly core: Core) {
     const store = core.store;
     this.vars = new Vars(store);
+    this.tech = new TechService(store, this.vars);
+    // Projects recorded before detection existed get scanned once, in the background.
+    if (!store.hostTech().length && store.stats().exchanges > 0) {
+      setImmediate(() => {
+        try {
+          if (store.db.isOpen && !store.hostTech().length) this.tech.rescan(2000);
+        } catch {
+          // the project may have closed in the meantime
+        }
+      });
+    }
     this.intercept = new Intercept(() => this.breakpoints());
     this.ws = new WsReplays(store);
     this.sender = new Sender({
@@ -55,6 +68,7 @@ export class PowerTools {
       awsProfiles: () => this.awsProfiles(),
       sessionKeys: this.awsKeys,
       countHit: (id) => this.countHit(id),
+      tech: this.tech,
     });
     this.flows = new FlowRunner({
       store,
@@ -382,7 +396,9 @@ export class PowerTools {
       vars: () => this.vars.values(),
       getVar: (name: string) => this.vars.values()[name],
       setVar: (name: string, value: string) => this.vars.set(String(name), String(value), 'script'),
-      cookies: () => cookieJar(store),
+      cookies: () => this.tech.annotateJar(),
+      tech: (host?: string) => (host ? this.tech.hostReport(String(host)) : this.tech.allHosts()),
+      csrf: (id: string) => this.tech.csrfFindings(String(id)),
       tag: (id: string, tags: string[]) => store.tagExchange(String(id), tags.map(String)),
       notes: (id: string, notes: string) => store.setNotes(String(id), String(notes)),
       scope: () => this.core.scope.get(),
@@ -413,6 +429,17 @@ export class PowerTools {
 
   runScript(script: Pick<Script, 'id' | 'name' | 'kind' | 'code'>) {
     return this.scripts.execute(script, this.sdk());
+  }
+
+  /** Send a technology's optional check to a host, on the user's say-so. Probes are GET, HEAD or OPTIONS only. */
+  async runCheck(host: string, tech: string, index = 0, scheme: 'http' | 'https' = 'https') {
+    const probes = (this.tech.signature(tech)?.checks ?? []).filter((c) => c.probe);
+    const probe = probes[index]?.probe;
+    if (!probe) throw new Error(`no check ${index} for ${tech}`);
+    if (!/^[a-z0-9.-]+(:\d+)?$/i.test(host)) throw new Error('invalid host');
+    const res = await this.sender.send({ method: probe.method, url: `${scheme}://${host}${probe.path}`, headers: [] }, { refreshCookies: true, tokens: false });
+    addTags(this.core.store, res.id, ['check', `check:${tech}`]);
+    return this.core.store.getSummary(res.id) ?? res;
   }
 
   // ---------- race and streams ----------
@@ -544,10 +571,40 @@ export class PowerTools {
       },
       {
         name: 'list_cookies',
-        description: 'The cookie jar built from recorded Set-Cookie headers.',
+        description: 'The cookie jar built from recorded Set-Cookie headers. Platform cookies (load balancer stickiness, bot management) carry an "infra" reason.',
         inputSchema: { type: 'object', properties: { domain: str } },
         write: false,
-        run: (a) => cookieJar(store).filter((c) => !a.domain || c.domain.endsWith(String(a.domain))),
+        run: (a) => this.tech.annotateJar().filter((c) => !a.domain || c.domain.endsWith(String(a.domain))),
+      },
+      {
+        name: 'detect_technologies',
+        description:
+          'What a host is built on (cloud, CDN, server, framework, auth provider, protocols), detected passively from captured traffic, with confidence and evidence, after the user\'s pins and rejections. Without a host, lists every host with its technologies.',
+        inputSchema: { type: 'object', properties: { host: str } },
+        write: false,
+        run: (a) => (a.host ? this.tech.hostReport(String(a.host)) : this.tech.allHosts()),
+      },
+      {
+        name: 'csrf_tokens',
+        description: 'Where a recorded request carries CSRF tokens, which response handed each one out, and whether a CSRF binding keeps it fresh on replay.',
+        inputSchema: { type: 'object', properties: { id: str }, required: ['id'] },
+        write: false,
+        run: (a) => this.tech.csrfFindings(String(a.id)),
+      },
+      {
+        name: 'run_tech_check',
+        description: 'Send one of the optional checks a detected technology suggests (for example GET /actuator on Spring). Checks are never sent automatically.',
+        inputSchema: { type: 'object', properties: { host: str, tech: str, index: { type: 'number' }, scheme: str }, required: ['host', 'tech'] },
+        write: true,
+        summary: (a) => {
+          const p = this.tech.signature(String(a.tech))?.checks?.filter((c) => c.probe)[Number(a.index ?? 0)]?.probe;
+          return p ? `${p.method} ${String(a.host)}${p.path}` : `Check for ${String(a.tech)} on ${String(a.host)}`;
+        },
+        run: async (a) => {
+          const res = await this.runCheck(String(a.host), String(a.tech), Number(a.index ?? 0), a.scheme === 'http' ? 'http' : 'https');
+          store.tagExchange(res.id, [...(store.getSummary(res.id)?.tags ?? []), 'mcp']);
+          return { ...summarize(res.id), responseBody: this.textBody(res.id, 'response')?.slice(0, 16_384) ?? null };
+        },
       },
       {
         name: 'get_scope',
@@ -651,3 +708,7 @@ export class PowerTools {
 }
 
 export type { HeaderList };
+
+function addTags(store: Core['store'], id: string, tags: string[]) {
+  store.tagExchange(id, [...(store.getSummary(id)?.tags ?? []), ...tags]);
+}

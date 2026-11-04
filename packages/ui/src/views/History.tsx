@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { ExchangeSummary, SiteMapHost } from '../api';
+import type { ExchangeSummary, HostTechSummary, SiteMapHost } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { fmtMs, fmtSize, fmtTime, statusClass, statusText, toRawRequest } from '../format';
@@ -37,9 +37,11 @@ export function withFilter(query: string, key: string, value: string | null): st
 function SiteMap({ query, setQuery, version }: { query: string; setQuery(q: string): void; version: number }) {
   const { client } = useApp();
   const [hosts, setHosts] = useState<SiteMapHost[]>([]);
+  const [tech, setTech] = useState<Record<string, HostTechSummary['tech']>>({});
   const [open, setOpen] = useState<Record<string, boolean>>({});
   useEffect(() => {
     client.siteMap().then(setHosts, () => undefined);
+    client.techHosts().then((list) => setTech(Object.fromEntries(list.map((h) => [h.host, h.tech]))), () => undefined);
   }, [client, version]);
   const activeHost = /(?:^|\s)host:(\S+)/.exec(query)?.[1];
   const activePath = /(?:^|\s)path:(\S+)/.exec(query)?.[1];
@@ -65,6 +67,15 @@ function SiteMap({ query, setQuery, version }: { query: string; setQuery(q: stri
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{h.host}</span>
             <span className="count">{h.count}</span>
           </button>
+          {open[h.host] && (tech[h.host.toLowerCase()]?.length ?? 0) > 0 && (
+            <div className="sitemap-tech" aria-label={`Technologies on ${h.host}`}>
+              {tech[h.host.toLowerCase()]!.map((t) => (
+                <button key={t.id} className="pill" title={`${t.category}, ${t.status}. Click to show its traffic.`} onClick={() => setQuery(withFilter(withFilter(query, 'host', null), 'tech', t.id))}>
+                  {t.name}
+                </button>
+              ))}
+            </div>
+          )}
           {open[h.host] &&
             h.paths.map((p) => (
               <button

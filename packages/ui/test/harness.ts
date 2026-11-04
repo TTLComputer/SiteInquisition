@@ -27,6 +27,10 @@ async function startUpstream() {
         const cookies = req.url === '/api/cart' ? { 'set-cookie': ['session=eyJ1c2VyIjoibmljayJ9; Path=/; HttpOnly', 'cart=42; Max-Age=600'] } : {};
         res.writeHead(200, { 'content-type': 'application/json', ...cookies });
         res.end(JSON.stringify({ path: req.url, method: req.method, hits, echo: body || null }));
+      } else if (req.url === '/account') {
+        // A Django-style page behind an AWS load balancer, for the Tech tab.
+        res.writeHead(200, { 'content-type': 'text/html', server: 'WSGIServer/0.2 CPython/3.12.1', 'set-cookie': ['csrftoken=tok-abcdef123456; Path=/', 'AWSALB=lb-sticky-1; Path=/'] });
+        res.end('<!doctype html><form method="post"><input type="hidden" name="csrfmiddlewaretoken" value="tok-abcdef123456"></form>');
       } else if (req.url === '/broken') {
         res.writeHead(500, { 'content-type': 'text/plain' });
         res.end('boom');
@@ -41,9 +45,9 @@ async function startUpstream() {
   return { port, close: () => new Promise<void>((r) => (wss.clients.forEach((c) => c.terminate()), server.close(() => r()))) };
 }
 
-function viaProxy(proxyPort: number, url: string, method = 'GET', body?: string) {
+function viaProxy(proxyPort: number, url: string, method = 'GET', body?: string, headers: Record<string, string> = {}) {
   return new Promise<number>((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port: proxyPort, method, path: url, headers: { host: new URL(url).host, ...(body ? { 'content-type': 'application/json' } : {}) } }, (res) => {
+    const req = request({ host: '127.0.0.1', port: proxyPort, method, path: url, headers: { host: new URL(url).host, ...(body ? { 'content-type': 'application/json' } : {}), ...headers } }, (res) => {
       res.resume();
       res.on('end', () => resolve(res.statusCode ?? 0));
     });
@@ -74,7 +78,7 @@ export interface Harness {
   upstreamPort: number;
   proxyPort: number;
   pageUrl: string;
-  send(path: string, method?: string, body?: string): Promise<number>;
+  send(path: string, method?: string, body?: string, headers?: Record<string, string>): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -85,7 +89,7 @@ export async function startHarness(opts: { traffic?: boolean } = {}): Promise<Ha
   await core.setScope({ defaultAction: 'ignore', rules: [{ id: 'r1', action: 'include', host: '127.0.0.1', port: upstream.port }] });
   const { proxyPort, apiPort } = await core.start();
   const base = `http://127.0.0.1:${upstream.port}`;
-  const send = (path: string, method = 'GET', body?: string) => viaProxy(proxyPort, `${base}${path}`, method, body);
+  const send = (path: string, method = 'GET', body?: string, headers?: Record<string, string>) => viaProxy(proxyPort, `${base}${path}`, method, body, headers);
   if (opts.traffic !== false) {
     await send('/');
     await send('/api/cart');

@@ -5,8 +5,9 @@ import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { asText, fmtMs, fmtSize, fmtTime, hexDump, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { breakOn, mockFromExchange } from '../actions';
+import { TechPanel } from './Tech';
 
-type Tab = 'exchange' | 'messages' | 'timings' | 'notes';
+type Tab = 'exchange' | 'messages' | 'tech' | 'timings' | 'notes';
 type BodyMode = 'pretty' | 'raw' | 'hex';
 
 function Headers({ headers }: { headers: HeaderList }) {
@@ -312,7 +313,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
 
   const tabs: Array<[Tab, string]> = [['exchange', 'Request and response']];
   if (ex.stream) tabs.push(['messages', ex.stream.protocol.startsWith('mqtt') ? 'MQTT packets' : 'WebSocket messages']);
-  tabs.push(['timings', 'Timings'], ['notes', 'Notes and tags']);
+  tabs.push(['tech', 'Tech and CSRF'], ['timings', 'Timings'], ['notes', 'Notes and tags']);
 
   const responseLine =
     ex.status !== null ? `HTTP/${ex.httpVersion} ${ex.status} ${ex.statusMessage ?? ''}` : ex.state === 'pending' ? '(waiting for response)' : ex.error ? `(${ex.state}: ${ex.error})` : `(${ex.state})`;
@@ -404,6 +405,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
           </div>
         )}
         {tab === 'messages' && ex.stream && <Messages exchangeId={ex.id} protocol={ex.stream.protocol} />}
+        {tab === 'tech' && <TechPanel ex={ex} />}
         {tab === 'timings' && <Timings ex={ex} />}
         {tab === 'notes' && <Notes ex={ex} />}
       </div>

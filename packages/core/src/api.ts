@@ -9,6 +9,7 @@ import type { AddressInfo } from 'node:net';
 import { OPEN, serveWebSockets, type WsConnection as WebSocket } from './websocket.js';
 import { PRESETS, buildPlan, validatePlan } from './wsplan.js';
 import { cookieJar } from './cookies.js';
+import { exchangeCookies } from './tech.js';
 import { readBrowserHttp3Hosts, writeBrowserHttp3Hosts, type Core } from './core.js';
 import { sendReplay } from './replay.js';
 import type { HeaderList } from './store.js';
@@ -200,6 +201,28 @@ export class CoreApiServer {
         return true;
       },
       'traffic.coverage': (p) => coverage(store, str(p, 'host')!, num(p, 'limit')),
+      'tech.signatures': () => ({ builtIn: core.tools.tech.builtIn(), custom: core.tools.tech.custom(), disabled: core.tools.tech.disabled() }),
+      'tech.setSignatures': (p) => core.tools.tech.setCustom(arr(p, 'signatures')),
+      'tech.setDisabled': (p) => core.tools.tech.setDisabled(arr(p, 'ids') as string[]),
+      'tech.hosts': () => core.tools.tech.allHosts(),
+      'tech.host': (p) => core.tools.tech.hostReport(str(p, 'host')!),
+      'tech.exchange': (p) => {
+        const id = str(p, 'id')!;
+        const ex = store.getExchange(id);
+        if (!ex) throw new RpcError(404, 'exchange not found');
+        const t = core.tools.tech;
+        const cookies = exchangeCookies(ex.requestHeaders, ex.responseHeaders).map((c) => ({ ...c, infra: t.infraReason(c.name, ex.host) }));
+        return { hits: t.detectExchange(id), host: t.hostReport(ex.host), csrf: t.csrfFindings(id), cookies };
+      },
+      'tech.overrides': () => core.tools.tech.overrides(),
+      'tech.setOverrides': (p) => core.tools.tech.setOverrides(arr(p, 'overrides') as never),
+      'tech.override': (p) => core.tools.tech.override(str(p, 'host')!, str(p, 'tech')!, (str(p, 'action')! as 'pin' | 'reject' | 'clear'), str(p, 'note', false)),
+      'tech.cookieOverrides': () => core.tools.tech.cookieOverrides(),
+      'tech.setCookieOverrides': (p) => core.tools.tech.setCookieOverrides(arr(p, 'overrides') as never),
+      'tech.rescan': (p) => core.tools.tech.rescan(num(p, 'limit') ?? 5000),
+      'tech.check': (p) => core.tools.runCheck(str(p, 'host')!, str(p, 'tech')!, num(p, 'index') ?? 0, p.scheme === 'http' ? 'http' : 'https'),
+      'csrf.bindings': () => core.tools.tech.csrfBindings(),
+      'csrf.setBindings': (p) => core.tools.tech.setCsrfBindings(arr(p, 'bindings') as never),
       'vars.list': () => ({ vars: core.tools.vars.all(), extractors: core.tools.vars.extractors() }),
       'vars.set': (p) => (core.tools.vars.set(str(p, 'name')!, str(p, 'value')!), true),
       'vars.delete': (p) => (core.tools.vars.delete(str(p, 'name')!), true),
@@ -347,7 +370,7 @@ export class CoreApiServer {
           throw new RpcError(-32602, 'url must be an absolute URL');
         }
       },
-      'cookies.list': () => cookieJar(store),
+      'cookies.list': () => core.tools.tech.annotateJar(cookieJar(store)),
       'scope.set': async (p) => {
         await core.setScope(p.config as never);
         return core.scope.get();

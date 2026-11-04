@@ -1376,6 +1376,7 @@ export class Connection {
       if (!dg) break;
       probe = false;
       this.bytesSent += dg.length;
+      this.datagramsSent++;
       this.ev.send(dg, this.path);
     }
     this.rearm();
@@ -1641,6 +1642,7 @@ export class Connection {
   }
 
   closeReason: { code: number; app: boolean; reason: string; remote: boolean } | null = null;
+  datagramsSent = 0;
 
   /** Stop timers and drop all state. */
   terminate() {

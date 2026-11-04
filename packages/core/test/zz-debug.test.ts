@@ -1,0 +1,21 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { it } from 'vitest';
+import { CaptureStore } from '../src/store.js';
+import { H3Server } from '../src/quic/index.js';
+import { runH3Plan } from '../src/quic/plan.js';
+import type { Connection } from '../src/quic/connection.js';
+import { generateCA, LeafIssuer } from '../src/x509.js';
+const ca = generateCA({ commonName: 'x' }); const issuer = new LeafIssuer(ca);
+it('dbg', async () => {
+  const store = CaptureStore.openProject(mkdtempSync(join(tmpdir(), 'x')));
+  const leaf = issuer.issue('localhost');
+  const server = new H3Server({ cert: leaf.cert + ca.cert, key: leaf.key, acceptEarlyData: true }, async (req) => { console.log('REQ', req.path); await req.body(); req.respond(200, [], 'ok'); });
+  let n = 0;
+  server.quic.on('connection', (c: Connection) => { const k = n++; c.ev.packet = (e) => console.log('S'+k, e.dir, e.type, e.pn, e.frames.join(' | ')); });
+  const { port } = await server.listen(0);
+  const r = await runH3Plan(store, [{ method: 'POST', url: `https://localhost:${port}/early`, headers: [], body: Buffer.from('x=1'), earlyData: true }], { ca: [ca.cert], zeroRttConnections: 2 });
+  console.log(JSON.stringify(r.runs[0].rows), JSON.stringify(r.runs[0].connections.map(c => [c.resumed, c.earlyDataAccepted, c.closed])));
+  await server.close();
+}, 10000);

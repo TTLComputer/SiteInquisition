@@ -376,8 +376,9 @@ export class H3Session extends EventEmitter {
     super();
     this.isClient = conn.isClient;
     this.settingsSent = { qpackMaxTableCapacity: 4096, qpackBlockedStreams: 16, h3Datagram: true, ...opts.settings };
-    this.encoder = new QpackEncoder((b) => this.encoderId >= 0 && conn.write(this.encoderId, b), opts.qpack);
-    this.decoder = new QpackDecoder(this.settingsSent.qpackMaxTableCapacity ?? 0, this.settingsSent.qpackBlockedStreams ?? 0, (b) => this.decoderId >= 0 && conn.write(this.decoderId, b));
+    // Instructions written before our QPACK streams exist (0.5-RTT responses) wait in a buffer.
+    this.encoder = new QpackEncoder((b) => this.writeQpack('encoder', b), opts.qpack);
+    this.decoder = new QpackDecoder(this.settingsSent.qpackMaxTableCapacity ?? 0, this.settingsSent.qpackBlockedStreams ?? 0, (b) => this.writeQpack('decoder', b));
     const ev = conn.ev;
     const prev = { stream: ev.stream, data: ev.data, reset: ev.reset, stopSending: ev.stopSending, datagram: ev.datagram, close: ev.close, handshake: ev.handshake };
     ev.stream = (id) => {
@@ -418,6 +419,15 @@ export class H3Session extends EventEmitter {
     if (conn.state === 'connected' || conn.earlyDataAvailable) this.start();
   }
 
+  private qpackBacklog: { encoder: Buffer[]; decoder: Buffer[] } = { encoder: [], decoder: [] };
+
+  private writeQpack(kind: 'encoder' | 'decoder', b: Buffer) {
+    if (!this.started) this.start();
+    const id = kind === 'encoder' ? this.encoderId : this.decoderId;
+    if (id < 0) this.qpackBacklog[kind].push(b);
+    else this.conn.write(id, b);
+  }
+
   /** Open control and QPACK streams. Runs on handshake, or early for 0-RTT. */
   start() {
     if (this.started) return;
@@ -444,8 +454,8 @@ export class H3Session extends EventEmitter {
     if (this.opts.grease !== false) w.varint(0x1f * 7 + 0x21).varint(0);
     this.conn.write(c, Buffer.concat([new Writer().varint(0x00).finish(), frame(H3Frame.SETTINGS, w.finish())]));
     this.controlLog.push({ t: performance.now(), dir: 'out', type: H3Frame.SETTINGS, detail: JSON.stringify(s) });
-    this.conn.write(e, Buffer.of(0x02));
-    this.conn.write(d, Buffer.of(0x03));
+    this.conn.write(e, Buffer.concat([Buffer.of(0x02), ...this.qpackBacklog.encoder.splice(0)]));
+    this.conn.write(d, Buffer.concat([Buffer.of(0x03), ...this.qpackBacklog.decoder.splice(0)]));
     if (this.opts.grease !== false) {
       const g = this.conn.openStream(false);
       if (g !== null) this.conn.write(g, Buffer.concat([new Writer().varint(0x1f * 3 + 0x21).finish(), Buffer.from('grease')]), true);

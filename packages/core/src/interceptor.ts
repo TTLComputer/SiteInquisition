@@ -12,22 +12,24 @@
  * ClientHello for a host we decrypt is terminated with a leaf certificate
  * from our CA (HTTP/2 or HTTP/1.1 by ALPN); TLS for any other host is passed
  * through untouched; the HTTP/2 connection preface is served as cleartext
- * HTTP/2 (h2c with prior knowledge); anything else is read as HTTP/1.1. An
- * HTTP/1.1 "Upgrade: h2c" offer is declined by ignoring it, as RFC 9113
- * allows, and the request is answered over HTTP/1.1.
+ * HTTP/2 (h2c with prior knowledge); anything else is read as HTTP/1.1.
  *
- * Requests are buffered (so hooks can see and change them) and forwarded.
- * A client speaking HTTP/2 is forwarded over HTTP/2 when the server speaks
- * it too (ALPN for TLS, prior knowledge for cleartext), so trailers and
- * gRPC work; otherwise, and for HTTP/1.1 clients, over HTTP/1.1. Responses
- * are streamed back unless a hook needs the whole body. Events report each
- * step so the engine can record it.
+ * Whether a connection is HTTP/2 is always the server's call, so a developer
+ * sees their server's HTTP/2 support as it is: over TLS the client is offered
+ * the protocol the server picked by ALPN; an "Upgrade: h2c" goes to the
+ * server, and if it accepts, the bytes are relayed untouched and read on the
+ * side for the record; prior knowledge goes on as prior knowledge, and a
+ * server that refuses it gets the client a 502, never a quiet HTTP/1.1.
+ *
+ * Requests are buffered (so hooks can see and change them) and forwarded,
+ * HTTP/2 on the server connection paired with the client's (trailers and
+ * gRPC work), HTTP/1.1 otherwise. Responses are streamed back unless a hook
+ * needs the whole body. Events report each step so the engine can record it.
  */
 import { EventEmitter } from 'node:events';
 import { STATUS_CODES, createServer as createHttpServer, request as httpRequest, Agent as HttpAgent, type IncomingMessage, type ServerResponse, type IncomingHttpHeaders } from 'node:http';
 import {
   connect as h2Connect,
-  createSecureServer,
   createServer as createH2Server,
   type ClientHttp2Session,
   type IncomingHttpHeaders as H2Headers,
@@ -39,9 +41,10 @@ import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
 import { connect as netConnect, createServer as createNetServer, isIP, type AddressInfo, type Server, type Socket } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { Duplex, type Readable, type Writable } from 'node:stream';
-import { connect as tlsConnect, type TLSSocket } from 'node:tls';
+import { connect as tlsConnect, createServer as createTlsServer, type TLSSocket } from 'node:tls';
 import * as zlib from 'node:zlib';
 import { FrameParser, MessageAssembler, encodeFrame, isControl, OPCODES, type AssembledMessage, type Frame } from './websocket.js';
+import { H2Tap } from './h2tap.js';
 import { runPlan, type PlanStep, type SentStep } from './wsplan.js';
 import type { LeafIssuer } from './x509.js';
 import { CERT_REFUSED, upstreamTls } from './upstreamtls.js';
@@ -368,6 +371,14 @@ function readChunk(socket: Duplex): Promise<Buffer | undefined> {
 interface ConnInfo {
   remote: string | null;
   target?: Target;
+  /**
+   * The server connection paired with an HTTP/2 client connection: opened
+   * when TLS was negotiated (the server's ALPN answer), or at the first
+   * cleartext request. `key` says which origin it is for.
+   */
+  upstream?: { key: string; session: Promise<ClientHttp2Session | undefined> };
+  /** The client's HTTP/2 session, closed when the paired server one closes. */
+  clientSession?: { close(): void };
 }
 const INFO = Symbol('siq.conn');
 type Tagged = { [INFO]?: ConnInfo };
@@ -453,13 +464,15 @@ class Prefixed extends Duplex {
   }
 }
 
-/** SNI from a TLS ClientHello record, or null when there is none. Throws when the bytes are not a ClientHello. */
-export function parseClientHello(buf: Buffer): { sni: string | null; complete: boolean } {
+/** SNI (null when there is none) and the ALPN offer from a TLS ClientHello record. Throws when the bytes are not a ClientHello. */
+export function parseClientHello(buf: Buffer): { sni: string | null; complete: boolean; alpn?: string[] } {
   if (buf[0] !== 0x16 || buf[1] !== 0x03) throw new Error('not a TLS handshake');
   if (buf.length < 5) return { sni: null, complete: false };
   const recordEnd = 5 + buf.readUInt16BE(3);
   if (buf.length < recordEnd) return { sni: null, complete: false };
   let p = 5;
+  let sni: string | null = null;
+  let alpn: string[] | undefined;
   if (buf[p] !== 0x01) throw new Error('not a ClientHello');
   p += 4 + 2 + 32; // handshake header, version, random
   p += 1 + buf[p]!; // session id
@@ -474,11 +487,16 @@ export function parseClientHello(buf: Buffer): { sni: string | null; complete: b
     p += 4;
     if (type === 0 && size >= 5) {
       // server_name list: list length, then name type 0 (host_name), length, name
-      if (buf[p + 2] === 0) return { sni: buf.toString('ascii', p + 5, p + 5 + buf.readUInt16BE(p + 3)), complete: true };
+      if (buf[p + 2] === 0) sni = buf.toString('ascii', p + 5, p + 5 + buf.readUInt16BE(p + 3));
+    } else if (type === 16 && size >= 2) {
+      // application_layer_protocol_negotiation: list length, then length-prefixed names
+      alpn = [];
+      const end = Math.min(p + 2 + buf.readUInt16BE(p), p + size);
+      for (let q = p + 2; q < end; q += 1 + buf[q]!) alpn.push(buf.toString('ascii', q + 1, q + 1 + buf[q]!));
     }
     p += size;
   }
-  return { sni: null, complete: true };
+  return { sni, complete: true, ...(alpn ? { alpn } : {}) };
 }
 
 /** Map a client-side handshake failure to a short cause. "cert-rejected", "closed" and "reset" usually mean the client refuses our CA. */
@@ -490,6 +508,7 @@ function tlsCause(err: (Error & { code?: string }) | undefined): string {
   if (err.code === 'ECONNRESET') return 'reset';
   if (/no shared cipher|no_shared_cipher/.test(m)) return 'no-shared-cipher';
   if (/unsupported protocol|wrong version|version too low/.test(m)) return 'unsupported-protocol';
+  if (/no application protocol|no_application_protocol/.test(m)) return 'no-alpn-match';
   return 'unknown';
 }
 
@@ -599,7 +618,7 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
   private async route(socket: Duplex, target: Omit<Target, 'secure'> | undefined, head: Buffer | undefined): Promise<void> {
     let first = head?.length ? head : await readChunk(socket);
     if (!first) return void socket.destroy();
-    let hello: { sni: string | null; complete: boolean } | undefined;
+    let hello: ReturnType<typeof parseClientHello> | undefined;
     if (first[0] === 0x16) {
       // Wait for the whole ClientHello (usually already here) to read SNI.
       try {
@@ -630,18 +649,22 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
       const host = (hello.sni ?? target?.host ?? '').toLowerCase();
       const port = target?.port ?? 443;
       if (!host) return void stream.destroy();
-      if (this.opts.shouldDecrypt(host)) return this.terminateTls(stream, { host, port, secure: true, ...(target ? {} : { portGuessed: true }) }, remote);
+      if (this.opts.shouldDecrypt(host)) return this.terminateTls(stream, { host, port, secure: true, ...(target ? {} : { portGuessed: true }) }, remote, hello.alpn);
       return this.passthrough(stream, target?.host ?? host, port, remote);
     }
     const conn: ConnInfo = { remote, target: target ? { ...target, secure: false } : undefined };
     tag(stream, conn);
-    if (h2Preface) return this.serveH2c(stream, conn);
+    if (h2Preface) return this.serveH2(stream, conn);
     this.http.emit('connection', stream);
   }
 
-  /** Cleartext HTTP/2 with prior knowledge, on its own (never listening) server so requests know their connection. */
-  private serveH2c(stream: Duplex, conn: ConnInfo): void {
+  /**
+   * HTTP/2 on a cleartext stream (prior knowledge) or a decrypted one, on its
+   * own (never listening) server so requests know their connection.
+   */
+  private serveH2(stream: Duplex, conn: ConnInfo): void {
     const server = createH2Server();
+    server.on('session', (session) => (conn.clientSession = session));
     server.on('request', (req: Http2ServerRequest, res: Http2ServerResponse) => void this.onRequest(req, res, conn));
     server.on('sessionError', () => undefined);
     server.emit('connection', stream);
@@ -660,18 +683,39 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
   }
 
   /**
-   * Terminate TLS with a leaf for the host. Each decrypted connection gets its
-   * own (never listening) HTTP/2 server with HTTP/1.1 fallback, so its
-   * requests know which tunnel they came through.
+   * Terminate TLS with a leaf for the host. The protocol offered to the
+   * client is the one the server picks: when the client offers h2, the
+   * proxy first connects to the server with the client's offer and lets its
+   * ALPN answer decide (so a server without HTTP/2 shows up as HTTP/1.1, as
+   * it would without the proxy). An h2 server connection is kept and paired
+   * with this client connection. Decrypted HTTP/1.1 goes to the shared
+   * HTTP/1.1 server and HTTP/2 to a per-connection one, both knowing the
+   * tunnel the requests came through.
    */
-  private terminateTls(stream: Duplex, target: Target, remoteAddress: string | null): void {
+  private async terminateTls(stream: Duplex, target: Target, remoteAddress: string | null, alpn?: string[]): Promise<void> {
     const conn: ConnInfo = { remote: remoteAddress, target };
+    let offer: string[] = (alpn ?? []).filter((p) => p === 'h2' || p === 'http/1.1');
+    if (offer.includes('h2')) {
+      const insecure = this.opts.ignoreUpstreamTlsErrors(target.host);
+      const probe = await this.probeAlpn(target, insecure, alpn!);
+      if (probe && 'refused' in probe) {
+        // The server accepts none of the client's protocols: offer one the client did not
+        // ask for, so its handshake fails with the same no_application_protocol alert.
+        offer = [offer.includes('http/1.1') ? 'x-siq-none' : 'http/1.1'];
+      } else if (probe) {
+        offer = probe.protocol && offer.includes(probe.protocol) ? [probe.protocol] : [];
+        if (probe.protocol === 'h2') conn.upstream = { key: this.originKey(target, insecure), session: this.openH2(target, probe.socket, conn) };
+        else probe.socket.destroy();
+      }
+      // When the server cannot be reached, the client's offer stands; its requests then report why.
+      if (stream.destroyed) return;
+    }
     const leaf = this.opts.issuer.issue(target.host);
-    const server = createSecureServer({
-      allowHTTP1: true,
+    const server = createTlsServer({
       // Clients without SNI (IP addresses) get the certificate for the target.
       key: leaf.key,
       cert: leaf.cert,
+      ...(offer.length ? { ALPNProtocols: offer } : {}),
       SNICallback: (name, cb) => {
         try {
           cb(null, this.opts.issuer.issue((name || target.host).toLowerCase()).context);
@@ -685,14 +729,78 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
       secured = true;
       this.track(sock);
       tag(sock, conn);
+      if (sock.alpnProtocol === 'h2') this.serveH2(sock, conn);
+      else {
+        void conn.upstream?.session.then((s) => s?.close());
+        conn.upstream = undefined;
+        this.http.emit('connection', sock);
+      }
     });
     server.on('tlsClientError', (err: Error) => {
       if (!secured) this.emit('tls-client-error', { host: target.host, remoteAddress, cause: tlsCause(err) });
+      void conn.upstream?.session.then((s) => s?.destroy());
     });
-    server.on('request', (req: IncomingMessage | Http2ServerRequest, res: ServerResponse | Http2ServerResponse) => void this.onRequest(req, res, conn));
-    server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => this.onUpgrade(req, socket, head, conn));
-    server.on('sessionError', () => undefined);
     server.emit('connection', stream);
+  }
+
+  /** Connect to the server with the client's ALPN offer and report its choice; undefined when it cannot be reached. */
+  private probeAlpn(target: Target, insecure: boolean, alpn: string[]): Promise<{ protocol: string | false; socket: TLSSocket } | { refused: true } | undefined> {
+    return new Promise((resolve) => {
+      const sock = tlsConnect({
+        host: target.host,
+        port: target.port,
+        servername: isIP(target.host) ? undefined : target.host,
+        ALPNProtocols: alpn,
+        ...upstreamTls(target.host, insecure),
+      });
+      this.track(sock);
+      const timer = setTimeout(() => sock.destroy(new Error('timed out')), 10_000);
+      sock.once('error', (err: NodeJS.ErrnoException) => {
+        clearTimeout(timer);
+        resolve(/NO_APPLICATION_PROTOCOL/i.test(`${err.code ?? ''} ${err.message}`) ? { refused: true } : undefined);
+      });
+      sock.once('secureConnect', () => {
+        clearTimeout(timer);
+        sock.removeAllListeners('error');
+        sock.on('error', () => undefined);
+        resolve({ protocol: sock.alpnProtocol ?? false, socket: sock });
+      });
+    });
+  }
+
+  private originKey(target: Target, insecure: boolean): string {
+    return `${target.secure ? 'https' : 'http'}://${hostPort(target.host, target.port, target.secure)}|${insecure ? 'insecure' : 'verify'}`;
+  }
+
+  /**
+   * An HTTP/2 client session over `sock`, ready once the server's SETTINGS
+   * arrive; undefined when the server does not speak HTTP/2 there. With
+   * `pair`, closing the server session also closes that client connection's
+   * session, as it would have closed without the proxy.
+   */
+  private openH2(target: Target, sock: Duplex, pair?: ConnInfo): Promise<ClientHttp2Session | undefined> {
+    const authority = `${target.secure ? 'https' : 'http'}://${hostPort(target.host, target.port, target.secure)}`;
+    return new Promise((resolve) => {
+      const session = h2Connect(authority, { createConnection: () => sock });
+      let settled = false;
+      const settle = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (ok) return resolve(session);
+        session.destroy();
+        resolve(undefined);
+      };
+      const timer = setTimeout(() => settle(false), 10_000);
+      session.once('remoteSettings', () => settle(true));
+      session.on('error', () => settle(false));
+      session.once('close', () => {
+        settle(false);
+        pair?.clientSession?.close();
+      });
+      // Idle sessions close after a minute, like the HTTP/1.1 keep-alive agents.
+      session.setTimeout(60_000, () => session.close());
+    });
   }
 
   private onConnect(req: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -801,77 +909,49 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
   }
 
   /**
-   * A shared HTTP/2 session to the target, or undefined when it does not
-   * speak HTTP/2 (or cannot be reached, which the HTTP/1.1 attempt then
-   * reports). TLS asks for h2 or http/1.1 by ALPN; cleartext tries prior
-   * knowledge and waits for the server's SETTINGS.
+   * A shared HTTP/2 session to the target, for requests a rule sent
+   * somewhere other than the client connection's own server. Undefined when
+   * the server does not speak HTTP/2 (then HTTP/1.1 is used) or cannot be
+   * reached (which the HTTP/1.1 attempt then reports). TLS asks for h2 or
+   * http/1.1 by ALPN; cleartext tries prior knowledge.
    */
   private upstreamH2(target: Target, insecure: boolean): Promise<ClientHttp2Session | undefined> {
-    const key = `${target.secure ? 'https' : 'http'}://${hostPort(target.host, target.port, target.secure)}|${insecure ? 'insecure' : 'verify'}`;
+    const key = this.originKey(target, insecure);
     if (this.h1Only.has(key)) return Promise.resolve(undefined);
     const known = this.h2Sessions.get(key);
     if (known) return known;
-    const authority = `${target.secure ? 'https' : 'http'}://${hostPort(target.host, target.port, target.secure)}`;
-    const forget = (p: Promise<unknown>) => {
-      if (this.h2Sessions.get(key) === p) this.h2Sessions.delete(key);
-    };
-    const pending = new Promise<ClientHttp2Session | undefined>((resolve) => {
-      const give = (sock: Duplex) => {
-        const session = h2Connect(authority, { createConnection: () => sock });
-        let settled = false;
-        const timer = setTimeout(() => fail(true), 10_000);
-        const fail = (h1: boolean) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          if (h1) this.h1Only.add(key);
-          session.destroy();
-          forget(pending);
-          resolve(undefined);
-        };
-        session.once('remoteSettings', () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(session);
-        });
-        session.on('error', () => (settled ? undefined : fail(!target.secure)));
-        session.once('close', () => (settled ? forget(pending) : fail(!target.secure)));
-        session.once('goaway', () => forget(pending));
-        // Idle sessions close after a minute, like the HTTP/1.1 keep-alive agents.
-        session.setTimeout(60_000, () => {
-          forget(pending);
-          session.close();
-        });
-      };
-      if (!target.secure) {
-        const sock = netConnect({ host: target.host, port: target.port });
-        sock.once('error', () => (forget(pending), resolve(undefined)));
-        sock.once('connect', () => {
-          sock.removeAllListeners('error');
-          give(sock);
-        });
-        return;
-      }
-      const sock = tlsConnect({
-        host: target.host,
-        port: target.port,
-        servername: isIP(target.host) ? undefined : target.host,
-        ALPNProtocols: ['h2', 'http/1.1'],
-        ...upstreamTls(target.host, insecure),
-      });
-      sock.once('error', () => (forget(pending), resolve(undefined)));
-      sock.once('secureConnect', () => {
-        sock.removeAllListeners('error');
-        if (sock.alpnProtocol === 'h2') return give(sock);
+    const pending: Promise<ClientHttp2Session | undefined> = (target.secure ? this.probeAlpn(target, insecure, ['h2', 'http/1.1']) : this.connectPlain(target)).then(async (r) => {
+      if (!r || 'refused' in r) return undefined;
+      const sock = 'protocol' in r ? r.socket : r;
+      if ('protocol' in r && r.protocol !== 'h2') {
         this.h1Only.add(key);
         sock.destroy();
-        forget(pending);
-        resolve(undefined);
-      });
+        return undefined;
+      }
+      const session = await this.openH2(target, sock);
+      if (!session) this.h1Only.add(key);
+      else session.once('close', () => forget());
+      return session;
     });
+    const forget = () => {
+      if (this.h2Sessions.get(key) === pending) this.h2Sessions.delete(key);
+    };
+    void pending.then((s) => s ?? forget());
     this.h2Sessions.set(key, pending);
     return pending;
+  }
+
+  private connectPlain(target: Target): Promise<Socket | undefined> {
+    return new Promise((resolve) => {
+      const sock = netConnect({ host: target.host, port: target.port });
+      this.track(sock);
+      sock.once('error', () => resolve(undefined));
+      sock.once('connect', () => {
+        sock.removeAllListeners('error');
+        sock.on('error', () => undefined);
+        resolve(sock);
+      });
+    });
   }
 
   private async onRequest(req: IncomingMessage | Http2ServerRequest, res: ServerResponse | Http2ServerResponse, conn?: ConnInfo): Promise<void> {
@@ -984,10 +1064,30 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
 
     if (!streamingUpload) headers = withLength(headers, outBody.length, false);
     const insecure = this.opts.ignoreUpstreamTlsErrors(target.host);
-    // An HTTP/2 client goes upstream over HTTP/2 when the server speaks it: over TLS
-    // when ALPN picks h2, in cleartext when the client itself used prior knowledge.
-    const clientCleartext = h2 && req.headers[':scheme'] === 'http';
-    const session = h2 && (target.secure || clientCleartext) ? await this.upstreamH2(target, insecure) : undefined;
+    // An HTTP/2 client goes upstream on the server connection paired with its own:
+    // the one whose ALPN answer gave it h2, or, for prior knowledge in cleartext, one
+    // opened the same way. A server that refuses that gets a 502 rather than a quiet
+    // switch to HTTP/1.1, so the client sees the server's HTTP/2 support as it is.
+    // Requests a rule sent elsewhere use a shared session, or HTTP/1.1.
+    let session: ClientHttp2Session | undefined;
+    if (h2) {
+      const c = conn ?? this.connOf(req);
+      const key = this.originKey(target, insecure);
+      if (c && !c.upstream && !target.secure && req.headers[':scheme'] === 'http' && !(c.target && this.originKey({ ...c.target, secure: false }, insecure) !== key)) {
+        c.upstream = { key, session: this.connectPlain(target).then((sock) => (sock ? this.openH2(target, sock, c) : undefined)) };
+      }
+      if (c?.upstream?.key === key) {
+        session = await c.upstream.session;
+        if (!session || session.closed || session.destroyed) {
+          const why = session ? 'closed its HTTP/2 connection' : target.secure ? 'agreed to HTTP/2 by ALPN but its HTTP/2 connection failed' : 'did not accept HTTP/2 with prior knowledge (cleartext)';
+          if (!res.headersSent) {
+            res.statusCode = 502;
+            res.end(`SiteInquisition: ${target.host}:${target.port} ${why}.`);
+          }
+          return abort('error', `server ${why}`);
+        }
+      } else if (target.secure || req.headers[':scheme'] === 'http') session = await this.upstreamH2(target, insecure);
+    }
     let upstreamReq: Writable;
     let onUpstreamResponse: (cb: (up: UpstreamResponse) => void) => void;
     if (session) {
@@ -1176,29 +1276,224 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
   }
 
   /**
-   * Answer an "Upgrade: h2c" request over HTTP/1.1, as if the offer was never
-   * made (RFC 9113 lets a server ignore it): the request is written back
-   * into the connection without Upgrade and HTTP2-Settings, and the HTTP/1.1
-   * server reads it like any other. Clients such as curl --http2 then carry
-   * on over HTTP/1.1; HTTP/2 over cleartext needs prior knowledge.
+   * Relay an "Upgrade: h2c" request to the server and let it decide. When it
+   * answers normally, that answer goes back over HTTP/1.1. When it answers 101,
+   * the connection is HTTP/2 on both sides: the proxy relays the bytes
+   * untouched and reads them on the side (h2tap) to record each stream, with
+   * the upgraded request's answer on stream 1. Rules and breakpoints do not
+   * apply on such a connection, since nothing is held or rewritten.
    */
-  private declineUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    const drop = new Set(['upgrade', 'http2-settings']);
-    const lines: string[] = [];
-    for (const [k, v] of pairsOf(req.rawHeaders)) {
-      const l = k.toLowerCase();
-      if (drop.has(l)) continue;
-      if (l === 'connection') {
-        const keep = v.split(',').map((t) => t.trim()).filter((t) => t && !drop.has(t.toLowerCase()));
-        if (keep.length) lines.push(`${k}: ${keep.join(', ')}`);
-        continue;
-      }
-      lines.push(`${k}: ${v}`);
+  private async relayH2cUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, conn?: ConnInfo): Promise<void> {
+    const startTime = Date.now();
+    const t0 = performance.now();
+    const rel = () => Math.round((performance.now() - t0) * 1000) / 1000;
+    let url: URL;
+    let target: Target;
+    try {
+      ({ url, target } = this.urlOf(req, false, conn));
+    } catch {
+      return void socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
     }
-    const again = Buffer.from(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n${lines.map((l) => `${l}\r\n`).join('')}\r\n`, 'latin1');
-    const stream = new Prefixed(socket, head.length ? Buffer.concat([again, head]) : again);
-    this.track(stream);
-    this.http.emit('connection', stream);
+    // A body (rare on an upgrade) is read whole before the request goes on.
+    const length = Number(req.headers['content-length']) || 0;
+    let rest = head;
+    while (rest.length < length) {
+      const more = await readChunk(socket);
+      if (!more) return void socket.destroy();
+      rest = Buffer.concat([rest, more]);
+    }
+    const body = rest.subarray(0, length);
+    rest = rest.subarray(length);
+    const preq = this.newRequest(req, url, body, startTime, conn);
+    this.emit('request', preq);
+    let done = false;
+    const fail = (message: string) => {
+      if (done) return;
+      done = true;
+      this.emit('abort', { id: preq.id, kind: 'error', message, timings: { total: rel() } });
+    };
+    const insecure = this.opts.ignoreUpstreamTlsErrors(target.host);
+    const fwd = preq.headers.filter(([k]) => !['proxy-connection', 'proxy-authorization', 'keep-alive'].includes(k.toLowerCase()));
+    const upReq = (target.secure ? httpsRequest : httpRequest)({
+      host: target.host,
+      port: target.port,
+      method: req.method,
+      path: url.pathname + url.search,
+      headers: flat(fwd) as unknown as Record<string, string>,
+      setHost: false,
+      agent: false,
+      ...(target.secure ? { servername: isIP(target.host) ? undefined : target.host, ...upstreamTls(target.host, insecure) } : {}),
+    });
+    socket.once('close', () => {
+      if (!done) upReq.destroy();
+    });
+    upReq.once('error', (err) => {
+      if (done) return;
+      socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      fail(err.message);
+    });
+    upReq.once('response', (r) => {
+      // The server stayed on HTTP/1.1: relay its answer as it is.
+      void readAll(r).catch(() => Buffer.alloc(0)).then((data) => {
+        if (done) return;
+        done = true;
+        const hdrs = pairsOf(r.rawHeaders);
+        const sent = withLength(endToEnd(hdrs), data.length, true);
+        socket.write(`HTTP/1.1 ${r.statusCode} ${r.statusMessage ?? ''}\r\n${sent.map(([k, v]) => `${k}: ${v}\r\n`).join('')}Connection: close\r\n\r\n`);
+        socket.end(data);
+        this.emit('response', { id: preq.id, status: r.statusCode ?? 502, statusMessage: r.statusMessage, headers: hdrs, body: data, timings: { responseHeaders: rel(), total: rel() } });
+      });
+    });
+    upReq.once('upgrade', (r: IncomingMessage, upstream: Duplex, upHead: Buffer) => {
+      if (done) return void upstream.destroy();
+      done = true;
+      this.track(upstream);
+      const hdrs = pairsOf(r.rawHeaders);
+      socket.write(`HTTP/1.1 ${r.statusCode} ${r.statusMessage ?? 'Switching Protocols'}\r\n${hdrs.map(([k, v]) => `${k}: ${v}\r\n`).join('')}\r\n`);
+      const record = this.recordH2Streams(preq, url, conn ?? infoOf(socket), t0);
+      const fromClient = new H2Tap(true, record.client);
+      const fromServer = new H2Tap(false, record.server);
+      const relay = (from: Duplex, to: Duplex, tap: H2Tap) => {
+        from.on('data', (c: Buffer) => {
+          tap.push(c);
+          if (!to.write(c)) {
+            from.pause();
+            to.once('drain', () => from.resume());
+          }
+        });
+        from.once('end', () => to.end());
+      };
+      if (upHead.length) {
+        fromServer.push(upHead);
+        socket.write(upHead);
+      }
+      if (rest.length) {
+        fromClient.push(rest);
+        upstream.write(rest);
+      }
+      relay(socket, upstream, fromClient);
+      relay(upstream, socket, fromServer);
+      const close = () => {
+        socket.destroy();
+        upstream.destroy();
+        record.closed();
+      };
+      socket.once('close', close);
+      upstream.once('close', close);
+      socket.resume();
+      upstream.resume();
+    });
+    upReq.end(body);
+  }
+
+  /** Turns the frames read off an upgraded HTTP/2 connection into request, response and abort events. */
+  private recordH2Streams(first: ProxiedRequest, base: URL, conn: ConnInfo | undefined, t0: number) {
+    const maxCapture = this.opts.maxCaptureBytes ?? DEFAULT_CAPTURE;
+    interface Rec {
+      req?: ProxiedRequest;
+      head?: HeaderPairs;
+      reqBody: Capture;
+      sent: boolean;
+      status?: number;
+      resHeaders?: HeaderPairs;
+      resBody: Capture;
+      start: number;
+      timings: Timings;
+      over: boolean;
+    }
+    const now = () => performance.now();
+    const streams = new Map<number, Rec>();
+    const rec = (id: number): Rec => {
+      let r = streams.get(id);
+      if (!r) {
+        r = { reqBody: new Capture(maxCapture), resBody: new Capture(maxCapture), sent: false, start: id === 1 ? t0 : now(), timings: {}, over: false };
+        if (id === 1) Object.assign(r, { req: first, sent: true });
+        streams.set(id, r);
+      }
+      return r;
+    };
+    const ms = (r: Rec) => Math.round((now() - r.start) * 1000) / 1000;
+    const sendRequest = (r: Rec) => {
+      if (r.sent || !r.head) return;
+      r.sent = true;
+      const h = (n: string) => r.head!.find(([k]) => k === n)?.[1];
+      let url: URL;
+      try {
+        url = new URL(h(':path') ?? '/', `${h(':scheme') ?? base.protocol.replace(':', '')}://${h(':authority') ?? base.host}`);
+      } catch {
+        url = base;
+      }
+      r.req = {
+        id: `r${++this.seq}`,
+        method: h(':method') ?? 'GET',
+        url: url.href,
+        httpVersion: '2.0',
+        headers: r.head,
+        body: r.reqBody.body,
+        ...(r.reqBody.truncated ? { bodySize: r.reqBody.size } : {}),
+        remoteAddress: conn?.remote ?? null,
+        startTime: Date.now() - Math.round(now() - r.start),
+        hostname: url.hostname.replace(/^\[|\]$/g, ''),
+      };
+      this.emit('request', r.req);
+    };
+    const finish = (r: Rec) => {
+      if (r.over || !r.req) return;
+      r.over = true;
+      r.timings.total = ms(r);
+      this.emit('response', { id: r.req.id, status: r.status ?? 0, headers: r.resHeaders ?? [], body: r.resBody.body, ...(r.resBody.truncated ? { bodySize: r.resBody.size } : {}), timings: r.timings });
+    };
+    const abort = (r: Rec, message: string) => {
+      sendRequest(r);
+      if (r.over || !r.req) return;
+      r.over = true;
+      r.timings.total = ms(r);
+      this.emit('abort', { id: r.req.id, kind: 'aborted', message, timings: r.timings });
+    };
+    rec(1);
+    return {
+      client: {
+        headers: (id: number, fields: HeaderPairs, end: boolean) => {
+          const r = rec(id);
+          if (!r.head && !r.sent) r.head = fields;
+          if (end) {
+            r.timings.requestBody = ms(r);
+            sendRequest(r);
+          }
+        },
+        data: (id: number, data: Buffer, end: boolean) => {
+          const r = rec(id);
+          r.reqBody.add(data);
+          if (end) {
+            r.timings.requestBody = ms(r);
+            sendRequest(r);
+          }
+        },
+        reset: (id: number, code: number) => abort(rec(id), `client reset the stream (code ${code})`),
+      },
+      server: {
+        headers: (id: number, fields: HeaderPairs, end: boolean) => {
+          const r = rec(id);
+          sendRequest(r);
+          const status = Number(fields.find(([k]) => k === ':status')?.[1]);
+          if (r.status === undefined && status >= 200) {
+            r.status = status;
+            r.resHeaders = fields.filter(([k]) => !k.startsWith(':'));
+            r.timings.responseHeaders = ms(r);
+          }
+          if (end) finish(r);
+        },
+        data: (id: number, data: Buffer, end: boolean) => {
+          const r = rec(id);
+          r.resBody.add(data);
+          if (end) finish(r);
+        },
+        reset: (id: number, code: number) => abort(rec(id), `server reset the stream (code ${code})`),
+      },
+      closed: () => {
+        for (const r of streams.values()) abort(r, 'connection closed');
+      },
+    };
   }
 
   /**
@@ -1212,7 +1507,7 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
     this.track(socket);
     const offers = (req.headers.upgrade ?? '').split(',').map((p) => p.trim().toLowerCase());
     if (!offers.includes('websocket')) {
-      if (offers.includes('h2c')) return this.declineUpgrade(req, socket, head);
+      if (offers.includes('h2c')) return void this.relayH2cUpgrade(req, socket, head, conn);
       return void socket.destroy();
     }
     const startTime = Date.now();

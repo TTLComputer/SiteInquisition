@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **HTTP/2 in transparent mode.** Cleartext HTTP/2 with prior knowledge is served (straight to the port or in a tunnel) instead of failing with a protocol error. An `Upgrade: h2c` offer (curl `--http2` on `http://`) is answered over HTTP/1.1 instead of dropping the connection. TLS sent straight to the port now goes to the port in Host or `:authority` rather than always 443. HTTP/2 clients are forwarded over HTTP/2 when the server offers it (ALPN, or prior knowledge for cleartext), with trailers and `te: trailers`, so gRPC passes through.
+- **HTTP/2 in transparent mode, decided by the server.** Cleartext HTTP/2 with prior knowledge is served (straight to the port or in a tunnel) and passed on as prior knowledge; a server that refuses it gives a 502 rather than a silent switch to HTTP/1.1. An `Upgrade: h2c` offer (curl `--http2` on `http://`) goes to the server instead of dropping the connection; if it accepts, the HTTP/2 connection is relayed untouched and its streams recorded (rules and breakpoints do not apply there). Over TLS the client is offered the protocol the server picked by ALPN, including a refusal. TLS sent straight to the port goes to the port in Host or `:authority` rather than always 443. HTTP/2 keeps trailers and `te: trailers`, so gRPC passes through.
 
 ## 1.0.0-beta.1
 

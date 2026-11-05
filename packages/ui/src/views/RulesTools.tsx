@@ -7,6 +7,7 @@ import { Icon } from '../components/icons';
 import { asText, fmtTime, parseRawRequest, toRawRequest } from '../format';
 import { diffLines } from '../diff';
 import { TokenPicker } from './TokenPicker';
+import { RegionEditor, useRegions } from '../components/Decoded';
 
 type Keyed<T> = Partial<T> & { key: string };
 let n = 1;
@@ -305,6 +306,8 @@ function PausedQueue() {
   const [selected, setSelected] = useState<string | null>(null);
   const [raw, setRaw] = useState('');
   const [rawFor, setRawFor] = useState<string | null>(null);
+  // Parts shown decoded in place; encoded again on Forward.
+  const dec = useRegions(raw, setRaw);
   const cur = paused.find((p) => p.id === selected) ?? paused[0];
   const [wsFormat, setWsFormat] = useState<'text' | 'base64'>('text');
   useEffect(() => {
@@ -322,6 +325,7 @@ function PausedQueue() {
   const resolve = async (action: 'forward' | 'drop' | 'forward-pause-response') => {
     try {
       let edits: Record<string, unknown> | undefined;
+      const raw = await dec.encoded();
       if (action !== 'drop') {
         if (cur.phase === 'message') {
           const bytes = wsFormat === 'text' ? new TextEncoder().encode(raw) : base64ToBytes(raw.replace(/\s+/g, ''));
@@ -403,8 +407,11 @@ function PausedQueue() {
               </div>
             </div>
           )}
-          <textarea className="editor" style={{ height: 220 }} spellCheck={false} value={raw} onChange={(e) => setRaw(e.target.value)} aria-label="Paused message" />
+          <RegionEditor {...dec.editor} className="editor" style={{ height: 220 }} spellCheck={false} aria-label="Paused message" />
           <div className="replay-bar">
+            <button className="btn small" onClick={() => void dec.decode()} title="Show the selection, or the value under the caret, decoded in place. It is encoded again on Forward. Ctrl D">
+              Decode
+            </button>
             <button className="btn primary small" onClick={() => void resolve('forward')}>
               Forward
             </button>

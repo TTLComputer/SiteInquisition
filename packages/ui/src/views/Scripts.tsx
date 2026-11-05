@@ -4,6 +4,7 @@ import type { RunResult, Script, ScriptStats } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { fmtMs, fmtTime } from '../format';
+import { DecodableText } from '../components/Decoded';
 
 const TEMPLATES: Record<Script['kind'], string> = {
   hook: `// Runs on every in-scope request and response the proxy may modify.
@@ -80,7 +81,11 @@ function Output({ r }: { r: RunResult | null }) {
           ))}
         </pre>
       )}
-      {r.value !== undefined && <pre className="raw">{r.value}</pre>}
+      {r.value !== undefined && (
+        <pre className="raw">
+          <DecodableText text={r.value} viewKey={`script:${r.value.length}:${r.value.slice(0, 64)}`} label="Script result" />
+        </pre>
+      )}
     </div>
   );
 }

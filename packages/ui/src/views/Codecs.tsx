@@ -7,6 +7,7 @@ import { FieldCodecRules } from './FieldCodecs';
 import { asText, hexDump } from '../format';
 import { TokenPicker } from './TokenPicker';
 import { ReplayButton } from '../components/ReplayButton';
+import { DecodableText } from '../components/Decoded';
 
 type Layer = { kind: 'bytes'; bytes: Uint8Array } | { kind: 'value'; value: unknown };
 
@@ -497,7 +498,9 @@ export function Codecs() {
                 <summary>
                   <span className="mono">after {chain[i]}</span> <span className="faint">{l.kind === 'bytes' ? `${l.bytes.length} bytes` : 'value'}</span>
                 </summary>
-                <pre className="raw">{layerText(l).slice(0, 4000)}</pre>
+                <pre className="raw">
+                  <DecodableText text={layerText(l).slice(0, 4000)} viewKey={`layer:${i}:${chain.join('>')}`} label={`Layer after ${chain[i]}`} />
+                </pre>
               </details>
             ))}
           </div>
@@ -628,7 +631,7 @@ export function Codecs() {
             </ReplayButton>
           </div>
           <pre className="raw" aria-label="Encoded result">
-            {encodeError ? <span className="faint" role="status">{encodeError}</span> : (result ?? <span className="faint">Encoding…</span>)}
+            {encodeError ? <span className="faint" role="status">{encodeError}</span> : result !== null ? <DecodableText text={result} viewKey="codecs:result" /> : <span className="faint">Encoding…</span>}
           </pre>
         </section>
       </div>

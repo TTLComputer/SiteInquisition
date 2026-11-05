@@ -4,6 +4,8 @@ import { useApp, type H3Item } from '../state';
 import { Icon } from '../components/icons';
 import { fmtMs as fmtMsBase, parseRawRequest, toRawRequest } from '../format';
 import { bodyText } from '../actions';
+import { RegionEditor } from '../components/Decoded';
+import { adjustRegions } from '@siteinquisition/codecs/regionedit';
 
 /** Sub-10 ms values keep two decimals: gate spreads are often well under a millisecond. */
 const fmtMs = (n: number | null | undefined) => (n !== null && n !== undefined && n < 10 ? `${n.toFixed(2)} ms` : fmtMsBase(n));
@@ -156,7 +158,7 @@ export function H3Lab() {
   const run = async () => {
     setRunning(true);
     try {
-      const requests = h3Items.map((i) => {
+      const requests = (await Promise.all(h3Items.map(async (i) => ({ ...i, raw: i.regions?.length ? (await client.encodeRegions(i.raw, i.regions)).text : i.raw })))).map((i) => {
         const p = parseRawRequest(i.raw);
         return {
           method: p.method,
@@ -189,7 +191,10 @@ export function H3Lab() {
 
   const fromRace = () => {
     if (!raceItems.length) return notify('Nothing in Race to copy.');
-    setH3Items([...h3Items, ...raceItems.map((r, n) => ({ key: `${Date.now()}-r${n}`, raw: r.raw.replace(/^(\w+ )http:/, '$1https:'), replayOf: r.replayOf, openAtMs: r.offsetMs || undefined }))]);
+    setH3Items([...h3Items, ...raceItems.map((r, n) => {
+      const raw = r.raw.replace(/^(\w+ )http:/, '$1https:');
+      return { key: `${Date.now()}-r${n}`, raw, regions: r.regions && adjustRegions(r.regions, r.raw, raw), replayOf: r.replayOf, openAtMs: r.offsetMs || undefined };
+    })]);
   };
 
   const numField = (label: string, value: number | undefined, onChange: (v: number | undefined) => void, title: string, width = 72) => (
@@ -434,7 +439,16 @@ export function H3Lab() {
                         <input className="input mono" value={it.priorityUpdateValue ?? ''} placeholder="u=0" onChange={(e) => patch(it.key, { priorityUpdateValue: e.target.value || undefined })} style={{ width: 72 }} aria-label={`Priority update for row ${i + 1}`} />
                       </label>
                     </div>
-                    <textarea className="editor" style={{ height: 160 }} spellCheck={false} value={it.raw} onChange={(e) => patch(it.key, { raw: e.target.value })} aria-label={`Raw request ${i + 1}`} />
+                    <RegionEditor
+                      className="editor"
+                      style={{ height: 160 }}
+                      spellCheck={false}
+                      value={it.raw}
+                      regions={it.regions ?? []}
+                      onChange={(d) => patch(it.key, { raw: d.text, regions: d.regions })}
+                      aria-label={`Raw request ${i + 1}`}
+                      title="Ctrl D shows a selected value decoded in place; it is encoded again when sent."
+                    />
                   </div>
                 )}
               </div>

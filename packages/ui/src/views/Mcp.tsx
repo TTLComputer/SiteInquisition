@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ActivityEntry, Approval, Decision, HeaderList, McpSettings } from '../api';
 import { useApp } from '../state';
 import { fmtMs, fmtTime } from '../format';
+import { DecodableText } from '../components/Decoded';
 
 /** What an agent asked to do, and the four ways to answer. */
 export function ApprovalCard({ a }: { a: Approval }) {
@@ -35,7 +36,7 @@ export function ApprovalCard({ a }: { a: Approval }) {
           Arguments
         </summary>
         <pre className="raw" style={{ maxHeight: 200, overflow: 'auto' }}>
-          {JSON.stringify(a.args, null, 2)}
+          <DecodableText text={JSON.stringify(a.args, null, 2)} viewKey={`mcp:${a.id}`} label="Arguments" />
         </pre>
       </details>
       <div className="replay-bar" style={{ borderBottom: 'none' }}>

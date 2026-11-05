@@ -663,6 +663,7 @@ function StepEditor(props: {
             </div>
           )}
           <RegionEditor
+            decodeKey={false}
             textareaRef={props.editorRef}
             data-step="1"
             spellCheck={false}

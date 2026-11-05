@@ -5,6 +5,7 @@ import { Icon } from '../components/icons';
 import { fmtMs, parseRawRequest, toRawRequest } from '../format';
 import { bodyText } from '../actions';
 import { ReplayButton } from '../components/ReplayButton';
+import { RegionEditor } from '../components/Decoded';
 
 type Sync = 'last-byte' | 'single-packet' | 'h3-single-datagram' | 'none';
 const SYNC: Array<{ id: Sync; label: string; hint: string }> = [
@@ -45,7 +46,7 @@ export function Race() {
   const run = async () => {
     setRunning(true);
     try {
-      const requests = raceItems.map((i) => {
+      const requests = (await Promise.all(raceItems.map(async (i) => ({ ...i, raw: i.regions?.length ? (await client.encodeRegions(i.raw, i.regions)).text : i.raw })))).map((i) => {
         const p = parseRawRequest(i.raw);
         return { method: p.method, url: p.url, headers: p.headers, body: p.body ? new TextEncoder().encode(p.body) : undefined, offsetMs: i.offsetMs, replayOf: i.replayOf ?? null };
       });
@@ -131,7 +132,18 @@ export function Race() {
                     <Icon name="trash" size={13} />
                   </button>
                 </div>
-                {open === it.key && <textarea className="editor" style={{ height: 180 }} spellCheck={false} value={it.raw} onChange={(e) => patch(it.key, { raw: e.target.value })} aria-label={`Raw request ${i + 1}`} />}
+                {open === it.key && (
+                  <RegionEditor
+                    className="editor"
+                    style={{ height: 180 }}
+                    spellCheck={false}
+                    value={it.raw}
+                    regions={it.regions ?? []}
+                    onChange={(d) => patch(it.key, { raw: d.text, regions: d.regions })}
+                    aria-label={`Raw request ${i + 1}`}
+                    title="Ctrl D shows a selected value decoded in place; it is encoded again when raced."
+                  />
+                )}
               </div>
             );
           })}

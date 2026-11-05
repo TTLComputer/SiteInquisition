@@ -667,3 +667,4 @@ textarea.region-ta::selection { background: color-mix(in srgb, var(--accent) 35%
   background: color-mix(in srgb, var(--script) 8%, var(--bg-panel)); border-bottom: 1px solid var(--line);
 }
 .region-strip .mono { color: var(--script-soft); }
+.region-backdrop.composer-text { border-top: 1px solid transparent; }

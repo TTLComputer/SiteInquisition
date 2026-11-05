@@ -229,7 +229,9 @@ export function Messages({ exchangeId, protocol }: { exchangeId: string; protoco
             <summary>
               Decoded <span className="badge">{selProto === 'socketio' ? 'Socket.IO' : 'SignalR'}</span>
             </summary>
-            <pre className="raw">{JSON.stringify(selDecoded, null, 2)}</pre>
+            <pre className="raw">
+              <DecodableText text={JSON.stringify(selDecoded, null, 2)} viewKey={`frame:${sel!.id}`} label="Decoded frame" />
+            </pre>
           </details>
         )}
         <pre className="raw">

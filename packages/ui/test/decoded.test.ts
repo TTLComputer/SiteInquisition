@@ -206,4 +206,64 @@ describe.skipIf(!ready)('Decoded regions in the renderer', () => {
     const msg = JSON.parse(sentText()[0]!) as { type: string; token: string };
     expect(JSON.parse(Buffer.from(msg.token, 'base64').toString())).toEqual({ user: 'ada', room: 'lobby' });
   });
+
+  it('decodes in the breakpoint editor and forwards the edit encoded', async () => {
+    h.core.tools.setBreakpoints([{ phase: 'request', pathPrefix: '/api/hold' }]);
+    const blob = b64({ qty: 1, sku: 'A-1' });
+    const status = h.send('/api/hold', 'POST', JSON.stringify({ blob }));
+    await expect.poll(() => page.getByTestId('paused-chip').count()).toBe(1);
+    await page.getByTestId('paused-chip').click();
+    const msg = page.getByLabel('Paused message');
+    await expect.poll(() => msg.inputValue()).toContain(blob);
+    await caret('Paused message', blob, 4);
+    await page.keyboard.press('Control+d');
+    await expect.poll(() => msg.inputValue()).toContain('"qty": 1');
+    await shot('decode-inline-breakpoint');
+    await msg.fill((await msg.inputValue()).replace('"qty": 1', '"qty": 5'));
+    await page.getByLabel('Paused traffic').getByRole('button', { name: 'Forward', exact: true }).click();
+    expect(await status).toBe(200);
+    const [ex] = h.core.store.search('path:/api/hold');
+    const echoed = JSON.parse((JSON.parse(Buffer.from(h.core.store.getBody(ex!.id, 'response', true)!).toString()) as { echo: string }).echo) as { blob: string };
+    expect(JSON.parse(Buffer.from(echoed.blob, 'base64').toString())).toEqual({ qty: 5, sku: 'A-1' });
+    h.core.tools.setBreakpoints([]);
+  });
+
+  it('decodes in a Race request and races it encoded', async () => {
+    const blob = b64({ coupon: 'SAVE10' });
+    await h.send('/api/race-me', 'POST', JSON.stringify({ blob }));
+    await nav('History');
+    await page.locator('.row', { hasText: '/api/race-me' }).first().click();
+    await page.locator('body').click({ position: { x: 700, y: 20 } });
+    await page.keyboard.press('Control+Shift+R');
+    await expect.poll(() => page.locator('.race-item').count()).toBe(1);
+    await page.locator('.race-item').getByRole('button', { name: 'Edit' }).click();
+    await caret('Raw request 1', blob, 4);
+    await page.keyboard.press('Control+d');
+    const ed = page.getByLabel('Raw request 1');
+    await expect.poll(() => ed.inputValue()).toContain('"coupon": "SAVE10"');
+    await ed.fill((await ed.inputValue()).replace('SAVE10', 'SAVE99'));
+    await page.locator('.race .btn.primary').click();
+    await expect.poll(() => h.core.store.search('path:/api/race-me').filter((e) => e.replayOf).length, { timeout: 15_000 }).toBe(1);
+    const sent = h.core.store.search('path:/api/race-me').find((e) => e.replayOf)!;
+    const body = JSON.parse(new TextDecoder().decode(h.core.store.getBody(sent.id, 'request', true)!)) as { blob: string };
+    expect(JSON.parse(Buffer.from(body.blob, 'base64').toString())).toEqual({ coupon: 'SAVE99' });
+  });
+
+  it('decodes in the Streams composer and sends the message encoded', async () => {
+    const { exchangeId } = await h.core.tools.ws.connect({ url: `ws://127.0.0.1:${h.upstreamPort}/compose`, headers: [] });
+    await nav('Streams');
+    await page.locator('.streams .saved-view', { hasText: '/compose' }).click();
+    const token = b64({ user: 'nick' });
+    const pl = page.getByLabel('Message payload');
+    await pl.fill(`{"token":"${token}"}`);
+    await caret('Message payload', token, 3);
+    await page.getByLabel('Composer').getByRole('button', { name: 'Decode', exact: true }).click();
+    await expect.poll(() => pl.inputValue()).toContain('"user": "nick"');
+    await pl.fill((await pl.inputValue()).replace('"nick"', '"ada"'));
+    await page.getByRole('button', { name: 'Send frame' }).click();
+    const sentToken = b64({ user: 'ada' });
+    await expect.poll(() => page.locator('.streams .msg-table').textContent()).toContain(`echo {"token":"${sentToken}"}`);
+    await shot('decode-inline-streams');
+    h.core.tools.ws.close(exchangeId);
+  });
 });

@@ -385,6 +385,7 @@ export function RegionEditor({
   textareaRef,
   save,
   className = 'editor',
+  decodeKey = true,
   ...rest
 }: {
   value: string;
@@ -393,7 +394,10 @@ export function RegionEditor({
   textareaRef?: RefObject<HTMLTextAreaElement | null> | ((el: HTMLTextAreaElement | null) => void);
   save?: SaveContext;
   className?: string;
+  /** Handle Ctrl D here (decode the selection in place). Off where the view has its own shortcut. */
+  decodeKey?: boolean;
 } & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'>) {
+  const { client, notify } = useApp();
   const own = useRef<HTMLTextAreaElement | null>(null);
   const back = useRef<HTMLPreElement>(null);
   const [caret, setCaret] = useState<[number, number] | null>(null);
@@ -440,8 +444,56 @@ export function RegionEditor({
           onKeyUp={track}
           onClick={track}
           onChange={(e) => onChange({ text: e.target.value, regions: adjustRegions(regions, value, e.target.value) })}
+          onKeyDown={(e) => {
+            rest.onKeyDown?.(e);
+            if (!decodeKey || e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== 'd') return;
+            e.preventDefault();
+            e.stopPropagation();
+            void decodeInEditor(client, e.currentTarget, { text: value, regions }).then(onChange, (err: Error) => notify(err.message));
+          }}
         />
       </div>
     </div>
   );
+}
+
+/** Decode the selection (or the value under the caret) of a textarea in place, and put the caret at its start. */
+export async function decodeInEditor(client: Client, el: HTMLTextAreaElement | null, d: Decoded): Promise<Decoded> {
+  const out = await decodeInto(client, d, el?.selectionStart ?? 0, el?.selectionEnd ?? 0);
+  window.setTimeout(() => {
+    el?.focus();
+    el?.setSelectionRange(out.plan.start, out.plan.start);
+  }, 0);
+  return { text: out.text, regions: out.regions };
+}
+
+/**
+ * Decoded regions for a text a view keeps in its own state: props for a
+ * RegionEditor, a Decode action for a button, and the text to use (with
+ * every region encoded again). Regions are dropped when the text is
+ * replaced from outside the editor, such as a reset or a prefill.
+ */
+export function useRegions(value: string, setValue: (text: string) => void) {
+  const { client, notify } = useApp();
+  const [regions, setRegions] = useState<TextRegion[]>([]);
+  const last = useRef(value);
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    if (value !== last.current) {
+      last.current = value;
+      setRegions([]);
+    }
+  }, [value]);
+  const change = (d: Decoded) => {
+    last.current = d.text;
+    setRegions(d.regions);
+    setValue(d.text);
+  };
+  return {
+    regions,
+    editor: { value, regions, onChange: change, textareaRef: ref },
+    decode: () => decodeInEditor(client, ref.current, { text: value, regions }).then(change, (e: Error) => notify(e.message)),
+    /** The text with every region encoded again (regions holding tokens become encode blocks when `blocks`). */
+    encoded: async (blocks = false) => (regions.length ? (await client.encodeRegions(value, regions, blocks)).text : value),
+  };
 }

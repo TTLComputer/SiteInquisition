@@ -495,6 +495,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
             </div>
           )}
           <RegionEditor
+            decodeKey={false}
             textareaRef={editorRef}
             aria-label="Raw request"
             spellCheck={false}

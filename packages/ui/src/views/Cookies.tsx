@@ -4,6 +4,7 @@ import type { JarCookie, JarCookieInfo, SessionCookie } from '../api';
 import { CookieToggle } from './Tech';
 import { useApp } from '../state';
 import { fmtTime } from '../format';
+import { DecodableText } from '../components/Decoded';
 
 type Tab = 'jar' | 'macros' | 'vars' | 'aws';
 
@@ -45,7 +46,11 @@ function SessionDecode({ name, value }: { name: string; value: string }) {
           </div>
         ))}
       </dl>
-      {info.payload !== undefined && <pre className="raw" style={{ marginTop: 6 }}>{JSON.stringify(info.payload, null, 2)}</pre>}
+      {info.payload !== undefined && (
+        <pre className="raw" style={{ marginTop: 6 }}>
+          <DecodableText text={JSON.stringify(info.payload, null, 2)} viewKey={`session:${name}:${value.slice(0, 64)}`} label="Session payload" />
+        </pre>
+      )}
     </div>
   );
 }
@@ -191,7 +196,7 @@ function Jar() {
                         )}
                       </td>
                       <td className="wrap">
-                        {c.value.length > 120 ? `${c.value.slice(0, 120)}…` : c.value || <span className="faint">(empty)</span>}
+                        {c.value.length > 120 ? `${c.value.slice(0, 120)}…` : c.value ? <DecodableText text={c.value} viewKey={`cookie:${c.domain}:${c.path}:${c.name}`} label={`Cookie ${c.name} value`} /> : <span className="faint">(empty)</span>}
                         {hint && <div className="src-script" style={{ fontSize: 11 }}>{hint}</div>}
                       </td>
                       <td>

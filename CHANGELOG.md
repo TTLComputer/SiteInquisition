@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **HTTP/2 in transparent mode.** Cleartext HTTP/2 with prior knowledge is served (straight to the port or in a tunnel) instead of failing with a protocol error. An `Upgrade: h2c` offer (curl `--http2` on `http://`) is answered over HTTP/1.1 instead of dropping the connection. TLS sent straight to the port now goes to the port in Host or `:authority` rather than always 443. HTTP/2 clients are forwarded over HTTP/2 when the server offers it (ALPN, or prior knowledge for cleartext), with trailers and `te: trailers`, so gRPC passes through.
+
 ## 1.0.0-beta.1
 
 The first beta, for Linux (x64) and Windows (x64). Packages: a .deb for Debian and Ubuntu, a .tar.gz, and a portable .zip for Windows.

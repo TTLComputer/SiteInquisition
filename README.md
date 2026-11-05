@@ -32,7 +32,7 @@ To uninstall: `sudo apt remove siteinquisition`, or delete the unpacked folder. 
 
 ## What works today
 
-- HTTP/1.1 and HTTP/2 proxy on one port. It accepts plain HTTP, `CONNECT` tunnels and SOCKS5.
+- HTTP/1.1 and HTTP/2 proxy on one port. It accepts plain HTTP, `CONNECT` tunnels, SOCKS5, and traffic sent straight to the port (transparent mode, by DNS or a firewall redirect): TLS is routed by SNI, and cleartext HTTP/2 works with prior knowledge. HTTP/2 clients are forwarded over HTTP/2 to servers that speak it, trailers included, so gRPC works; otherwise over HTTP/1.1.
 - HTTPS interception with a per-install root CA, for in-scope hosts only. Out-of-scope TLS is tunnelled untouched.
 - WebSocket capture, with every frame recorded in both directions.
 - **MQTT** 3.1, 3.1.1 and 5.0 relay: devices connect to SiteInquisition as their broker, every byte is passed to the real broker unchanged, and each packet (CONNECT, SUBSCRIBE, PUBLISH, acks, ...) is recorded with topic, QoS, retain flag, properties and payload. TLS is supported on both sides, with device-facing certificates signed by the project CA.

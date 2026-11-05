@@ -27,6 +27,11 @@ async function startUpstream() {
         // A JSON field that is base64 of more JSON, for field codecs.
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(req.method === 'POST' ? body : JSON.stringify({ id: 7, blob: Buffer.from(JSON.stringify({ secret: 'inner-value', level: 3 })).toString('base64') }));
+      } else if (req.url === '/api/jwt-cookie') {
+        // Sets an (expired) HS256 JWT cookie signed with "secret", for the Cookies-tab re-sign flow.
+        const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJ1c2VyIiwiZXhwIjoxMDAwMDAwMDAwfQ.aEY4GxRUw9ooq-gjjPRkfKJo7s6Jgm0-_MlUIFWq2B8';
+        res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': `auth=${jwt}; Path=/` });
+        res.end('{"ok":true}');
       } else if (req.url === '/app') {
         // A page with no framework markers that hands out its CSRF token in a meta tag.
         res.writeHead(200, { 'content-type': 'text/html' });

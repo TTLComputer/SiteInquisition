@@ -31,6 +31,7 @@ import { ErrorService } from './errors.js';
 import { awsRequestInfo, parsePresignedUrl } from './awsinfo.js';
 import { EXAMPLE_SECRETS, parseJwt, signJwt, tryHmacSecrets, verifyJwt, type SigningKey } from './jwt.js';
 import { SessionKeyStore } from './keys.js';
+import { Evergreen, renderEvergreen, signableKind, type EvergreenEntry, type SignableKind } from './evergreen.js';
 import { decodeSessionCookie, signFlaskCookie, tryFlaskSecrets, verifyFlaskCookie } from './sessioncookies.js';
 import { TechService } from './tech.js';
 import { Vars } from './vars.js';
@@ -62,9 +63,12 @@ export class PowerTools {
   readonly awsKeys = new Map<string, AwsCredentials>();
   /** Session-only signing keys; replaced by the real key store when it lands. */
   readonly keys = new SessionKeyStore();
+  /** Saved evergreen signed tokens (JWTs and session cookies), re-minted on each send. */
+  readonly evergreen: Evergreen;
 
   constructor(private readonly core: Core) {
     const store = core.store;
+    this.evergreen = new Evergreen(store, this.keys);
     this.vars = new Vars(store);
     this.errors = new ErrorService(store);
     this.tech = new TechService(store, this.vars, this.errors);
@@ -99,6 +103,8 @@ export class PowerTools {
       countHit: (id) => this.countHit(id),
       tech: this.tech,
       fieldCodecs: this.fieldCodecs,
+      sign: (name) => this.evergreen.resolve(name),
+      signCookie: (host, name) => this.evergreen.resignCookie(host, name)?.value ?? null,
     });
     // Search values can use the same tokens as Replay. Flows are left out: a search never sends requests.
     store.resolveTokens = (text) => resolveTokens(text, this.sender.tokenContext('http://localhost/'));
@@ -510,6 +516,7 @@ export class PowerTools {
         return { applied: [...applied, `mock:${mock.name}`], respond: { status: mock.status, headers: mock.headers, body } };
       }
       applied.push(...this.applyRules('request', msg, msg.url, msg.method));
+      applied.push(...this.evergreenCookies(msg));
       if (this.scripts.active) applied.push(...(await this.scripts.run('request', msg)).map((n) => `script:${n}`));
       return { applied };
     },
@@ -733,6 +740,63 @@ export class PowerTools {
       secret = typeof resolved.secret === 'string' ? resolved.secret : resolved.secret.toString('utf8');
     } else throw new Error('a secret or a key name is required');
     return signFlaskCookie(payload, secret, opts);
+  }
+
+  // ---------- Re-signing and evergreen tokens ----------
+
+  private keyFromRef(keyRef: { keyName?: string; secret?: string }): SigningKey {
+    if (keyRef.secret !== undefined) return { kind: 'hmac', secret: keyRef.secret };
+    if (keyRef.keyName) {
+      const resolved = this.keys.resolve(keyRef.keyName);
+      if (!resolved) throw new Error(`no signing key "${keyRef.keyName}"`);
+      return resolved;
+    }
+    throw new Error('a secret or a key name is required');
+  }
+
+  /** Open a value for re-signing: what kind it is, and the parts the user can edit. */
+  resignOpen(value: string): { kind: SignableKind | null; alg?: string; header?: Record<string, unknown>; payload?: unknown; compress?: boolean } {
+    const kind = signableKind(value);
+    if (kind === 'jwt') {
+      const p = parseJwt(value);
+      return { kind, alg: p.alg, header: p.header, payload: p.payload };
+    }
+    if (kind === 'flask') {
+      const s = decodeSessionCookie('session', value);
+      return { kind, payload: s.payload, ...(s.compressed ? { compress: true } : {}) };
+    }
+    return { kind: null };
+  }
+
+  /** Re-sign a value once (a preview, or a token to copy), without saving it. */
+  resignPreview(spec: Omit<EvergreenEntry, 'name' | 'keyName' | 'updatedAt' | 'cookie'>, keyRef: { keyName?: string; secret?: string }, now = Date.now()): string {
+    return renderEvergreen(spec, this.keyFromRef(keyRef), now);
+  }
+
+  /** Rewrite the outgoing Cookie header on a proxied request so evergreen-bound cookies go out freshly signed. */
+  private evergreenCookies(msg: HookMessage): string[] {
+    const bindings = this.evergreen.all().filter((e) => e.cookie);
+    if (!bindings.length) return [];
+    const idx = msg.headers.findIndex(([k]) => k.toLowerCase() === 'cookie');
+    if (idx === -1) return [];
+    let host: string;
+    try {
+      host = new URL(msg.url).hostname.toLowerCase();
+    } catch {
+      return [];
+    }
+    const applied: string[] = [];
+    const pairs = msg.headers[idx]![1].split(/;\s*/).map((p) => {
+      const eq = p.indexOf('=');
+      if (eq <= 0) return p;
+      const name = p.slice(0, eq).trim();
+      const fresh = this.evergreen.resignCookie(host, name);
+      if (!fresh) return p;
+      applied.push(`evergreen:${fresh.token}`);
+      return `${name}=${fresh.value}`;
+    });
+    if (applied.length) msg.headers[idx] = ['Cookie', pairs.join('; ')];
+    return applied;
   }
 
   // ---------- MCP tools ----------

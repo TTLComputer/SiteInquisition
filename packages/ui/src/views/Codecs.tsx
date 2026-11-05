@@ -7,6 +7,7 @@ import { FieldCodecRules } from './FieldCodecs';
 import { asText, hexDump } from '../format';
 import { TokenPicker } from './TokenPicker';
 import { ReplayButton } from '../components/ReplayButton';
+import { ReSignPanel } from './ReSign';
 
 type Layer = { kind: 'bytes'; bytes: Uint8Array } | { kind: 'value'; value: unknown };
 
@@ -99,6 +100,7 @@ export function Codecs() {
   const [scopeAll, setScopeAll] = useState(false);
   const [counts, setCounts] = useState<number[] | null>(null);
   const editRef = useRef<HTMLTextAreaElement>(null);
+  const [showResign, setShowResign] = useState(false);
 
   useEffect(() => {
     client.codecList().then(setCodecs, () => undefined);
@@ -366,6 +368,7 @@ export function Codecs() {
   };
 
   const total = counts?.reduce((a, b) => a + b, 0) ?? 0;
+  const signable = /^eyJ[\w-]+\.[\w-]+\.[\w-]*$/.test(input.trim()) || chain[chain.length - 1] === 'jwt';
   const result = output ?? (editDirty ? null : input);
   const sourceSynced = !!returnTo && sync;
 
@@ -380,6 +383,11 @@ export function Codecs() {
             <button className="btn small" onClick={() => void detect(input)} disabled={!input}>
               Detect layers
             </button>
+            {signable && (
+              <button className="btn small" aria-expanded={showResign} title="Edit and re-sign this token with a known key, or keep it evergreen" onClick={() => setShowResign((s) => !s)}>
+                Re-sign…
+              </button>
+            )}
             <button
               className="btn small"
               onClick={() => {
@@ -388,11 +396,17 @@ export function Codecs() {
                 setReturnTo(null);
                 setOutput(null);
                 setChain([]);
+                setShowResign(false);
               }}
             >
               Clear
             </button>
           </div>
+          {showResign && signable && (
+            <div style={{ padding: '0 8px 8px' }}>
+              <ReSignPanel value={input} label={label || 'Codecs'} onClose={() => setShowResign(false)} />
+            </div>
+          )}
           <textarea
             className="editor"
             aria-label="Codec input"

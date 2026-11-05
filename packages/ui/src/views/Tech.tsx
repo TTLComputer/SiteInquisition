@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AwsRequestInfo, ErrorFinding, CsrfBinding, PageCsrfToken, CsrfFinding, EffectiveTech, ExchangeDetail, ExchangeTech, JwtFlag, KeyInfo, ParsedJwt, Signature, TechOverride } from '../api';
 import { useApp } from '../state';
+import { ReSignPanel } from './ReSign';
 
 export const STATUS_LABEL: Record<EffectiveTech['status'], string> = { detected: 'detected', possible: 'possible', pinned: 'pinned by you', implied: 'implied' };
 export const STATUS_CLASS: Record<EffectiveTech['status'], string> = { detected: 'badge ok', possible: 'badge', pinned: 'badge ok', implied: 'badge' };
@@ -670,6 +671,7 @@ export function JwtPanel({ ex }: { ex: ExchangeDetail }) {
   const [secret, setSecret] = useState('');
   const [resigned, setResigned] = useState<string | null>(null);
   const [edited, setEdited] = useState('');
+  const [evergreen, setEvergreen] = useState(false);
 
   useEffect(() => {
     setJwt(null);
@@ -739,7 +741,11 @@ export function JwtPanel({ ex }: { ex: ExchangeDetail }) {
             <button className="btn small" onClick={() => setOpen((o) => !o)}>
               {open ? 'Hide' : 'Edit and re-sign'}
             </button>
+            <button className="btn small" aria-expanded={evergreen} title="Keep this token valid: re-sign it with a known key, pushing the expiry forward on every send" onClick={() => setEvergreen((e) => !e)}>
+              {evergreen ? 'Hide evergreen' : 'Keep evergreen'}
+            </button>
           </div>
+          {evergreen && <ReSignPanel value={found.token} label={found.where} />}
           {open && (
             <div className="jwt-edit">
               <label className="label">Payload</label>
@@ -855,7 +861,7 @@ export function KeySettings() {
         Signing keys
       </div>
       <p className="muted" style={{ padding: '0 14px', margin: 0, fontSize: 13 }}>
-        Secrets and private keys used to re-sign JWTs (and, later, signed cookies). They are held for this session only and never written to disk. Reference them by name when re-signing.
+        Secrets and private keys used to re-sign JWTs and signed session cookies. They are held for this session only and never written to disk. Reference them by name when re-signing, or bind one to an evergreen <code className="mono">{'{{sign:name}}'}</code> token (Cookies › Signed tokens) that is re-minted fresh on every send.
       </p>
       <div className="settings-block">
         <div className="label">Your keys</div>

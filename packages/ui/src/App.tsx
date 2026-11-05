@@ -4,6 +4,7 @@ import { Icon } from './components/icons';
 import { fmtCount, fmtSize } from './format';
 import { DRAG_TYPE, History } from './views/History';
 import { Replay } from './views/Replay';
+import { WsReplay } from './views/WsReplay';
 import { Rules } from './views/Rules';
 import { SHORTCUTS, Settings } from './views/Settings';
 import { Placeholder } from './views/Placeholder';
@@ -312,7 +313,7 @@ export function App() {
           {/* Replay tabs stay mounted while hidden so unsent edits survive switching views. */}
           {replayTabs.map((t) => (
             <div key={t.id} className="tab-host" style={{ display: view === 'replay' && t.id === activeTab ? 'flex' : 'none' }}>
-              <Replay tab={t} />
+              {t.kind === 'ws' ? <WsReplay tab={t} /> : <Replay tab={t} />}
             </div>
           ))}
           {view === 'replay' && !activeReplay && (

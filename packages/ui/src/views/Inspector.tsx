@@ -4,7 +4,7 @@ import { base64ToBytes } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { asText, fmtMs, fmtSize, fmtTime, hexDump, prettyBody, statusClass, statusText, toRawRequest } from '../format';
-import { breakOn, mockFromExchange } from '../actions';
+import { breakOn, breakOnMessages, mockFromExchange } from '../actions';
 import { ErrorBanner, TechPanel } from './Tech';
 import { CertHelp } from './TlsSettings';
 import { decodeSignalR, decodeSocketIO, detectProtocol, summarizeFrame } from '@siteinquisition/codecs/protocols';
@@ -506,9 +506,20 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
         <span className={`mono ${statusClass(ex)}`}>{statusText(ex)}</span>
         <ReplayButton exchange={ex} primary />
         {ex.stream ? (
-          <button className="btn small" onClick={() => openStream(ex.id)} title="Open this connection in the Streams composer to send messages">
-            Open in Streams
-          </button>
+          <>
+            <button className="btn small" onClick={() => openStream(ex.id)} title="Open this connection in the Streams composer to send messages">
+              Open in Streams
+            </button>
+            {ex.isWebSocket && (
+              <button
+                className="btn small"
+                title="Pause messages on connections to this URL, to edit or drop them before they go on"
+                onClick={() => breakOnMessages(client, ex).then(() => notify('Messages on this URL will pause in Rules, Breakpoints.'), (e: Error) => notify(e.message))}
+              >
+                Break
+              </button>
+            )}
+          </>
         ) : (
           <>
             <button className="btn small" onClick={() => resendNow(ex.id).catch((e: Error) => notify(e.message))} title="Ctrl Shift Enter">

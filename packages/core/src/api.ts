@@ -448,6 +448,32 @@ export class CoreApiServer {
           preset: str(p, 'preset', false),
           presetOptions: (p.options as Record<string, number | string>) ?? undefined,
         }),
+      'ws.script': (p) => core.tools.ws.scriptFor(str(p, 'exchangeId')!, { timing: p.timing === true, waits: p.waits !== false, keepAlive: p.keepAlive !== false }),
+      'ws.run': async (p) => {
+        const opts = (p.options as Record<string, unknown>) ?? {};
+        const r = await core.tools.ws.run(p.script as never, {
+          ignoreTlsErrors: opts.ignoreTlsErrors === true,
+          refreshCookies: opts.refreshCookies === true,
+          keepAlive: opts.keepAlive !== false,
+          tokens: opts.tokens !== false,
+          speed: typeof opts.speed === 'number' ? opts.speed : undefined,
+          closeAtEnd: opts.closeAtEnd === true,
+          encode: Array.isArray(opts.encode) ? opts.encode.map(String) : undefined,
+          fields: Array.isArray(opts.fields) ? (opts.fields as never) : undefined,
+          flow: typeof opts.flow === 'string' && opts.flow ? opts.flow : undefined,
+          replayOf: str(p, 'replayOf', false) ?? null,
+        });
+        return { ...r, state: core.tools.ws.runState(r.exchangeId) };
+      },
+      'ws.runMore': (p) => {
+        const opts = (p.options as Record<string, unknown>) ?? {};
+        return core.tools.ws.runMore(str(p, 'exchangeId')!, arr(p, 'steps') as never, {
+          tokens: opts.tokens !== false,
+          encode: Array.isArray(opts.encode) ? opts.encode.map(String) : undefined,
+          fields: Array.isArray(opts.fields) ? (opts.fields as never) : undefined,
+        });
+      },
+      'ws.runState': (p) => core.tools.ws.runState(str(p, 'exchangeId')!) ?? null,
       'stream.isOpen': (p) => core.tools.ws.isOpen(str(p, 'exchangeId')!) || core.tools.liveStreams().mqtt.includes(str(p, 'exchangeId')!),
       'mqtt.publish': (p) => {
         const ok = core.tools.mqttPublish(str(p, 'exchangeId')!, {

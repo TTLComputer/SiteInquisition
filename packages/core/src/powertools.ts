@@ -23,7 +23,7 @@ import { h3Tickets, runH3Plan, type H3PlanOptions, type H3PlanRequest } from './
 import { applyRule, conditionsMatch, normalizeMock, normalizeReplaceRule, type HookMessage, type MockRule, type ReplaceRule, type RuleInput } from './rules.js';
 import { normalizeScript, ScriptEngine, type Script, type Sdk } from './scripts.js';
 import { TrustedScripts } from './trust.js';
-import { Sender, type AwsProfile, type Macro, type SendOptions, type SendRequest } from './send.js';
+import { cookieHeaderFor, Sender, type AwsProfile, type Macro, type SendOptions, type SendRequest } from './send.js';
 import { parseSigV4, type AwsCredentials } from './sigv4.js';
 import type { Change, HeaderList } from './store.js';
 import { resolveTokens } from './tokens.js';
@@ -35,6 +35,7 @@ import { decodeSessionCookie, signFlaskCookie, tryFlaskSecrets, verifyFlaskCooki
 import { TechService } from './tech.js';
 import { Vars } from './vars.js';
 import { WsReplays } from './wsreplay.js';
+import type { WsScript } from './wsscript.js';
 
 /**
  * Everything beyond capture: match and replace, mocks, breakpoints, scripts,
@@ -110,6 +111,14 @@ export class PowerTools {
       setGlobalVar: (k, v, src) => this.vars.set(k, v, src),
     });
     this.sender.flows = this.flows;
+    this.ws.deps = {
+      tokenContext: (url, extra) => this.sender.tokenContext(url, extra),
+      cookieHeader: (url) => cookieHeaderFor(store, url),
+      runFlows: (texts, flow) => this.sender.runFlows({ method: 'GET', url: 'http://localhost/', headers: [], body: new TextEncoder().encode(texts.join('\n')) }, { flow }),
+      setVar: (name, value) => this.vars.set(name, value, 'websocket'),
+      projectDir: core.projectDir,
+      each: (arg) => pickValues(store, arg),
+    };
     this.trust = new TrustedScripts(core.dataDir, core.projectDir);
     this.scripts = new ScriptEngine({ values: () => this.vars.values(), set: (name, value) => this.vars.set(name, value, 'script') }, (s) => this.trust.has(s.code));
     void this.scripts.load(this.scriptList());
@@ -132,6 +141,7 @@ export class PowerTools {
     this.mcp.on('approval', (a) => emit('mcp.approval', a.id, a));
     this.mcp.on('decided', (id, d) => emit('mcp.decided', id, d));
     this.mcp.on('activity', (a) => emit('mcp.activity', a.tool, a));
+    this.ws.on('progress', (st) => emit('wsreplay.progress', st.exchangeId, st));
   }
 
   // ---------- config ----------
@@ -518,6 +528,16 @@ export class PowerTools {
       }
       return { applied };
     },
+    wantsWsMessages: (url) => this.intercept.wantsWsMessages(url),
+    wsMessage: async (m, ctx) => {
+      const r = await this.intercept.checkWs(m.url, { exchangeId: m.exchangeId, direction: m.from, opcode: m.opcode, fragments: m.fragments, payload: m.payload }, ctx.source);
+      if (!r || r.action !== 'drop' && !r.edits) return;
+      if (r.action === 'drop') return { drop: true };
+      const payload = r.edits?.bodyBase64 !== undefined ? Buffer.from(r.edits.bodyBase64, 'base64') : m.payload;
+      const opcode = r.edits?.opcode ?? (m.opcode === 'binary' ? 'binary' : 'text');
+      if (payload.equals(m.payload) && opcode === m.opcode) return;
+      return { replace: { opcode, payload } };
+    },
   };
 
   // ---------- SDK for scripts and MCP ----------
@@ -548,6 +568,14 @@ export class PowerTools {
         return { ...res, body: this.textBody(res.id, 'response') };
       },
       race: (requests: RaceRequest[], opts: RaceOptions) => runRace(store, requests, opts),
+      websocket: {
+        script: (id: string, opts: { waits?: boolean; timing?: boolean } = {}) => this.ws.scriptFor(String(id), opts),
+        run: async (script: WsScript, opts: Record<string, unknown> = {}) => {
+          const { exchangeId } = await this.ws.run(script, { ...(opts as object), closeAtEnd: opts.closeAtEnd !== false });
+          while (this.ws.runState(exchangeId)?.running) await new Promise((r) => setTimeout(r, 50));
+          return this.ws.runState(exchangeId);
+        },
+      },
       h3: (requests: Array<H3PlanRequest & { body?: string | Uint8Array }>, opts: H3PlanOptions = {}) =>
         runH3Plan(store, requests.map((r) => ({ ...r, headers: r.headers ?? [], body: typeof r.body === 'string' ? new TextEncoder().encode(r.body) : r.body })), opts),
       vars: () => this.vars.values(),
@@ -1007,6 +1035,42 @@ export class PowerTools {
           const res = await this.sender.send({ method: ex.method, url: ex.url, headers: ex.requestHeaders, body: store.getBody(ex.id, 'request', false), replayOf: ex.id }, { refreshCookies: !!a.refreshCookies });
           store.tagExchange(res.id, [...res.tags, 'mcp']);
           return { ...summarize(res.id), responseBody: this.textBody(res.id, 'response')?.slice(0, 65_536) ?? null };
+        },
+      },
+      {
+        name: 'websocket_script',
+        description:
+          'A recorded WebSocket connection written out as an editable replay script: {url, headers, steps}. Steps are {kind:"send", opcode, payload, encoding?, delayMs?, preset?}, {kind:"wait", match?, count?, timeoutMs?, extract?:{var, from}}, {kind:"frames", steps}, {kind:"close", code?, reason?}. Edit it and pass it to replay_websocket.',
+        inputSchema: { type: 'object', properties: { id: str, waits: { type: 'boolean', description: 'Wait for the server between sends, like the original' }, timing: { type: 'boolean', description: 'Keep the original gaps between sends' } }, required: ['id'] },
+        write: false,
+        run: (a) => this.ws.scriptFor(String(a.id), { waits: a.waits !== false, timing: a.timing === true }),
+      },
+      {
+        name: 'replay_websocket',
+        description:
+          'Open a new WebSocket connection and run a replay script on it (from websocket_script, edited or not). Text payloads take Replay tokens such as {{cookie:session}} and {{var:name}}. Returns the step results and the messages of the new connection once the script has run (or after waitSeconds).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            script: { type: 'object' },
+            id: { ...str, description: 'Recorded WebSocket exchange to replay as captured, when no script is given' },
+            refreshCookies: { type: 'boolean' },
+            waitSeconds: { type: 'number', description: 'How long to wait for the script, default 30' },
+          },
+        },
+        write: true,
+        summary: (a) => `Replay WebSocket ${a.script ? String((a.script as WsScript).url) : String(a.id)}`,
+        run: async (a) => {
+          const script = (a.script as WsScript | undefined) ?? this.ws.scriptFor(String(a.id), { waits: true });
+          const { exchangeId } = await this.ws.run(script, { refreshCookies: !!a.refreshCookies, replayOf: typeof a.id === 'string' ? a.id : null, closeAtEnd: true });
+          store.tagExchange(exchangeId, [...(store.getSummary(exchangeId)?.tags ?? []), 'mcp']);
+          const until = Date.now() + Math.min(Math.max(1, Number(a.waitSeconds ?? 30)), 300) * 1000;
+          while (this.ws.runState(exchangeId)?.running && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+          const stream = store.getStreamForExchange(exchangeId);
+          const messages = stream
+            ? store.getStreamMessages(stream.id, { limit: 500 }).map((m) => ({ direction: m.direction, opcode: m.opcode, at: m.at, text: m.opcode === 'binary' ? `<${m.size} bytes>` : bytesToString(m.payload).slice(0, 4096), meta: m.meta }))
+            : [];
+          return { exchangeId, state: this.ws.runState(exchangeId), messages };
         },
       },
       {

@@ -39,12 +39,12 @@ interface Cond {
   status?: string | number;
 }
 
-function Conditions({ r, set, withStatus }: { r: Cond; set(p: { host?: string; method?: string; pathPrefix?: string; status?: string }): void; withStatus?: boolean }) {
+function Conditions({ r, set, withStatus, withMethod = true }: { r: Cond; set(p: { host?: string; method?: string; pathPrefix?: string; status?: string }): void; withStatus?: boolean; withMethod?: boolean }) {
   return (
     <div className="cond-row">
       <span className="label">When</span>
       <input className="input mono" placeholder="host (glob, empty = any)" value={r.host ?? ''} onChange={(e) => set({ host: e.target.value })} aria-label="Host" />
-      <input className="input mono" placeholder="method" value={r.method ?? ''} onChange={(e) => set({ method: e.target.value.toUpperCase() })} style={{ width: 80 }} aria-label="Method" />
+      {withMethod && <input className="input mono" placeholder="method" value={r.method ?? ''} onChange={(e) => set({ method: e.target.value.toUpperCase() })} style={{ width: 80 }} aria-label="Method" />}
       <input className="input mono" placeholder="path prefix" value={r.pathPrefix ?? ''} onChange={(e) => set({ pathPrefix: e.target.value })} aria-label="Path prefix" />
       {withStatus && <input className="input mono" placeholder="status (4xx, >=400)" value={String(r.status ?? '')} onChange={(e) => set({ status: e.target.value })} style={{ width: 130 }} aria-label="Status" />}
     </div>
@@ -306,9 +306,15 @@ function PausedQueue() {
   const [raw, setRaw] = useState('');
   const [rawFor, setRawFor] = useState<string | null>(null);
   const cur = paused.find((p) => p.id === selected) ?? paused[0];
+  const [wsFormat, setWsFormat] = useState<'text' | 'base64'>('text');
   useEffect(() => {
     if (!cur || rawFor === cur.id) return;
-    setRaw(cur.phase === 'request' ? toRawRequest(cur.message.method, cur.message.url, cur.message.headers, asText(base64ToBytes(cur.message.bodyBase64)) ?? '') : responseRaw(cur));
+    if (cur.phase === 'message') {
+      const bytes = base64ToBytes(cur.message.bodyBase64);
+      const text = cur.ws?.opcode === 'text' ? asText(bytes) : null;
+      setWsFormat(text === null ? 'base64' : 'text');
+      setRaw(text ?? cur.message.bodyBase64);
+    } else setRaw(cur.phase === 'request' ? toRawRequest(cur.message.method, cur.message.url, cur.message.headers, asText(base64ToBytes(cur.message.bodyBase64)) ?? '') : responseRaw(cur));
     setRawFor(cur.id);
   }, [cur, rawFor]);
   if (!cur) return <div className="faint" style={{ padding: 12, fontSize: 12 }}>Nothing is paused. Matching traffic will wait here until you forward or drop it.</div>;
@@ -317,7 +323,10 @@ function PausedQueue() {
     try {
       let edits: Record<string, unknown> | undefined;
       if (action !== 'drop') {
-        if (cur.phase === 'request') {
+        if (cur.phase === 'message') {
+          const bytes = wsFormat === 'text' ? new TextEncoder().encode(raw) : base64ToBytes(raw.replace(/\s+/g, ''));
+          edits = { bodyBase64: bytesToBase64(bytes), opcode: wsFormat === 'text' ? 'text' : 'binary' };
+        } else if (cur.phase === 'request') {
           const p = parseRawRequest(raw);
           edits = { method: p.method, url: p.url, headers: p.headers, bodyBase64: bytesToBase64(new TextEncoder().encode(p.body ?? '')) };
         } else {
@@ -348,7 +357,15 @@ function PausedQueue() {
           {paused.map((p) => (
             <button key={p.id} className="saved-view" aria-pressed={p.id === cur.id} onClick={() => setSelected(p.id)} style={{ background: p.id === cur.id ? 'var(--bg-selected)' : undefined }}>
               <span>
-                <span className="badge">{p.phase}</span> <span className={`mono m-${p.message.method}`}>{p.message.method}</span>
+                {p.phase === 'message' ? (
+                  <>
+                    <span className="badge">{p.ws?.direction === 'server' ? '↓ server message' : '↑ client message'}</span> <span className="mono m-WS">WS</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="badge">{p.phase}</span> <span className={`mono m-${p.message.method}`}>{p.message.method}</span>
+                  </>
+                )}
               </span>
               <span className="mono faint" style={{ fontSize: 11 }}>
                 {p.message.url.slice(0, 60)} · {fmtTime(p.pausedAt)}
@@ -357,6 +374,35 @@ function PausedQueue() {
           ))}
         </div>
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          {cur.phase === 'message' && (
+            <div className="sec-head">
+              <span>
+                {cur.ws?.direction === 'server' ? 'From the server to the client' : 'From the client to the server'}
+                {cur.ws && cur.ws.fragments > 1 ? `, sent in ${cur.ws.fragments} frames (an edit goes as one frame)` : ''}. Later messages on this side wait behind it.
+              </span>
+              <span style={{ flex: 1 }} />
+              <div className="segmented" role="group" aria-label="Payload format">
+                {(['text', 'base64'] as const).map((f) => (
+                  <button
+                    key={f}
+                    className="seg"
+                    aria-pressed={wsFormat === f}
+                    onClick={() => {
+                      if (f === wsFormat) return;
+                      try {
+                        setRaw(f === 'base64' ? bytesToBase64(new TextEncoder().encode(raw)) : (asText(base64ToBytes(raw.replace(/\s+/g, ''))) ?? raw));
+                      } catch {
+                        // leave the text as it is
+                      }
+                      setWsFormat(f);
+                    }}
+                  >
+                    {f === 'text' ? 'Text' : 'Binary (base64)'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <textarea className="editor" style={{ height: 220 }} spellCheck={false} value={raw} onChange={(e) => setRaw(e.target.value)} aria-label="Paused message" />
           <div className="replay-bar">
             <button className="btn primary small" onClick={() => void resolve('forward')}>
@@ -409,7 +455,7 @@ export function Breakpoints() {
         add={() => (setList([...list, { key: key(), enabled: true, phase: 'request' }]), setDirty(true))}
         addLabel="Add breakpoint"
       />
-      {list.length === 0 && <div className="empty">No breakpoints. Add one here, or use Break in the inspector to pause the next call to an endpoint.</div>}
+      {list.length === 0 && <div className="empty">No breakpoints. Add one here, or use Break in the inspector to pause the next call to an endpoint (or the messages of a WebSocket).</div>}
       {list.map((b) => (
         <div key={b.key} className="card rule-card">
           <div className="rule-head">
@@ -418,13 +464,24 @@ export function Breakpoints() {
               <option value="request">Pause requests</option>
               <option value="response">Pause responses</option>
               <option value="both">Pause both</option>
+              <option value="messages">Pause WebSocket messages</option>
             </select>
+            {b.phase === 'messages' && (
+              <>
+                <select className="input" value={b.direction ?? 'both'} onChange={(e) => set(b.key, { direction: e.target.value as Breakpoint['direction'] })} aria-label="Messages from">
+                  <option value="both">from either side</option>
+                  <option value="client">from the client</option>
+                  <option value="server">from the server</option>
+                </select>
+                <input className="input mono" placeholder="containing (text or /regex/, empty = all)" value={b.match ?? ''} onChange={(e) => set(b.key, { match: e.target.value })} aria-label="Message contains" style={{ width: 260 }} />
+              </>
+            )}
             <span style={{ flex: 1 }} />
             <button className="icon-btn" aria-label="Delete breakpoint" onClick={() => (setList(list.filter((x) => x.key !== b.key)), setDirty(true))}>
               <Icon name="trash" size={13} />
             </button>
           </div>
-          <Conditions r={b} set={(p) => set(b.key, p)} withStatus={b.phase !== 'request'} />
+          <Conditions r={b} set={(p) => set(b.key, p)} withStatus={b.phase === 'response' || b.phase === 'both'} withMethod={b.phase !== 'messages'} />
         </div>
       ))}
     </div>

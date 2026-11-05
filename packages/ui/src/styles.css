@@ -213,6 +213,7 @@ kbd {
 
 /* status, method and source colours always sit next to the text they describe */
 .m-GET { color: var(--accent); }
+.m-WS { color: var(--stream); }
 .m-POST, .m-PUT, .m-PATCH { color: var(--warn); }
 .m-DELETE { color: var(--error); }
 .m-CONNECT { color: var(--stream); }
@@ -410,6 +411,21 @@ textarea.editor:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .coverage-body { flex: 1; min-height: 0; overflow: auto; padding-bottom: 16px; }
 .coverage-summary { padding: 8px 12px; font-size: 12px; color: var(--text-muted); }
 .coverage-table td { vertical-align: top; }
+
+/* ---------- WebSocket replay ---------- */
+.ws-replay .replay-split { flex-wrap: nowrap; }
+.ws-replay .replay-split > section { overflow: auto; flex: 1 1 0; }
+textarea.editor.ws-handshake { flex: none; min-height: 72px; height: 96px; resize: vertical; border-bottom: 1px solid var(--line-soft); }
+.ws-steps { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px 16px; }
+.ws-step-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 10px; font-size: 12px; }
+.ws-step textarea.editor { flex: none; width: 100%; min-height: 0; height: auto; resize: vertical; border-top: 1px solid var(--line-soft); white-space: pre-wrap; word-break: break-all; }
+.ws-step-head select.input { width: auto; max-width: 150px; flex: none; }
+.ws-step-head .check input.input { flex: none; }
+.ws-step.off { opacity: 0.55; }
+.ws-step.passed { border-left: 3px solid var(--ok); }
+.ws-step.failed { border-left: 3px solid var(--error); }
+.ws-add { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 4px; }
+.ws-quick { border-top: 1px solid var(--line); background: var(--bg-panel); }
 
 /* ---------- race ---------- */
 .race-items { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; }

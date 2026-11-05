@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **WebSocket replay**: Send to Replay on a WebSocket (the Replay pill, Ctrl R, the Inspector, the Streams header) opens a WebSocket Replay tab instead of the bare upgrade request. The captured connection is written out as an editable handshake and a list of steps: send a message (text or binary, one frame or any frame preset), wait for the server (any message, text or /regex/, with a timeout and an optional value saved into a variable), exact frames, and close. Run opens a new connection and runs the steps; the connection stays open to keep sending, every run is kept so you can step between runs and diff the server's messages with the original, and the steps show how each one went.
+- WebSocket messages take Replay tokens (`{{var:x}}`, `{{cookie:session}}`, `{{counter:1..5}}` sends one message per value, flows), fresh cookies on the handshake, an Encode chain, and Fields that encode JSON fields inside Socket.IO and SignalR framing too. Saved field codecs open those fields decoded. Decode selection (Ctrl D) round-trips a message through Codecs.
+- Socket.IO keep-alive: replays answer Engine.IO pings (and send EIO 3 client pings), and leave heartbeats out of the steps and waits. SignalR record separators show as ␞ so they survive editing.
+- **WebSocket message breakpoints**: a breakpoint can pause WebSocket messages (from the client, the server or both, optionally only those containing some text or matching a /regex/) on connections through the proxy. Paused messages wait in Rules, Breakpoints to be forwarded, edited (as text or base64) or dropped; later messages on that side wait behind them, and pings still go straight through. The record marks edited messages (with the original) and dropped ones. Without such a breakpoint the relay is byte for byte as before. Break on messages is in the Inspector and the WebSocket Replay tab.
+- Agents and scripts: MCP tools `websocket_script` and `replay_websocket`, and `siq.websocket.script()` / `siq.websocket.run()` in scripts.
+- Fixed: a text whose tokens had been checked by `hasTokens` could lose its batch tokens (the shared regex kept its position).
+
 - **Codecs shows every nested layer**: under the outer chain, the Chain view lists each JSON field that holds more encoded JSON, indented by depth, with its own codecs. Any layer can be kept encoded, and any can be saved as a field codec.
 
 ## 1.0.0-beta.1

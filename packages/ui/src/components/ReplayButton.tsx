@@ -1,15 +1,15 @@
-import type { ExchangeSummary } from '../api';
-import { useApp, type Draft, type ReplayTab } from '../state';
+import { useApp, type Draft, type ReplayTab, type ReplayTarget } from '../state';
 import { Icon } from './icons';
 
 /** The one wording for opening something in Replay, so every screen says the same thing. */
 export const REPLAY_LABEL = 'Send to Replay';
 export const REPLAY_TITLE = 'Open in Replay to edit and send it again (Ctrl R)';
+export const WS_REPLAY_TITLE = 'Open in Replay to edit the handshake and messages and run the connection again (Ctrl R)';
 export const DRAFT_TITLE = 'Open in Replay as a new request to edit and send';
 
 type Target =
   /** A recorded exchange, when its method and path are at hand (no lookup). */
-  | { exchange: Pick<ExchangeSummary, 'id' | 'method' | 'path'>; options?: ReplayTab['options'] }
+  | { exchange: ReplayTarget; options?: ReplayTab['options'] }
   /** A recorded exchange known only by id. */
   | { id: string }
   /** A request that was never recorded, built here (or made when clicked). */
@@ -42,7 +42,7 @@ export function ReplayButton(props: Target & { compact?: boolean; iconOnly?: boo
   return (
     <button
       className={props.className ?? `btn small${props.primary ? ' primary' : ''}`}
-      title={props.title ?? (isDraft ? DRAFT_TITLE : REPLAY_TITLE)}
+      title={props.title ?? (isDraft ? DRAFT_TITLE : 'exchange' in props && props.exchange.isWebSocket ? WS_REPLAY_TITLE : REPLAY_TITLE)}
       aria-label={props.ariaLabel ?? (props.iconOnly ? REPLAY_LABEL : undefined)}
       disabled={props.disabled}
       onClick={(e) => {

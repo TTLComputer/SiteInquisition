@@ -6,6 +6,7 @@ import { fmtTime } from '../format';
 import { Messages } from './Inspector';
 import { FramePlanner } from './FramePlanner';
 import { ReplayButton } from '../components/ReplayButton';
+import { RegionEditor, useRegions } from '../components/Decoded';
 
 const enc = new TextEncoder();
 
@@ -51,6 +52,18 @@ export function Streams() {
   const [retain, setRetain] = useState(false);
   const [to, setTo] = useState<'broker' | 'device'>('broker');
   const [ignoreTls, setIgnoreTls] = useState(false);
+  // Parts of the payload or handshake shown decoded in place; encoded again when sent.
+  const pl = useRegions(payload, setPayload);
+  const hs = useRegions(handshake ?? '', setHandshake);
+  const [wire, setWire] = useState('');
+  useEffect(() => {
+    let live = true;
+    pl.encoded().then((t) => live && setWire(t), () => live && setWire(payload));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payload, pl.regions]);
 
   const load = useCallback(async () => {
     const [ws, mqtt, l] = await Promise.all([client.search('ws:true', { limit: 200 }), client.search('scheme:mqtt', { limit: 200 }), client.liveStreams()]);
@@ -89,7 +102,7 @@ export function Streams() {
   const send = async () => {
     if (!sel) return;
     try {
-      const bytes = parsePayload(payload, format);
+      const bytes = parsePayload(await pl.encoded(), format);
       if (isMqtt) {
         await client.mqttPublish({ exchangeId: sel.id, to, topic, payload: bytes, qos, retain });
         notify(`Published to ${topic} (${to === 'broker' ? 'as the device' : 'to the device'})`);
@@ -106,7 +119,7 @@ export function Streams() {
   const openReplayConnection = async () => {
     if (!sel) return;
     try {
-      const r = await client.streamConnect(sel.id, ignoreTls, handshake === null ? undefined : parseHeaders(handshake));
+      const r = await client.streamConnect(sel.id, ignoreTls, handshake === null ? undefined : parseHeaders(await hs.encoded()));
       await load();
       setCurrent(r.exchangeId);
       notify('Replay connection open. Messages you send appear marked as injected.');
@@ -195,13 +208,12 @@ export function Streams() {
                     Open replay connection
                   </button>
                   {handshake !== null && (
-                    <textarea
+                    <RegionEditor
+                      {...hs.editor}
                       className="editor composer-text"
                       aria-label="Handshake headers"
                       spellCheck={false}
-                      value={handshake}
-                      onChange={(e) => setHandshake(e.target.value)}
-                      title="One header per line. Key, version and extensions are set by the client."
+                      title="One header per line. Key, version and extensions are set by the client. Ctrl D shows a selected value decoded in place."
                     />
                   )}
                 </div>
@@ -224,7 +236,7 @@ export function Streams() {
                       </span>
                     </div>
                   )}
-                  {!isMqtt && mode === 'frames' && <FramePlanner exchangeId={sel.id} payload={() => parsePayload(payload, format)} opcode={format === 'text' ? 'text' : 'binary'} proxied={isProxied} />}
+                  {!isMqtt && mode === 'frames' && <FramePlanner exchangeId={sel.id} payload={() => parsePayload(wire, format)} opcode={format === 'text' ? 'text' : 'binary'} proxied={isProxied} />}
                   <div className="composer-row">
                     {!isMqtt && isProxied && mode === 'message' && (
                       <select className="input" aria-label="Send to" value={wsTo} onChange={(e) => setWsTo(e.target.value as 'server' | 'client')}>
@@ -256,18 +268,20 @@ export function Streams() {
                       ))}
                     </div>
                     <span style={{ flex: 1 }} />
+                    <button className="btn small" onClick={() => void pl.decode()} title="Show the selection, or the value under the caret, decoded in place. It is encoded again when sent. Ctrl D">
+                      Decode
+                    </button>
                     {(isMqtt || mode === 'message') && (
                       <button className="btn primary small" onClick={() => void send()} disabled={isMqtt && !topic} title="Ctrl Enter">
                         {isMqtt ? 'Publish' : 'Send frame'}
                       </button>
                     )}
                   </div>
-                  <textarea
+                  <RegionEditor
+                    {...pl.editor}
                     className="editor composer-text"
                     aria-label="Message payload"
                     spellCheck={false}
-                    value={payload}
-                    onChange={(e) => setPayload(e.target.value)}
                     onKeyDown={(e) => {
                       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && (isMqtt || mode === 'message')) {
                         e.preventDefault();

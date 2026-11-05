@@ -177,9 +177,8 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
 
     await nav('History');
     await page.locator('.row', { hasText: '/api/blob' }).first().click();
-    const view = page.getByRole('group', { name: 'Response body view' });
-    await expect.poll(() => view.getByRole('button', { name: 'Decoded fields' }).evaluate((el) => el.getAttribute('aria-pressed'))).toBe('true');
-    await expect.poll(() => page.locator('.inspector').textContent()).toContain('inner-value');
+    // The field reads decoded in place, marked as a decoded region.
+    await expect.poll(() => page.locator('.inspector .decoded.by-rule').first().textContent()).toContain('inner-value');
     await shot('field-codecs-inspector');
 
     // Replay opens a request body with the field decoded and encodes it again on send.
@@ -190,7 +189,7 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     const tab = page.locator('.tab-host').last();
     const editor = tab.getByLabel('Raw request');
     await expect.poll(() => editor.inputValue()).toContain('"secret": "sent-value"');
-    expect(await tab.getByLabel('Encode fields with').inputValue()).toBe('$.blob = base64>json');
+    await expect.poll(() => tab.locator('.region-backdrop .decoded').first().textContent()).toContain('sent-value');
     await editor.fill((await editor.inputValue()).replace('sent-value', 'edited-value'));
     await tab.getByRole('button', { name: /^Send$/ }).first().click();
     await expect.poll(() => h.core.store.search('path:/api/blob-echo').some((e) => e.replayOf && e.state === 'complete')).toBe(true);
@@ -208,7 +207,7 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     await page.keyboard.press('Control+r');
     const tab = page.locator('.tab-host').last();
     await expect.poll(() => tab.getByLabel('Raw request').inputValue()).toContain(value);
-    await tab.getByRole('button', { name: 'Decode selection' }).click();
+    await tab.getByRole('button', { name: 'Open in Codecs' }).click();
 
     await expect.poll(() => page.getByLabel('Codec chain').locator('.chain-step').allTextContents()).toEqual(['url›', 'base64›', 'json']);
     await expect.poll(() => page.getByTestId('nested-field').allTextContents()).toEqual([expect.stringContaining('$.inner_data')]);

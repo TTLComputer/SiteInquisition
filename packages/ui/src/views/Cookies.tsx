@@ -5,6 +5,7 @@ import { CookieToggle } from './Tech';
 import { ReSignPanel, SignedTokens } from './ReSign';
 import { useApp } from '../state';
 import { fmtTime } from '../format';
+import { DecodableText } from '../components/Decoded';
 
 type Tab = 'jar' | 'macros' | 'vars' | 'aws' | 'signed';
 
@@ -50,7 +51,11 @@ function SessionDecode({ name, value, domain }: { name: string; value: string; d
           </div>
         ))}
       </dl>
-      {info.payload !== undefined && <pre className="raw" style={{ marginTop: 6 }}>{JSON.stringify(info.payload, null, 2)}</pre>}
+      {info.payload !== undefined && (
+        <pre className="raw" style={{ marginTop: 6 }}>
+          <DecodableText text={JSON.stringify(info.payload, null, 2)} viewKey={`session:${name}:${value.slice(0, 64)}`} label="Session payload" />
+        </pre>
+      )}
       {info.structure === 'signed' && info.payload !== undefined && (
         <div style={{ marginTop: 6 }}>
           <button className="btn small" aria-expanded={resign} onClick={() => setResign((r) => !r)}>
@@ -205,7 +210,7 @@ function Jar() {
                         )}
                       </td>
                       <td className="wrap">
-                        {c.value.length > 120 ? `${c.value.slice(0, 120)}…` : c.value || <span className="faint">(empty)</span>}
+                        {c.value.length > 120 ? `${c.value.slice(0, 120)}…` : c.value ? <DecodableText text={c.value} viewKey={`cookie:${c.domain}:${c.path}:${c.name}`} label={`Cookie ${c.name} value`} /> : <span className="faint">(empty)</span>}
                         {hint && <div className="src-script" style={{ fontSize: 11 }}>{hint}</div>}
                       </td>
                       <td>

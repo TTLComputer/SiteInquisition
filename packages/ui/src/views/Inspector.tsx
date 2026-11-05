@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ContractResult, ExchangeDetail, HeaderList, SearchColumn, SearchTerm, WireStreamMessage } from '../api';
 import { base64ToBytes } from '../api';
 import { useApp } from '../state';
@@ -10,74 +10,89 @@ import { CertHelp } from './TlsSettings';
 import { decodeSignalR, decodeSocketIO, detectProtocol, summarizeFrame } from '@siteinquisition/codecs/protocols';
 import { ReplayButton } from '../components/ReplayButton';
 import { Highlight, termPattern, useHitNavigator } from '../components/Highlight';
+import { DecodableText, type Decoded, type SaveContext } from '../components/Decoded';
+import { regionLabel } from '@siteinquisition/codecs/regionedit';
 
 /** What the History search looks for, per part of the exchange. */
 type Hl = { line: RegExp | null; headers: RegExp | null; body: RegExp | null };
 
 type Tab = 'exchange' | 'messages' | 'tech' | 'timings' | 'notes';
-type BodyMode = 'pretty' | 'raw' | 'hex' | 'fields';
-/** A body with its saved field codecs applied, and which fields they were. */
-type FieldView = { text: string; label: string } | null;
+type BodyMode = 'pretty' | 'raw' | 'hex';
+/** A body with its saved field codecs decoded in place, as regions. */
+type FieldView = Decoded | null;
 
-function Headers({ headers, hl }: { headers: HeaderList; hl?: RegExp | null }) {
-  return (
-    <>
-      {headers.map(([k, v], i) =>
-        hl && ((hl.lastIndex = 0), hl.test(`${k}: ${v}`)) ? (
-          <div key={i}>
-            <Highlight text={`${k}: ${v}`} pattern={hl} />
-          </div>
-        ) : (
-          <div key={i}>
-            <span className="hk">{k}</span>: {v}
-          </div>
-        ),
-      )}
-    </>
-  );
+/** Request or status line and headers, with header names coloured and search terms marked. */
+function headPlain(full: string, hl?: Hl) {
+  return (t: string, offset: number): ReactNode => {
+    const parts: ReactNode[] = [];
+    let at = offset;
+    for (const piece of t.split(/(?<=\n)/)) {
+      const lineStart = at === 0 || full[at - 1] === '\n';
+      const pat = at === 0 || full.lastIndexOf('\n', at - 1) === -1 ? (hl?.line ?? null) : (hl?.headers ?? null);
+      const colon = piece.indexOf(': ');
+      if (pat && ((pat.lastIndex = 0), pat.test(piece))) parts.push(<Highlight key={at} text={piece} pattern={pat} />);
+      else if (lineStart && at > 0 && colon > 0)
+        parts.push(
+          <Fragment key={at}>
+            <span className="hk">{piece.slice(0, colon)}</span>
+            {piece.slice(colon)}
+          </Fragment>,
+        );
+      else parts.push(<Fragment key={at}>{piece}</Fragment>);
+      at += piece.length;
+    }
+    return parts;
+  };
 }
 
-function BodyView({ bytes, headers, mode, truncated, fields, hl }: { bytes: Uint8Array | null; headers: HeaderList | null; mode: BodyMode; truncated: boolean; fields?: FieldView; hl?: RegExp | null }) {
+function BodyView({ bytes, headers, mode, truncated, fields, hl, viewKey, save, label }: { bytes: Uint8Array | null; headers: HeaderList | null; mode: BodyMode; truncated: boolean; fields?: FieldView; hl?: RegExp | null; viewKey: string; save: SaveContext; label: string }) {
   if (!bytes) return <span className="faint">loading body...</span>;
   if (bytes.length === 0) return <span className="faint">(no body)</span>;
   const text = asText(bytes);
-  let out: string;
-  if (mode === 'fields' && fields) out = fields.text;
-  else if (mode === 'hex' || text === null) out = hexDump(bytes);
-  else if (mode === 'pretty') out = prettyBody(text, headers);
-  else out = text;
+  if (mode === 'hex' || text === null) {
+    return (
+      <>
+        {text === null && mode !== 'hex' && <div className="faint">Binary body ({fmtSize(bytes.length)}), shown as hex.</div>}
+        {hexDump(bytes)}
+        {truncated && <div className="faint">Body was truncated at the capture size limit.</div>}
+      </>
+    );
+  }
+  const out = mode === 'pretty' ? prettyBody(text, headers) : text;
   return (
     <>
-      {text === null && mode !== 'hex' && <div className="faint">Binary body ({fmtSize(bytes.length)}), shown as hex.</div>}
-      {mode === 'hex' || text === null ? out : <Highlight text={out} pattern={hl ?? null} />}
+      <DecodableText text={out} viewKey={`${viewKey}:${mode}`} initial={mode === 'pretty' ? fields : null} hl={hl ?? null} save={save} label={`${label} body`} />
       {truncated && <div className="faint">Body was truncated at the capture size limit.</div>}
     </>
   );
 }
 
-function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrace, fields, hl }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void; onTrace?(text: string): void; fields?: FieldView; hl?: Hl }) {
+function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrace, fields, hl, viewKey, url }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void; onTrace?(text: string): void; fields?: FieldView; hl?: Hl; viewKey: string; url: string }) {
   const [mode, setMode] = useState<BodyMode>('pretty');
-  // Saved field codecs apply: show those fields decoded first.
-  useEffect(() => {
-    if (fields) setMode('fields');
-    else setMode((m) => (m === 'fields' ? 'pretty' : m));
-  }, [!!fields]);
+  const side = title === 'Request' ? 'request' : 'response';
+  const head = useMemo(() => [first, ...(headers ?? []).map(([k, v]) => `${k}: ${v}`)].join('\n'), [first, headers]);
+  const plain = useMemo(() => headPlain(head, hl), [head, hl]);
   return (
     <section>
       <div className="sec-head">
         <b style={{ color: 'var(--text)' }}>{title}</b>
         {extra}
+        {fields && fields.regions.length > 0 && (
+          <span className="badge" title={`Decoded with saved field codecs: ${[...new Set(fields.regions.map((r) => regionLabel(r)))].join('; ')}`}>
+            {fields.regions.length} decoded {fields.regions.length === 1 ? 'field' : 'fields'}
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         {onDecode && bytes && bytes.length > 0 && (
           <button
             className="btn small"
-            title="Decode the selected text, or the whole body, in Codecs (Ctrl D)"
+            title="Open the selected text, or the whole body, in Codecs (Ctrl Shift D). To decode in place, select a value and press Ctrl D."
             onClick={() => {
               const sel = window.getSelection()?.toString();
               onDecode(sel && sel.length > 0 ? sel : (asText(bytes) ?? hexDump(bytes)));
             }}
           >
-            Decode
+            Codecs
           </button>
         )}
         {onTrace && (
@@ -93,11 +108,6 @@ function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrac
           </button>
         )}
         <div className="segmented" role="group" aria-label={`${title} body view`}>
-          {fields && (
-            <button className="seg" aria-pressed={mode === 'fields'} onClick={() => setMode('fields')} title={`Decoded with saved field codecs: ${fields.label}`}>
-              Decoded fields
-            </button>
-          )}
           {(['pretty', 'raw', 'hex'] as const).map((m) => (
             <button key={m} className="seg" aria-pressed={mode === m} onClick={() => setMode(m)}>
               {m === 'pretty' ? 'Pretty' : m === 'raw' ? 'Raw' : 'Hex'}
@@ -106,12 +116,9 @@ function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrac
         </div>
       </div>
       <pre className="raw">
-        <div>
-          <Highlight text={first} pattern={hl?.line ?? null} />
-        </div>
-        {headers ? <Headers headers={headers} hl={hl?.headers} /> : null}
-        {'\n'}
-        <BodyView bytes={bytes} headers={headers} mode={mode} truncated={truncated} fields={fields} hl={hl?.body} />
+        <DecodableText text={head} viewKey={`${viewKey}:head`} plain={plain} label={`${title} headers`} />
+        {'\n\n'}
+        <BodyView bytes={bytes} headers={headers} mode={mode} truncated={truncated} fields={fields} hl={hl?.body} viewKey={viewKey} save={{ url, side, bodyStart: 0 }} label={title} />
       </pre>
     </section>
   );
@@ -222,10 +229,14 @@ export function Messages({ exchangeId, protocol }: { exchangeId: string; protoco
             <summary>
               Decoded <span className="badge">{selProto === 'socketio' ? 'Socket.IO' : 'SignalR'}</span>
             </summary>
-            <pre className="raw">{JSON.stringify(selDecoded, null, 2)}</pre>
+            <pre className="raw">
+              <DecodableText text={JSON.stringify(selDecoded, null, 2)} viewKey={`frame:${sel!.id}`} label="Decoded frame" />
+            </pre>
           </details>
         )}
-        <pre className="raw">{selBytes ? (asText(selBytes) !== null ? prettyBody(asText(selBytes)!, null) : hexDump(selBytes)) : <span className="faint">Select a message.</span>}</pre>
+        <pre className="raw">
+          {selBytes ? asText(selBytes) !== null ? <DecodableText text={prettyBody(asText(selBytes)!, null)} viewKey={`msg:${sel!.id}`} label="Message payload" /> : hexDump(selBytes) : <span className="faint">Select a message.</span>}
+        </pre>
         {sel?.meta && Object.keys(sel.meta).length > 0 && (
           <dl className="kv">
             {Object.entries(sel.meta).map(([k, v]) => (
@@ -431,10 +442,14 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
       const [rq, rs] = await Promise.all([client.body(id, 'request'), detail.state === 'pending' ? Promise.resolve(new Uint8Array()) : client.body(id, 'response')]);
       setReqBody(rq);
       setResBody(rs);
-      const view = (r: Awaited<ReturnType<typeof client.decodeExchangeFields>>): FieldView => (r ? { text: r.text, label: r.rules.filter((_, i) => r.counts[i]).map((x) => `${x.field} = ${x.chain.join('>')}`).join('; ') } : null);
-      const [fq, fs] = await Promise.all([client.decodeExchangeFields(id, 'request').catch(() => null), detail.state === 'pending' ? null : client.decodeExchangeFields(id, 'response').catch(() => null)]);
-      setReqFields(view(fq));
-      setResFields(view(fs));
+      // Saved field codecs: those fields read decoded in place in the Pretty view.
+      const regions = (b: Uint8Array, side: 'request' | 'response') => {
+        const t = b.length ? asText(b) : null;
+        return t ? client.fieldRegions(t, detail.url, side).then((r) => (r ? { text: r.text, regions: r.regions } : null), () => null) : Promise.resolve(null);
+      };
+      const [fq, fs] = await Promise.all([regions(rq, 'request'), regions(rs, 'response')]);
+      setReqFields(fq);
+      setResFields(fs);
       const auth = detail.requestHeaders.find(([k]) => k.toLowerCase() === 'authorization')?.[1];
       setSig(auth?.startsWith('AWS4-HMAC-SHA256') ? ((await client.parseSigV4(id)) as never) : null);
     } catch (e) {
@@ -603,6 +618,8 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
               }
               fields={reqFields}
               hl={hl.req}
+              viewKey={`${ex.id}:request`}
+              url={ex.url}
               onDecode={(t) => sendToCodecs(t, `${ex.method} ${ex.path.split('?')[0]} request`)}
               onTrace={(t) => (t ? traceValue(t, ex.id) : notify('Select a value in the request first, such as an id in the path or body.'))}
             />
@@ -614,6 +631,8 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
               truncated={ex.responseBodyTruncated}
               fields={resFields}
               hl={hl.res}
+              viewKey={`${ex.id}:response`}
+              url={ex.url}
               onDecode={(t) => sendToCodecs(t, `${ex.method} ${ex.path.split('?')[0]} response`)}
             />
           </div>

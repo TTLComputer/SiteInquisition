@@ -10,7 +10,7 @@ Clickable mockups of every screen are on the design canvas: <https://claude.ai/a
 2. **Everything is a core API call.** The renderer holds no traffic state of its own. Views query the core and redraw from the `change` event stream. That is also what makes 2 to 3 person sharing cheap later: another person's actions arrive as the same events.
 3. **Raw first, decoded on top.** Every body view shows a codec layer breadcrumb (`body › json .cart › base64 › json`). Editing an inner layer re-encodes outward. Rules, replays and scripts address the same layers.
 4. **Replay is always one action away.** See [Sending to replay](#sending-to-replay).
-5. **Keyboard first.** Ctrl K palette, Ctrl R send to replay, Ctrl Enter send, Ctrl Shift Enter resend without opening the editor, Ctrl Shift R add to race, Ctrl D decode selection, F8 forward a paused request.
+5. **Keyboard first.** Ctrl K palette, Ctrl R send to replay, Ctrl Enter send, Ctrl Shift Enter resend without opening the editor, Ctrl Shift R add to race, Ctrl D decode the selection in place (Ctrl Shift D opens it in Codecs), F8 forward a paused request.
 6. **Dense but legible.** The theme follows the system setting by default (dark and light can be forced in Settings), 13px Inter for UI, 12px JetBrains Mono for anything that is traffic. Colour is never the only signal: status codes also show the number, methods show the verb.
 
 ## App shell

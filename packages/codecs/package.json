@@ -22,6 +22,10 @@
     "./protobuf": {
       "types": "./dist/protobuf.d.ts",
       "default": "./dist/protobuf.js"
+    },
+    "./regionedit": {
+      "types": "./dist/regionedit.d.ts",
+      "default": "./dist/regionedit.js"
     }
   },
   "files": [

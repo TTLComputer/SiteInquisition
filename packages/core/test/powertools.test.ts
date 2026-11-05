@@ -119,6 +119,13 @@ describe('tokens', () => {
     expect(() => resolveTokens('{{cookie:nope}}', ctx as never)).toThrow(/no cookie "nope"/);
   });
 
+  it('encodes a decoded region that holds tokens once the tokens are filled in', () => {
+    const out = resolveTokens('{"blob": {{encode:jsonstr:json:base64>json}}{"user": "{{var:user}}"}{{/encode}}, "raw": "{{encode:none:text:url}}a b&{{var:user}}{{/encode}}"}', ctx as never);
+    const v = JSON.parse(out) as { blob: string; raw: string };
+    expect(JSON.parse(Buffer.from(v.blob, 'base64').toString())).toEqual({ user: 'ada' });
+    expect(v.raw).toBe('a%20b%26ada');
+  });
+
   it('zips counters and lists into one send per value', () => {
     const dir = join(tmp, 'lists');
     rmSync(dir, { recursive: true, force: true });

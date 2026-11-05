@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { getCodec } from '@siteinquisition/codecs';
+import { applyEncodeBlocks, getCodec, hasEncodeBlocks } from '@siteinquisition/codecs';
 import type { JarCookie } from './cookies.js';
 
 /**
@@ -21,6 +21,11 @@ import type { JarCookie } from './cookies.js';
  *
  * Any token takes pipes that encode its value: {{var:po | base64}},
  * {{$cart.id | url}}, {{uuid | upper}} (see FILTERS).
+ *
+ * {{encode:jsonstr:json:base64>json}}...{{/encode}} encodes what it holds once
+ * the tokens inside are filled in. Replay writes these for decoded regions
+ * that hold tokens; the parts are how the value sits (none, jsonstr,
+ * jsonesc), what it holds (json or text) and the codec chain.
  *
  * Write `\{{` to send a literal `{{`.
  */
@@ -182,12 +187,14 @@ export function hasTokens(text: string): boolean {
 }
 
 export function resolveTokens(text: string, ctx: TokenContext): string {
-  const out = text.replace(TOKEN_RE, (whole, rawKind: string, rawArg: string | undefined) => {
+  let out = text.replace(TOKEN_RE, (whole, rawKind: string, rawArg: string | undefined) => {
+    if (rawKind.toLowerCase() === 'encode') return whole;
     const { arg, filters } = splitPipes(rawArg ?? '');
     let v = resolveOne(whole, rawKind, arg, ctx);
     for (const f of filters) v = FILTERS[f]!(v);
     return v;
   });
+  if (hasEncodeBlocks(out)) out = applyEncodeBlocks(out);
   return out.replace(/\\\{\{/g, '{{');
 }
 

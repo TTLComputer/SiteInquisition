@@ -7,6 +7,8 @@ import { diffLines } from '../diff';
 import { TokenPicker } from './TokenPicker';
 import { CertHelp } from './TlsSettings';
 import { mockFromExchange } from '../actions';
+import { DecodableText, RegionEditor, decodeInto, encodeAll } from '../components/Decoded';
+import { adjustForEdit, shiftRegions, type TextRegion } from '@siteinquisition/codecs/regionedit';
 
 interface Options {
   refreshCookies: boolean;
@@ -25,7 +27,6 @@ interface Options {
   fields: string;
 }
 const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false, protocol: 'h1', flow: '', encode: '', fields: '' };
-const fieldSpecText = (rules: Array<{ field: string; chain: string[] }>) => rules.map((r) => `${r.field} = ${r.chain.join('>')}`).join('; ');
 
 const binaryMarker = (n: number) => `<binary body: ${n} bytes, sent as captured>`;
 
@@ -61,9 +62,9 @@ function ResponsePane({ shown, original, compare }: { shown: Shown | null; origi
   }
   return (
     <pre className="raw">
-      {head}
+      <DecodableText text={head} viewKey={`replay:${ex.id}:head`} label="Response headers" />
       {'\n\n'}
-      {body.length === 0 ? <span className="faint">(no body)</span> : bodyText}
+      {body.length === 0 ? <span className="faint">(no body)</span> : text === null ? bodyText : <DecodableText text={bodyText} viewKey={`replay:${ex.id}:body`} save={{ url: ex.url, side: 'response', bodyStart: 0 }} label="Response body" />}
     </pre>
   );
 }
@@ -73,6 +74,8 @@ export function Replay({ tab }: { tab: ReplayTab }) {
   const [original, setOriginal] = useState<Shown | null>(null);
   const [originalReqBody, setOriginalReqBody] = useState<Uint8Array | null>(null);
   const [raw, setRaw] = useState('');
+  // Parts of the editor shown decoded in place; encoded again on send.
+  const [regions, setRegions] = useState<TextRegion[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [opts, setOpts] = useState<Options>({ ...DEFAULT_OPTIONS, ...tab.options });
@@ -95,6 +98,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
       return null;
     }
   }, [raw]);
+  const editorUrl = useMemo(() => /^[A-Z]+\s+(\S+)/.exec(raw)?.[1] ?? null, [raw]);
   const loadedHost = useRef<string | null>(null);
   useEffect(() => {
     if (!host || loadedHost.current === host) return;
@@ -122,6 +126,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
       setOriginal(null);
       setOriginalReqBody(null);
       setRaw(toRawRequest(tab.draft.method, tab.draft.url, tab.draft.headers, tab.draft.body ?? ''));
+      setRegions([]);
       return;
     }
     const ex = await client.get(tab.exchangeId);
@@ -130,23 +135,24 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     setOriginal({ ex, body: resBody });
     setOriginalReqBody(reqBody);
     const text = asText(reqBody);
-    // Saved field codecs for this URL: open the body with those fields decoded, and encode them again on send.
+    // Saved field codecs for this URL: open the body with those fields decoded in place; they are encoded again on send.
     let body = text;
-    let fields = '';
+    let found: TextRegion[] = [];
     if (text) {
       try {
-        const rules = await client.fieldCodecsFor(ex.url, 'request');
-        const decoded = rules.length ? await client.decodeFields(text, rules.map((r) => ({ path: r.field, chain: r.chain }))) : null;
-        if (decoded) {
-          body = decoded.text;
-          fields = fieldSpecText(rules.filter((_, i) => decoded.counts[i]));
+        const r = await client.fieldRegions(text, ex.url, 'request');
+        if (r) {
+          body = r.text;
+          found = r.regions;
         }
       } catch {
         // leave the body as captured
       }
     }
-    setOpts((o) => ({ ...o, fields }));
-    setRaw(toRawRequest(ex.method, ex.url, ex.requestHeaders, body === null ? binaryMarker(reqBody.length) : body));
+    setOpts((o) => ({ ...o, fields: '' }));
+    const next = toRawRequest(ex.method, ex.url, ex.requestHeaders, body === null ? binaryMarker(reqBody.length) : body);
+    setRaw(next);
+    setRegions(body === null ? [] : shiftRegions(found, next.length - body.length));
   }, [client, tab.exchangeId, tab.draft]);
 
   /** Decode (or encode back) the body's fields with the spec in the Fields box. */
@@ -160,6 +166,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
       if (!out) return notify('None of those fields are in the body, or the body is not JSON.');
       if (out.errors.length) notify(out.errors[0]!);
       setRaw(toRawRequest(parsed.method, parsed.url, parsed.headers, out.text));
+      setRegions([]);
       if (dir === 'encode') setOpts((o) => ({ ...o, fields: '' }));
     } catch (e) {
       notify((e as Error).message);
@@ -216,7 +223,8 @@ export function Replay({ tab }: { tab: ReplayTab }) {
   const send = useCallback(async () => {
     let parsed;
     try {
-      parsed = parseRawRequest(raw);
+      // Decoded regions go back to their encoded form; ones holding tokens are encoded after the tokens are filled in.
+      parsed = parseRawRequest(await encodeAll(client, { text: raw, regions }));
     } catch (e) {
       setError((e as Error).message);
       return;
@@ -259,7 +267,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     } finally {
       setSending(false);
     }
-  }, [raw, originalReqBody, client, tab.exchangeId, opts, preview, loadSends, notify]);
+  }, [raw, regions, originalReqBody, client, tab.exchangeId, opts, preview, loadSends, notify]);
 
   const decodeSelection = () => {
     const el = editorRef.current;
@@ -279,8 +287,25 @@ export function Replay({ tab }: { tab: ReplayTab }) {
       const was = end;
       end = s + text.length;
       setRaw((cur) => cur.slice(0, s) + text + cur.slice(was));
+      setRegions((r) => adjustForEdit(r, s, was, text.length));
       if (!live) setView('replay');
     });
+  };
+
+  /** Show the selection (or the value under the caret) decoded in place. */
+  const decodeInline = async () => {
+    const el = editorRef.current;
+    try {
+      const out = await decodeInto(client, { text: raw, regions }, el?.selectionStart ?? 0, el?.selectionEnd ?? 0);
+      setRaw(out.text);
+      setRegions(out.regions);
+      window.setTimeout(() => {
+        el?.focus();
+        el?.setSelectionRange(out.plan.start, out.plan.start);
+      }, 0);
+    } catch (e) {
+      notify((e as Error).message);
+    }
   };
 
   const insertToken = (token: string) => {
@@ -288,6 +313,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     const s = el?.selectionStart ?? raw.length;
     const e = el?.selectionEnd ?? raw.length;
     setRaw(raw.slice(0, s) + token + raw.slice(e));
+    setRegions((r) => adjustForEdit(r, s, e, token.length, raw));
     window.setTimeout(() => {
       el?.focus();
       el?.setSelectionRange(s + token.length, s + token.length);
@@ -304,7 +330,8 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd' && e.target === editorRef.current) {
       e.preventDefault();
       e.stopPropagation();
-      decodeSelection();
+      if (e.shiftKey) decodeSelection();
+      else void decodeInline();
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.shiftKey) {
@@ -350,12 +377,15 @@ export function Replay({ tab }: { tab: ReplayTab }) {
           <input type="checkbox" checked={compare} onChange={(e) => setCompare(e.target.checked)} disabled={showOriginal} /> Diff with original
         </label>
         <span style={{ flex: 1 }} />
-        <button className="btn small" onClick={decodeSelection} title="Decode the selection (or the body) in Codecs, then put the result back. Ctrl D">
-          Decode selection
+        <button className="btn small" onClick={() => void decodeInline()} title="Show the selection, or the value under the caret, decoded in place. It is encoded again on send. Ctrl D">
+          Decode
+        </button>
+        <button className="btn small" onClick={decodeSelection} title="Open the selection (or the body) in Codecs, then put the result back. Ctrl Shift D">
+          Open in Codecs
         </button>
         <button
           className="btn small"
-          onClick={() => sendToRace([{ label: tab.label, raw, replayOf: tab.exchangeId || undefined }])}
+          onClick={() => void encodeAll(client, { text: raw, regions }).then((r) => sendToRace([{ label: tab.label, raw: r, replayOf: tab.exchangeId || undefined }]), (e: Error) => notify(e.message))}
           title="Add this request, as edited, to the Race view"
         >
           <Icon name="race" size={12} /> Send to Race
@@ -464,7 +494,19 @@ export function Replay({ tab }: { tab: ReplayTab }) {
               {preview.error ? `Token problem: ${preview.error}` : `${preview.sends === 1 ? 'Tokens resolve to' : `${preview.sends} sends, first is`} ${preview.url ?? ''}`}
             </div>
           )}
-          <textarea ref={editorRef} className="editor" aria-label="Raw request" spellCheck={false} value={raw} onChange={(e) => setRaw(e.target.value)} />
+          <RegionEditor
+            decodeKey={false}
+            textareaRef={editorRef}
+            aria-label="Raw request"
+            spellCheck={false}
+            value={raw}
+            regions={regions}
+            save={editorUrl ? { url: editorUrl, side: 'request', bodyStart: raw.indexOf('\n\n') + 2 } : undefined}
+            onChange={(d) => {
+              setRaw(d.text);
+              setRegions(d.regions);
+            }}
+          />
         </section>
         <section>
           <div className="sec-head">

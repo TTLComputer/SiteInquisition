@@ -127,6 +127,8 @@ describe('WebSocket replay scripts', () => {
     expect(state.steps[4]!.sent).toBe(3);
     expect(state.vars.wsToken).toBe('tok-1');
     expect(core.tools.vars.values().wsToken).toBe('tok-1');
+    // The script is done once its frames are written; the server may still be reading the last ones.
+    await until(() => (seen.length >= 5 ? true : undefined), 'the server to read every message');
     expect(seen.map((s) => s.data)).toEqual(['login', 'join lobby as tok-1', 'n1', 'n2', 'n3']);
     // The handshake had its token filled in too, and is recorded as a replay.
     expect(texts(exchangeId, 'server')[0]).toBe('hello sid=lobby');

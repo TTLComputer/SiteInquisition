@@ -267,8 +267,15 @@ function useShortcuts() {
         e.preventDefault();
         setView('history');
         window.setTimeout(() => document.getElementById('filter-input')?.focus(), 0);
-      } else if (key === 'd' && !e.shiftKey) {
+      } else if (key === 'd') {
         e.preventDefault();
+        // Ctrl D on a selection in a view that decodes in place does that; Ctrl Shift D always opens Codecs.
+        const anchor = window.getSelection()?.anchorNode;
+        const zone = !e.shiftKey && anchor ? (anchor instanceof Element ? anchor : anchor.parentElement)?.closest('[data-region-zone]') : null;
+        if (zone && !window.getSelection()?.isCollapsed) {
+          zone.dispatchEvent(new CustomEvent('siq-decode'));
+          return;
+        }
         const sel = selectedText();
         if (sel) sendToCodecs(sel, 'selection');
         else if (selectedId)

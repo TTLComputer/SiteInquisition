@@ -26,18 +26,24 @@ export interface ReplayTab {
 }
 
 /** One request lined up in the Race view. */
+import type { TextRegion } from '@siteinquisition/codecs/regionedit';
+
 export interface RaceItem {
   key: string;
   label: string;
   raw: string;
   offsetMs: number;
   replayOf?: string;
+  /** Parts of raw shown decoded in place; encoded again when sent. */
+  regions?: TextRegion[];
 }
 
 /** One row of the HTTP/3 lab's stream plan. Numbers left empty mean "not set". */
 export interface H3Item {
   key: string;
   raw: string;
+  /** Parts of raw shown decoded in place; encoded again when sent. */
+  regions?: TextRegion[];
   replayOf?: string;
   openAtMs?: number;
   after?: { row: number; event: 'headers' | 'end' };

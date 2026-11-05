@@ -10,6 +10,7 @@ import { runAuthMatrix, runNegative, type Identity } from './probes.js';
 import { findEndpoint } from './contract.js';
 import { draftFlow, FlowRunner, normalizeFlow, type ApiFlow } from './flows.js';
 import { exportOpenApi, importHar, parseSpec, requestForEndpoint, specCoverage, type ApiSpec } from './specs.js';
+import { FieldCodecs } from './fieldcodecs.js';
 import { moveTag, pickValues, tagValue, valueCatalog, valueOrigin } from './values.js';
 import { cookieJar } from './cookies.js';
 import type { Core } from './core.js';
@@ -45,6 +46,7 @@ import { WsReplays } from './wsreplay.js';
 export class PowerTools {
   readonly vars: Vars;
   readonly tech: TechService;
+  readonly fieldCodecs: FieldCodecs;
   readonly errors: ErrorService;
   readonly scripts: ScriptEngine;
   private readonly trust: TrustedScripts;
@@ -65,6 +67,7 @@ export class PowerTools {
     this.vars = new Vars(store);
     this.errors = new ErrorService(store);
     this.tech = new TechService(store, this.vars, this.errors);
+    this.fieldCodecs = new FieldCodecs(store);
     // Projects recorded before detection (or a newer set of detections) existed get scanned once, in the background.
     // Bump SCAN_VERSION when a release adds detections that old traffic should get.
     const SCAN_VERSION = 2;
@@ -94,6 +97,7 @@ export class PowerTools {
       sessionKeys: this.awsKeys,
       countHit: (id) => this.countHit(id),
       tech: this.tech,
+      fieldCodecs: this.fieldCodecs,
     });
     this.flows = new FlowRunner({
       store,

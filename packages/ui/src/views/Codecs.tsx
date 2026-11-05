@@ -3,8 +3,10 @@ import { bulk, formatPath, query, setAt, type BulkOp, type PathSeg } from '@site
 import { base64ToBytes, type SavedChain } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
+import { FieldCodecRules } from './FieldCodecs';
 import { asText, hexDump } from '../format';
 import { TokenPicker } from './TokenPicker';
+import { ReplayButton } from '../components/ReplayButton';
 
 type Layer = { kind: 'bytes'; bytes: Uint8Array } | { kind: 'value'; value: unknown };
 
@@ -143,6 +145,7 @@ export function Codecs() {
   }, [client, chain, input]);
 
   // A value inside the JSON that is itself encoded (a JSON string, base64, a JWT...), decoded on its own.
+  const [ruleDraft, setRuleDraft] = useState<{ field: string; chain: string[] } | null>(null);
   const [nested, setNested] = useState<{ path: PathSeg[]; chain: string[]; isValue: boolean; text: string } | null>(null);
   const decodeNested = async (at: PathSeg[], value: string) => {
     try {
@@ -411,6 +414,9 @@ export function Codecs() {
                 <button className="btn small primary" onClick={() => void putNestedBack()}>
                   Put back
                 </button>
+                <button className="btn small" onClick={() => setRuleDraft({ field: formatPath(nested.path), chain: nested.chain })} title="Save a field codec, so the Inspector and Replay decode this field by themselves">
+                  Always decode this field…
+                </button>
                 <button className="btn small" onClick={() => setNested(null)}>
                   Cancel
                 </button>
@@ -487,20 +493,16 @@ export function Codecs() {
                 Put back into {label}
               </button>
             )}
-            <button
-              className="btn small"
-              disabled={result === null}
-              title="Open a new Replay tab with this as the body"
-              onClick={() => openDraft({ method: 'POST', url: 'http://localhost/', headers: [['Content-Type', 'text/plain']], body: result ?? '' }, 'from Codecs')}
-            >
-              New replay with this body
-            </button>
+            <ReplayButton disabled={result === null} title="Open in Replay as a new request with this as the body" label="from Codecs" draft={{ method: 'POST', url: 'http://localhost/', headers: [['Content-Type', 'text/plain']], body: result ?? '' }}>
+              Send to Replay as body
+            </ReplayButton>
           </div>
           <pre className="raw" aria-label="Encoded result">
             {result ?? <span className="faint">Edited. Press Encode to rebuild the outer value.</span>}
           </pre>
         </section>
       </div>
+      <FieldCodecRules draft={ruleDraft} onDraftDone={() => setRuleDraft(null)} />
     </div>
   );
 }

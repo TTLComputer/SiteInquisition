@@ -4,6 +4,7 @@ import { useApp, type RaceItem } from '../state';
 import { Icon } from '../components/icons';
 import { fmtMs, parseRawRequest, toRawRequest } from '../format';
 import { bodyText } from '../actions';
+import { ReplayButton } from '../components/ReplayButton';
 
 type Sync = 'last-byte' | 'single-packet' | 'h3-single-datagram' | 'none';
 const SYNC: Array<{ id: Sync; label: string; hint: string }> = [
@@ -203,9 +204,7 @@ export function Race() {
                             >
                               Inspect
                             </button>{' '}
-                            <button className="btn small" title="Open this send in a replay tab, to edit and send it again" onClick={() => openReplayById(s.exchangeId).catch((e: Error) => notify(e.message))}>
-                              Replay
-                            </button>
+                            <ReplayButton id={s.exchangeId} compact />
                           </td>
                         </tr>
                       ))}

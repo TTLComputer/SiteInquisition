@@ -28,6 +28,7 @@ import * as zlib from 'node:zlib';
 import { FrameParser, MessageAssembler } from './websocket.js';
 import { runPlan, type PlanStep, type SentStep } from './wsplan.js';
 import type { LeafIssuer } from './x509.js';
+import { CERT_REFUSED, upstreamTls } from './upstreamtls.js';
 
 export type HeaderPairs = Array<[string, string]>;
 
@@ -829,13 +830,13 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
       headers: flat(headers) as unknown as Record<string, string>,
       setHost: false,
       agent: this.upstreamAgent(target.secure, insecure),
-      ...(target.secure ? { servername: isIP(target.host) ? undefined : target.host, rejectUnauthorized: !insecure } : {}),
+      ...(target.secure ? { servername: isIP(target.host) ? undefined : target.host, ...upstreamTls(target.host, insecure) } : {}),
     });
     upstreamReq.once('error', (err) => {
       if (finished) return;
       if (!res.headersSent) {
         res.statusCode = 502;
-        res.end(`SiteInquisition could not reach ${target.host}:${target.port}: ${err.message}`);
+        res.end(`SiteInquisition could not reach ${target.host}:${target.port}: ${err.message}${CERT_REFUSED.test(`${(err as NodeJS.ErrnoException).code ?? ''} ${err.message}`) ? '\n\nThe server\'s certificate is not trusted (dev servers often use self-signed ones). Trust it or skip checks for this host in SiteInquisition, Settings, Server certificates, or from this request in History.' : ''}`);
       } else res.destroy();
       abort('error', err.message);
     });
@@ -1023,7 +1024,7 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
       headers: flat(fwd) as unknown as Record<string, string>,
       setHost: false,
       agent: false,
-      ...(target.secure ? { servername: isIP(target.host) ? undefined : target.host, rejectUnauthorized: !insecure } : {}),
+      ...(target.secure ? { servername: isIP(target.host) ? undefined : target.host, ...upstreamTls(target.host, insecure) } : {}),
     });
     socket.once('close', () => {
       if (!done) upReq.destroy();

@@ -5,6 +5,7 @@ import * as tls from 'node:tls';
 import { newId } from './ids.js';
 import { runH3Plan } from './quic/plan.js';
 import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
+import { upstreamTls } from './upstreamtls.js';
 
 /**
  * Race-timed replay: send several requests so they reach the server as close
@@ -116,7 +117,7 @@ function connect(url: URL, ignoreTls: boolean, alpn?: string[]): Promise<net.Soc
   return new Promise((resolve, reject) => {
     const s =
       url.protocol === 'https:'
-        ? tls.connect({ host, port, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: !ignoreTls, ALPNProtocols: alpn }, () => resolve(s))
+        ? tls.connect({ host, port, servername: net.isIP(host) ? undefined : host, ...upstreamTls(host, ignoreTls), ALPNProtocols: alpn }, () => resolve(s))
         : net.connect({ host, port }, () => resolve(s));
     s.setNoDelay(true);
     s.once('error', reject);
@@ -254,7 +255,7 @@ export async function runRace(store: CaptureStore, requests: RaceRequest[], opts
         if (origins.size > 1) throw new Error('single-packet sync needs every request on the same origin (one HTTP/2 connection)');
         const url = new URL(requests[0]!.url);
         session = await new Promise<http2.ClientHttp2Session>((resolve, reject) => {
-          const s = http2.connect(url.origin, { rejectUnauthorized: !opts.ignoreTlsErrors, ...(url.protocol === 'https:' ? { ALPNProtocols: ['h2'] } : {}) });
+          const s = http2.connect(url.origin, { ...upstreamTls(url.hostname.replace(/^\[|\]$/g, ''), opts.ignoreTlsErrors), ...(url.protocol === 'https:' ? { ALPNProtocols: ['h2'] } : {}) });
           s.once('connect', () => resolve(s));
           s.once('error', (e) => reject(new Error(`HTTP/2 connection failed (the server may not support HTTP/2): ${e.message}`)));
         });

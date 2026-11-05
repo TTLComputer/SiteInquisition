@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { decodeLayers, detectChain, encodeChain, listCodecs, replaceThroughChain } from '@siteinquisition/codecs';
+import { decodeFieldsText, decodeLayers, detectChain, encodeChain, encodeFieldsText, listCodecs, parseFieldSpecs, replaceThroughChain, type FieldCodec } from '@siteinquisition/codecs';
 import { coverage } from './coverage.js';
 import { parseSigV4 } from './sigv4.js';
 import { batchPlan, flowRefs, resolveTokens } from './tokens.js';
@@ -13,6 +13,7 @@ import { awsRequestInfo } from './awsinfo.js';
 import { parseJwt as parseJwtApi } from './jwt.js';
 import { decodeSessionCookie, verifyFlaskCookie } from './sessioncookies.js';
 import { exchangeCookies } from './tech.js';
+import { fetchPeerCertificate } from './upstreamtls.js';
 import { readBrowserHttp3Hosts, writeBrowserHttp3Hosts, type Core } from './core.js';
 import { sendReplay } from './replay.js';
 import type { HeaderList } from './store.js';
@@ -57,6 +58,14 @@ const DEFAULT_VIEWS: SavedView[] = [
 type Handler = (params: Record<string, unknown>, client: WebSocket) => unknown;
 
 const b64 = (b: Uint8Array) => Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString('base64');
+
+/** Field codecs from a call: explicit specs, a "$.f = base64>json" string, or the ones saved for url and side. */
+function fieldSpecs(core: Core, p: Record<string, unknown>): FieldCodec[] {
+  if (Array.isArray(p.specs)) return (p.specs as FieldCodec[]).map((s) => ({ path: String(s.path), chain: (s.chain as unknown[]).map(String) }));
+  if (typeof p.spec === 'string') return parseFieldSpecs(p.spec);
+  if (typeof p.url === 'string') return core.tools.fieldCodecs.specsFor(p.url, p.side === 'response' ? 'response' : 'request');
+  return [];
+}
 
 const str = (p: Record<string, unknown>, k: string, required = true): string | undefined => {
   const v = p[k];
@@ -232,6 +241,7 @@ export class CoreApiServer {
       'tech.setSignatures': (p) => core.tools.tech.setCustom(arr(p, 'signatures')),
       'tech.setDisabled': (p) => core.tools.tech.setDisabled(arr(p, 'ids') as string[]),
       'tech.hosts': () => core.tools.tech.allHosts(),
+      'tech.overview': () => core.tools.tech.overview(),
       'tech.host': (p) => core.tools.tech.hostReport(str(p, 'host')!),
       'tech.exchange': (p) => {
         const id = str(p, 'id')!;
@@ -239,7 +249,7 @@ export class CoreApiServer {
         if (!ex) throw new RpcError(404, 'exchange not found');
         const t = core.tools.tech;
         const cookies = exchangeCookies(ex.requestHeaders, ex.responseHeaders).map((c) => ({ ...c, infra: t.infraReason(c.name, ex.host) }));
-        return { hits: t.detectExchange(id), host: t.hostReport(ex.host), csrf: t.csrfFindings(id), cookies };
+        return { hits: t.detectExchange(id), host: t.hostReport(ex.host), csrf: t.csrfFindings(id), pageTokens: t.exchangePageTokens(id), cookies };
       },
       'jwt.parse': (p) => core.tools.keys && parseJwtApi(str(p, 'token')!),
       'jwt.sign': (p) => core.tools.resignJwt(p.header as Record<string, unknown>, p.payload as Record<string, unknown>, { keyName: str(p, 'keyName', false), secret: str(p, 'secret', false) }, str(p, 'alg', false)),
@@ -311,6 +321,21 @@ export class CoreApiServer {
       'values.catalog': (p) => core.tools.values({ host: str(p, 'host', false), query: str(p, 'query', false), limit: num(p, 'limit') }),
       'values.pick': (p) => pickValues(store, str(p, 'spec')!),
       'values.origin': (p) => core.tools.valueOrigin(str(p, 'value')!, str(p, 'beforeId', false)),
+      'tags.list': () => store.tagCounts(),
+      'tls.get': () => core.upstreamTls.get(),
+      'tls.set': (p) => core.upstreamTls.set(p as never),
+      'tls.trust': (p) => core.upstreamTls.trust(str(p, 'pem')!, str(p, 'name', false)),
+      'tls.untrust': (p) => core.upstreamTls.untrust(str(p, 'id')!),
+      'tls.skipHost': (p) => core.upstreamTls.skipHost(str(p, 'host')!),
+      // Opens a TLS connection only to read the server's certificate; sent when the user clicks, never on its own.
+      'tls.peerCert': (p) => fetchPeerCertificate(str(p, 'host')!, num(p, 'port') ?? 443),
+      'fields.list': () => core.tools.fieldCodecs.list(),
+      'fields.set': (p) => core.tools.fieldCodecs.set(arr(p, 'rules') as never),
+      'fields.for': (p) => core.tools.fieldCodecs.rulesFor(str(p, 'url')!, p.side === 'response' ? 'response' : 'request'),
+      'fields.decodeExchange': (p) => core.tools.fieldCodecs.decodeExchange(str(p, 'id')!, p.side === 'request' ? 'request' : 'response'),
+      'fields.decode': (p) => decodeFieldsText(str(p, 'text')!, fieldSpecs(core, p)),
+      'fields.encode': (p) => encodeFieldsText(str(p, 'text')!, fieldSpecs(core, p)),
+      'fields.parse': (p) => parseFieldSpecs(str(p, 'spec')!),
       'tags.move': (p) => core.tools.moveTag(str(p, 'tag')!, str(p, 'id')!),
       'tags.value': (p) => tagValue(store, str(p, 'ref')!),
       'contract.check': (p) => core.tools.contractCheck(str(p, 'id')!),

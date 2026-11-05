@@ -5,6 +5,7 @@ import { Icon } from '../components/icons';
 import { asText, fmtMs, fmtSize, hexDump, parseRawRequest, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { diffLines } from '../diff';
 import { TokenPicker } from './TokenPicker';
+import { CertHelp } from './TlsSettings';
 import { mockFromExchange } from '../actions';
 
 interface Options {
@@ -20,8 +21,11 @@ interface Options {
   flow: string;
   /** Codec chain the body is encoded with after tokens are filled in, e.g. "base64,json". */
   encode: string;
+  /** JSON fields written decoded and encoded on send: "$.payload = base64>json; $.sig = hex". */
+  fields: string;
 }
-const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false, protocol: 'h1', flow: '', encode: '' };
+const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false, protocol: 'h1', flow: '', encode: '', fields: '' };
+const fieldSpecText = (rules: Array<{ field: string; chain: string[] }>) => rules.map((r) => `${r.field} = ${r.chain.join('>')}`).join('; ');
 
 const binaryMarker = (n: number) => `<binary body: ${n} bytes, sent as captured>`;
 
@@ -98,7 +102,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     if (tab.options) return; // opened with explicit options, e.g. "cookies from jar"
     try {
       const saved = JSON.parse(localStorage.getItem(`siq.replayOptions.${host}`) ?? 'null') as Partial<Options> | null;
-      if (saved) setOpts((o) => ({ ...o, ...saved }));
+      if (saved) setOpts((o) => ({ ...o, ...saved, fields: o.fields }));
     } catch {
       // storage unavailable or a bad entry; keep the defaults
     }
@@ -126,8 +130,41 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     setOriginal({ ex, body: resBody });
     setOriginalReqBody(reqBody);
     const text = asText(reqBody);
-    setRaw(toRawRequest(ex.method, ex.url, ex.requestHeaders, text === null ? binaryMarker(reqBody.length) : text));
+    // Saved field codecs for this URL: open the body with those fields decoded, and encode them again on send.
+    let body = text;
+    let fields = '';
+    if (text) {
+      try {
+        const rules = await client.fieldCodecsFor(ex.url, 'request');
+        const decoded = rules.length ? await client.decodeFields(text, rules.map((r) => ({ path: r.field, chain: r.chain }))) : null;
+        if (decoded) {
+          body = decoded.text;
+          fields = fieldSpecText(rules.filter((_, i) => decoded.counts[i]));
+        }
+      } catch {
+        // leave the body as captured
+      }
+    }
+    setOpts((o) => ({ ...o, fields }));
+    setRaw(toRawRequest(ex.method, ex.url, ex.requestHeaders, body === null ? binaryMarker(reqBody.length) : body));
   }, [client, tab.exchangeId, tab.draft]);
+
+  /** Decode (or encode back) the body's fields with the spec in the Fields box. */
+  const convertFields = async (dir: 'decode' | 'encode') => {
+    try {
+      const parsed = parseRawRequest(raw);
+      if (!parsed.body) return notify('There is no body to change.');
+      const specs = await client.parseFieldSpecs(opts.fields);
+      if (!specs.length) return notify('Write the fields first, e.g. $.payload = base64>json');
+      const out = dir === 'decode' ? await client.decodeFields(parsed.body, specs) : await client.encodeFields(parsed.body, specs);
+      if (!out) return notify('None of those fields are in the body, or the body is not JSON.');
+      if (out.errors.length) notify(out.errors[0]!);
+      setRaw(toRawRequest(parsed.method, parsed.url, parsed.headers, out.text));
+      if (dir === 'encode') setOpts((o) => ({ ...o, fields: '' }));
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
 
   useEffect(() => {
     client.aws().then((a) => setProfiles(a.profiles), () => undefined);
@@ -202,6 +239,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         protocol: opts.protocol === 'h3' ? 'h3' : undefined,
         flow: opts.flow || undefined,
         bodyChain: opts.encode ? opts.encode.split(/[,>\s]+/).filter(Boolean) : undefined,
+        fieldCodecs: opts.fields.trim() ? await client.parseFieldSpecs(opts.fields) : undefined,
       };
       if (preview && preview.sends > 1) {
         const out = await client.replayBatch(req, { ...options, concurrency: 4 });
@@ -389,6 +427,20 @@ export function Replay({ tab }: { tab: ReplayTab }) {
           Encode body
           <input className="input mono" value={opts.encode} placeholder="none" onChange={(e) => changeOpts({ ...opts, encode: e.target.value })} aria-label="Encode body with" style={{ width: 110 }} />
         </label>
+        <label className="check" title="JSON fields the editor shows decoded; each is encoded with its chain on send. Example: $.payload = base64>json; $.meta.sig = hex. Saved ones (Codecs, Field codecs) fill this in.">
+          Fields
+          <input className="input mono" value={opts.fields} placeholder="$.field = base64>json" onChange={(e) => setOpts({ ...opts, fields: e.target.value })} aria-label="Encode fields with" style={{ width: 200 }} />
+        </label>
+        {opts.fields.trim() && (
+          <>
+            <button className="btn small" onClick={() => void convertFields('decode')} title="Decode these fields in the editor now">
+              Decode
+            </button>
+            <button className="btn small" onClick={() => void convertFields('encode')} title="Put the encoded values back in the editor and stop encoding on send">
+              Encode back
+            </button>
+          </>
+        )}
         <span style={{ flex: 1 }} />
         <TokenPicker onPick={insertToken} />
       </div>
@@ -397,6 +449,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
           {error}
         </div>
       )}
+      {shown?.ex.error && <CertHelp url={shown.ex.url} error={shown.ex.error} />}
       <div className="replay-split">
         <section>
           <div className="sec-head">

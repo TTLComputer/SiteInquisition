@@ -11,6 +11,7 @@ import { decodeBody, type HeaderPairs, type InterceptorEvents, type InterceptorH
 import type { LeafIssuer } from '../x509.js';
 import { H3Server, h3Connect, requestFields, type H3Connection, type H3ServerRequest } from './index.js';
 import type { Field } from './qpack.js';
+import { skipsTlsChecks, trustedPems, upstreamTls } from '../upstreamtls.js';
 
 export interface H3CaptureOptions {
   issuer: LeafIssuer;
@@ -230,7 +231,8 @@ export class H3Capture extends EventEmitter<InterceptorEvents> {
         host: target.host,
         port: target.port,
         serverName: isIP(target.host) ? undefined : target.host,
-        rejectUnauthorized: !this.opts.ignoreUpstreamTlsErrors(target.host),
+        rejectUnauthorized: !(this.opts.ignoreUpstreamTlsErrors(target.host) || skipsTlsChecks(target.host)),
+        ca: trustedPems(),
         handshakeTimeoutMs: this.opts.upstreamH3TimeoutMs ?? 3000,
       });
       this.pool.set(key, p);
@@ -257,7 +259,7 @@ export class H3Capture extends EventEmitter<InterceptorEvents> {
           headers: out.flat() as unknown as Record<string, string>,
           setHost: false,
           servername: isIP(target.host) ? undefined : target.host,
-          rejectUnauthorized: !insecure,
+          ...upstreamTls(target.host, insecure),
         },
         (res) => {
           const chunks: Buffer[] = [];

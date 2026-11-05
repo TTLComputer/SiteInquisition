@@ -1,3 +1,4 @@
+import { usePlacement } from '../components/placement';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../state';
 import type { LanState } from '../api';
@@ -21,6 +22,9 @@ export function LanChip() {
   const [state, setState] = useLan();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const chip = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  usePlacement(pop, chip, open);
   const pending = state?.pending ?? [];
   useEffect(() => {
     if (!pending.length) setOpen(false);
@@ -35,12 +39,12 @@ export function LanChip() {
   const act = (p: Promise<LanState>, msg: string) => p.then((s) => (setState(s), notify(msg)), (e: Error) => notify(e.message));
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button className="chip-btn attention" onClick={() => setOpen(!open)} aria-expanded={open} data-testid="lan-chip">
+      <button ref={chip} className="chip-btn attention" onClick={() => setOpen(!open)} aria-expanded={open} data-testid="lan-chip">
         <span className="dot" style={{ background: 'var(--warn)' }} />
         {pending.length === 1 ? `${pending[0]!.address} wants to connect` : `${pending.length} devices want to connect`}
       </button>
       {open && (
-        <div className="approval-pop">
+        <div ref={pop} className="approval-pop">
           {pending.map((p) => (
             <div key={p.address} className="card" style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
               <div>

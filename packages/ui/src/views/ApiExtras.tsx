@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { SiteMapHost, ApiSpec, AuthRow, ContractSummary, ExchangeDiff, ExchangeSummary, GlossaryEntry, HeaderList, Identity, NegativeResult, Resource, SeenOperation } from '../api';
 import { useApp } from '../state';
 import { diffLines } from '../diff';
+import { ReplayButton } from '../components/ReplayButton';
 
 export function useHosts() {
   const { client } = useApp();
@@ -105,7 +106,8 @@ export function ContractScan() {
                   <td>
                     <button className="btn small" onClick={() => inspect(i.exampleId)}>
                       Inspect
-                    </button>
+                    </button>{' '}
+                    <ReplayButton id={i.exampleId} compact />
                   </td>
                 </tr>
               )),
@@ -231,7 +233,8 @@ export function GraphQL() {
                     <td>
                       <button className="btn small" onClick={() => inspect(o.exampleId)}>
                         Inspect
-                      </button>
+                      </button>{' '}
+                      <ReplayButton id={o.exampleId} compact />
                     </td>
                   </tr>
                 ))}
@@ -288,9 +291,7 @@ export function GraphQL() {
                         <td className="mono faint">{e.graphql?.args.map((a) => `${a.name}: ${a.type}`).join(', ')}</td>
                         <td className="mono faint">{e.graphql?.returns}</td>
                         <td>
-                          <button className="btn small" onClick={() => void openOp(s, e.key)}>
-                            Open in Replay
-                          </button>
+                          <ReplayButton build={() => openOp(s, e.key)} title="Open in Replay with example variables" />
                         </td>
                       </tr>
                     ))}
@@ -374,10 +375,12 @@ export function Resources() {
 // ---------- Glossary ----------
 
 export function Glossary() {
-  const { client, notify } = useApp();
+  const { client, notify, setQuery, setView } = useApp();
+  const inspect = useInspect();
   const [host, setHost] = useState('');
   const [filter, setFilter] = useState('');
   const [rows, setRows] = useState<GlossaryEntry[] | null>(null);
+  const [open, setOpen] = useState<Set<string>>(new Set());
   useEffect(() => {
     client.glossary(host || undefined).then(setRows, (e: Error) => notify(e.message));
   }, [client, host, notify]);
@@ -385,6 +388,18 @@ export function Glossary() {
     const f = filter.toLowerCase();
     return (rows ?? []).filter((r) => !f || `${r.name} ${r.values?.join(' ') ?? ''} ${r.seenIn.join(' ')}`.toLowerCase().includes(f)).slice(0, 500);
   }, [rows, filter]);
+  const toggle = (name: string) =>
+    setOpen((s) => {
+      const n = new Set(s);
+      if (n.has(name)) n.delete(name);
+      else n.add(name);
+      return n;
+    });
+  /** Every request that carried the field (up to what the glossary kept), as a History search. */
+  const showAll = (ids: string[]) => {
+    setQuery(`id:${[...new Set(ids)].join(',')}`);
+    setView('history');
+  };
   return (
     <div className="api-pane" aria-label="Glossary">
       <div className="filterbar">
@@ -404,36 +419,72 @@ export function Glossary() {
             </tr>
           </thead>
           <tbody>
-            {shown.map((r) => (
-              <tr key={r.name}>
-                <td className="mono">{r.name}</td>
-                <td className="mono faint">
-                  {r.types.join(' | ')}
-                  {r.nullable && ' | null'}
-                  {r.format && <span className="chip" style={{ marginLeft: 6 }}>{r.format}</span>}
-                </td>
-                <td className="mono">
-                  {r.values ? (
-                    r.values.join(', ')
-                  ) : r.min !== undefined ? (
-                    <span className="faint">
-                      {r.min} to {r.max}
-                    </span>
-                  ) : r.minLength !== undefined ? (
-                    <span className="faint">
-                      {r.minLength === r.maxLength ? `${r.minLength} chars` : `${r.minLength} to ${r.maxLength} chars`}
-                    </span>
-                  ) : null}
-                </td>
-                <td className="faint">
-                  {r.count}× · {r.distinct} distinct
-                </td>
-                <td className="mono faint" title={r.seenIn.join('\n')}>
-                  {r.seenIn.slice(0, 2).join(', ')}
-                  {r.seenIn.length > 2 && ` +${r.seenIn.length - 2}`}
-                </td>
-              </tr>
-            ))}
+            {shown.map((r) => {
+              const sources = r.sources ?? r.seenIn.map((where) => ({ where, exchangeIds: [], count: 0 }));
+              const expanded = open.has(r.name);
+              const list = expanded ? sources : sources.slice(0, 2);
+              const allIds = sources.flatMap((s) => s.exchangeIds);
+              return (
+                <tr key={r.name} data-testid="glossary-row" data-field={r.name}>
+                  <td className="mono">{r.name}</td>
+                  <td className="mono faint">
+                    {r.types.join(' | ')}
+                    {r.nullable && ' | null'}
+                    {r.format && <span className="chip" style={{ marginLeft: 6 }}>{r.format}</span>}
+                  </td>
+                  <td className="mono">
+                    {r.values ? (
+                      r.values.join(', ')
+                    ) : r.min !== undefined ? (
+                      <span className="faint">
+                        {r.min} to {r.max}
+                      </span>
+                    ) : r.minLength !== undefined ? (
+                      <span className="faint">
+                        {r.minLength === r.maxLength ? `${r.minLength} chars` : `${r.minLength} to ${r.maxLength} chars`}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="faint">
+                    {allIds.length > 0 ? (
+                      <button className="link-btn" onClick={() => showAll(allIds)} title="Show the requests that carried this field in History">
+                        {r.count}× · {r.distinct} distinct
+                      </button>
+                    ) : (
+                      <>
+                        {r.count}× · {r.distinct} distinct
+                      </>
+                    )}
+                  </td>
+                  <td className="mono faint glossary-where">
+                    {list.map((s) => (
+                      <div key={s.where}>
+                        {s.exchangeIds.length ? (
+                          <button className="link-btn" onClick={() => inspect(s.exchangeIds[0]!)} title={`Open the newest request here${s.count > 1 ? ` (${s.count} in all)` : ''}`}>
+                            {s.where}
+                          </button>
+                        ) : (
+                          s.where
+                        )}
+                        {s.exchangeIds.length > 1 && (
+                          <>
+                            {' '}
+                            <button className="pill" onClick={() => showAll(s.exchangeIds)} title="Show all of them in History">
+                              {s.count} requests
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                    {sources.length > 2 && (
+                      <button className="pill" aria-expanded={expanded} onClick={() => toggle(r.name)} title={expanded ? 'Show fewer' : sources.map((s) => s.where).join('\n')}>
+                        {expanded ? 'show fewer' : `+${sources.length - 2} more`}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -648,9 +699,12 @@ export function AuthAndNegative() {
                         </td>
                         <td>
                           {n.exchangeId && (
-                            <button className="btn small" onClick={() => inspect(n.exchangeId!)}>
-                              Inspect
-                            </button>
+                            <>
+                              <button className="btn small" onClick={() => inspect(n.exchangeId!)}>
+                                Inspect
+                              </button>{' '}
+                              <ReplayButton id={n.exchangeId!} compact />
+                            </>
                           )}
                         </td>
                       </tr>
@@ -772,6 +826,7 @@ export function Compare() {
                   <button className="btn small" onClick={() => inspect(x.id)}>
                     Inspect
                   </button>
+                  <ReplayButton id={x.id} compact />
                 </div>
               ))}
               {diff.query.length > 0 && (

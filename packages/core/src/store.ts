@@ -673,6 +673,11 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     return (this.q(sql).all(...(params as SQLInputValue[])) as unknown as ExchangeRow[]).map(toSummary);
   }
 
+  /** Every tag in use, with how many exchanges carry it, most used first. */
+  tagCounts(limit = 500): Array<{ tag: string; count: number; newestId: string }> {
+    return this.q('SELECT j.value AS tag, COUNT(*) AS count, MAX(e.id) AS newestId FROM exchange e, json_each(e.tags) j GROUP BY j.value ORDER BY count DESC, tag LIMIT ?').all(limit) as unknown as Array<{ tag: string; count: number; newestId: string }>;
+  }
+
   /** Every exchange in a flow (a redirect chain or a replay batch), in order. */
   getFlow(flowId: string): ExchangeSummary[] {
     return (this.q('SELECT * FROM exchange WHERE flow_id = ? ORDER BY id').all(flowId) as unknown as ExchangeRow[]).map(toSummary);

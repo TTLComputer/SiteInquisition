@@ -7,6 +7,7 @@ import { LOOPBACK, type LanGate } from './lan.js';
 import type { Scope } from './scope.js';
 import type { SeenHosts } from './seen.js';
 import type { CaptureStore, ExchangeSource, HeaderList } from './store.js';
+import { upstreamTls as upstreamTlsOptions } from './upstreamtls.js';
 
 /**
  * One MQTT listener. Devices connect to it as if it were their broker; every
@@ -126,7 +127,7 @@ export class MqttRelay extends EventEmitter<{ session: [string]; error: [Error] 
     const { upstreamHost: host, upstreamTls, ignoreUpstreamTlsErrors } = this.config;
     const port = this.upstreamPort;
     return upstreamTls
-      ? tls.connect({ host, port, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: !ignoreUpstreamTlsErrors })
+      ? tls.connect({ host, port, servername: net.isIP(host) ? undefined : host, ...upstreamTlsOptions(host, ignoreUpstreamTlsErrors) })
       : net.connect({ host, port });
   }
 

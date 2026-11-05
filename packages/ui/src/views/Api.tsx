@@ -5,6 +5,7 @@ import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { downloadText, fmtMs, fmtTime } from '../format';
 import { AuthAndNegative, Compare, ContractScan, Glossary, GraphQL, Resources, useHosts } from './ApiExtras';
+import { ReplayButton } from '../components/ReplayButton';
 
 type ApiTab = 'values' | 'flows' | 'specs' | 'graphql' | 'resources' | 'glossary' | 'probes' | 'compare';
 
@@ -118,6 +119,7 @@ function Values() {
                 <button className="btn small" onClick={() => inspect(o.exchangeId)}>
                   Inspect
                 </button>
+                <ReplayButton id={o.exchangeId} compact />
               </div>
             ))
           )}
@@ -166,7 +168,8 @@ function Values() {
                     </button>{' '}
                     <button className="btn small" onClick={() => inspect(f.lastExchangeId)}>
                       Example
-                    </button>
+                    </button>{' '}
+                    <ReplayButton id={f.lastExchangeId} compact />
                   </td>
                 </tr>
               ))}
@@ -472,6 +475,7 @@ function FlowEditor({ flow, onSaved, onDeleted, draft }: { flow: Partial<ApiFlow
                       Inspect
                     </button>
                   )}
+                  {r.exchangeId && <ReplayButton id={r.exchangeId} compact />}
                   {(r.logs ?? []).map((l, k) => (
                     <span key={k} className="mono faint">
                       {l.text}
@@ -716,9 +720,7 @@ function Specs() {
                           <td className="mono faint">{e.params.map((p) => `${p.in === 'query' ? '?' : p.in === 'header' ? 'h:' : ''}${p.name}${p.required ? '' : '?'}`).join(' ')}</td>
                           <td className="faint">{e.security.filter((x) => x !== 'none').join(', ') || (e.security.includes('none') ? 'no auth' : '')}</td>
                           <td>
-                            <button className="btn small" onClick={() => void openEndpoint(s, e.key)} title="Open in Replay with example values, real ids from History where it finds them">
-                              Open in Replay
-                            </button>
+                            <ReplayButton build={() => openEndpoint(s, e.key)} title="Open in Replay with example values, real ids from History where it finds them" />
                           </td>
                         </tr>
                       ))}

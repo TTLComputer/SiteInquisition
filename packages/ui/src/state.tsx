@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { confirmLeave } from './unsaved';
 import type { Approval, CoreClient, CoreInfo, ExchangeSummary, HeaderList, Paused, ScopeConfig } from './api';
 
-export type ViewId = 'browser' | 'history' | 'timeline' | 'replay' | 'race' | 'h3' | 'rules' | 'codecs' | 'cookies' | 'streams' | 'scripts' | 'api' | 'settings';
+export type ViewId = 'browser' | 'history' | 'timeline' | 'replay' | 'race' | 'h3' | 'rules' | 'codecs' | 'cookies' | 'streams' | 'scripts' | 'api' | 'tech' | 'settings';
 
 /** A request built somewhere other than History (Codecs, an agent, a script) and opened in Replay. */
 export interface Draft {

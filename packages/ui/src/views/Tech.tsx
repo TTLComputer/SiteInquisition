@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { AwsRequestInfo, ErrorFinding, CsrfBinding, CsrfFinding, EffectiveTech, ExchangeDetail, ExchangeTech, JwtFlag, KeyInfo, ParsedJwt, Signature, TechOverride } from '../api';
+import type { AwsRequestInfo, ErrorFinding, CsrfBinding, PageCsrfToken, CsrfFinding, EffectiveTech, ExchangeDetail, ExchangeTech, JwtFlag, KeyInfo, ParsedJwt, Signature, TechOverride } from '../api';
 import { useApp } from '../state';
 
-const STATUS_LABEL: Record<EffectiveTech['status'], string> = { detected: 'detected', possible: 'possible', pinned: 'pinned by you', implied: 'implied' };
-const STATUS_CLASS: Record<EffectiveTech['status'], string> = { detected: 'badge ok', possible: 'badge', pinned: 'badge ok', implied: 'badge' };
+export const STATUS_LABEL: Record<EffectiveTech['status'], string> = { detected: 'detected', possible: 'possible', pinned: 'pinned by you', implied: 'implied' };
+export const STATUS_CLASS: Record<EffectiveTech['status'], string> = { detected: 'badge ok', possible: 'badge', pinned: 'badge ok', implied: 'badge' };
 
 // Providers first, then everything else by kind.
 const VENDOR_ORDER = ['Amazon Web Services', 'Google Cloud', 'Microsoft Azure', 'Cloudflare'];
@@ -25,11 +25,12 @@ const CATEGORY_ORDER = Object.keys(CATEGORY_GROUP);
 
 const LEADS = new Set(['aws', 'gcp', 'azure', 'cloudflare']);
 
-export const groupOf = (s: Signature) => s.vendor ?? CATEGORY_GROUP[s.category] ?? s.category;
+type Groupable = Pick<Signature, 'id' | 'name' | 'category' | 'vendor'>;
+export const groupOf = (s: Groupable) => s.vendor ?? CATEGORY_GROUP[s.category] ?? s.category;
 
 /** Signatures in labelled groups: providers in a fixed order, then categories, then any other vendors a user added. */
-export function groupSignatures(list: Signature[]): Array<{ group: string; sigs: Signature[] }> {
-  const map = new Map<string, Signature[]>();
+export function groupSignatures<T extends Groupable>(list: T[]): Array<{ group: string; sigs: T[] }> {
+  const map = new Map<string, T[]>();
   for (const s of list) map.set(groupOf(s), [...(map.get(groupOf(s)) ?? []), s]);
   const rank = (g: string) => {
     const v = VENDOR_ORDER.indexOf(g);
@@ -53,7 +54,7 @@ function sourceText(f: CsrfFinding): string {
   if (!f.source) return 'source not found in recorded traffic';
   const s = f.source;
   const where = { cookie: `cookie ${s.name}`, header: `response header ${s.name}`, meta: `<meta name="${s.name}">`, input: `form field ${s.name}`, json: `JSON field ${s.name}`, regex: `page text /${short(s.name, 30)}/` }[s.from];
-  const how = { 'cookie-echo': 'the same value is in a cookie (double submit)', 'value-match': 'found in an earlier response', 'framework-pattern': 'the usual place for this framework, not confirmed', unknown: '' }[f.how];
+  const how = { 'cookie-echo': 'the same value is in a cookie (double submit)', 'value-match': 'found in an earlier response', 'page-token': 'a page on this host hands one out (the value has changed since)', 'framework-pattern': 'the usual place for this framework, not confirmed', unknown: '' }[f.how];
   return `${where}${s.urlDecode ? ' (URL decoded)' : ''}${how ? ` · ${how}` : ''}`;
 }
 
@@ -253,6 +254,20 @@ export function TechPanel({ ex }: { ex: ExchangeDetail }) {
         )}
       </section>
 
+      {data.pageTokens.length > 0 && (
+        <section>
+          <div className="sec-head">
+            <b style={{ color: 'var(--text)' }}>CSRF tokens this page hands out</b>
+            <span className="faint">Requests made from this page usually send it back.</span>
+          </div>
+          <ul className="tech-list">
+            {data.pageTokens.map((t, i) => (
+              <PageTokenRow key={i} t={t} bindings={bindings} onDone={load} />
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section>
         <div className="sec-head">
           <b style={{ color: 'var(--text)' }}>Cookies</b>
@@ -297,6 +312,50 @@ export function TechPanel({ ex }: { ex: ExchangeDetail }) {
         </section>
       )}
     </div>
+  );
+}
+
+const pageTokenText = (t: PageCsrfToken) => (t.source.from === 'meta' ? `<meta name="${t.source.name}">` : `hidden field ${t.source.name}`);
+const sinkText = (b: Pick<CsrfBinding, 'sinks'>) => b.sinks.map((x) => `${x.in === 'header' ? 'header' : x.in === 'form' ? 'form field' : x.in} ${x.name}`).join(', ');
+
+/** A CSRF token found in a page, with a button to keep it fresh in replays. */
+export function PageTokenRow({ t, bindings, onDone, showHost }: { t: PageCsrfToken; bindings: CsrfBinding[]; onDone(): void; showHost?: boolean }) {
+  const { client, notify, select, setView } = useApp();
+  const bound = t.bindingId ? bindings.find((b) => b.id === t.bindingId) : undefined;
+  const act = (p: Promise<unknown>, msg: string) => p.then(() => (notify(msg), onDone()), (e: Error) => notify(e.message));
+  return (
+    <li data-testid="page-token-row">
+      <div className="tech-line">
+        {showHost && <span className="mono">{t.host}</span>}
+        <b className="mono">{pageTokenText(t)}</b>
+        <span className="mono faint">{short(t.value)}</span>
+        {t.param && <span className="faint">form field {t.param}</span>}
+        <span style={{ flex: 1 }} />
+        {bound ? (
+          <span className="badge ok">kept fresh as {`{{var:${bound.varName}}}`}</span>
+        ) : t.suggestion ? (
+          <button
+            className="btn small primary"
+            title={`Read the newest token from ${pageTokenText(t)} and put it in ${sinkText(t.suggestion)} when a replay uses Fresh CSRF token`}
+            onClick={() => act(client.setCsrfBindings([...bindings, t.suggestion!]), `Watching ${pageTokenText(t)}. Turn on "Fresh CSRF token" in Replay.`)}
+          >
+            Keep fresh on replay
+          </button>
+        ) : null}
+      </div>
+      <div className="tech-evidence">
+        {t.suggestion && !bound && <>Sent back as {sinkText(t.suggestion)}{t.suggestion.host !== t.host ? ` on ${t.suggestion.host}` : ''}. </>}
+        <button
+          className="pill"
+          onClick={() => {
+            select(t.exchangeId);
+            setView('history');
+          }}
+        >
+          show page
+        </button>
+      </div>
+    </li>
   );
 }
 

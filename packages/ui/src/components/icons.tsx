@@ -12,6 +12,7 @@ const P: Record<string, string> = {
   streams: 'M4 9c4.5-4 11.5-4 16 0 M7 13c3-2.5 7-2.5 10 0 M10 17c1.2-1 2.8-1 4 0',
   scripts: 'M5 4h10l4 4v12H5z M10 12l-2 2 2 2 M14 12l2 2-2 2',
   api: 'M4 6h6v4H4z M14 14h6v4h-6z M14 4h6v4h-6z M10 8h4 M7 10v6h7',
+  tech: 'M12 3l8 4-8 4-8-4z M4 12l8 4 8-4 M4 17l8 4 8-4',
   settings: 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z M12 2v3 M12 19v3 M2 12h3 M19 12h3 M5 5l2 2 M17 17l2 2 M5 19l2-2 M17 7l2-2',
   filter: 'M4 5h16l-6 8v5l-4 2v-7z',
   search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z M20 20l-3.5-3.5',

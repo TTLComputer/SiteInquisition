@@ -4,6 +4,7 @@ import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { fmtMs, fmtTime, statusText } from '../format';
 import { withFilter } from './History';
+import { ReplayButton } from '../components/ReplayButton';
 
 type GroupBy = 'host' | 'flow' | 'connection';
 const ZOOMS: Array<{ label: string; ms: number | null }> = [
@@ -252,9 +253,7 @@ export function Timeline() {
           <button className="btn small" onClick={() => setView('history')}>
             Open in History
           </button>
-          <button className="btn small primary" onClick={() => openReplay(selected)}>
-            <Icon name="replay" size={12} /> Send to replay
-          </button>
+          <ReplayButton exchange={selected} primary />
         </div>
       )}
     </div>

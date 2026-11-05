@@ -10,6 +10,7 @@ import { h3Connect, requestFields, type H3Connection } from './index.js';
 import type { TransportParams } from './params.js';
 import type { EncoderPolicy, Field } from './qpack.js';
 import type { SessionTicket } from './tls.js';
+import { skipsTlsChecks, trustedPems } from '../upstreamtls.js';
 
 export interface H3PlanRequest {
   label?: string;
@@ -188,8 +189,8 @@ async function runOnce(store: CaptureStore, rows: H3PlanRequest[], opts: H3PlanO
       host,
       port,
       serverName: url0.hostname,
-      ca: opts.ca,
-      rejectUnauthorized: !opts.ignoreTlsErrors,
+      ca: [...(opts.ca ?? []), ...trustedPems()],
+      rejectUnauthorized: !(opts.ignoreTlsErrors || skipsTlsChecks(host)),
       params: opts.transport,
       autoCredit: opts.autoCredit,
       scheduler: opts.scheduler,

@@ -6,10 +6,14 @@ import { Icon } from '../components/icons';
 import { asText, fmtMs, fmtSize, fmtTime, hexDump, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { breakOn, mockFromExchange } from '../actions';
 import { ErrorBanner, TechPanel } from './Tech';
+import { CertHelp } from './TlsSettings';
 import { decodeSignalR, decodeSocketIO, detectProtocol, summarizeFrame } from '@siteinquisition/codecs/protocols';
+import { ReplayButton } from '../components/ReplayButton';
 
 type Tab = 'exchange' | 'messages' | 'tech' | 'timings' | 'notes';
-type BodyMode = 'pretty' | 'raw' | 'hex';
+type BodyMode = 'pretty' | 'raw' | 'hex' | 'fields';
+/** A body with its saved field codecs applied, and which fields they were. */
+type FieldView = { text: string; label: string } | null;
 
 function Headers({ headers }: { headers: HeaderList }) {
   return (
@@ -23,12 +27,13 @@ function Headers({ headers }: { headers: HeaderList }) {
   );
 }
 
-function BodyView({ bytes, headers, mode, truncated }: { bytes: Uint8Array | null; headers: HeaderList | null; mode: BodyMode; truncated: boolean }) {
+function BodyView({ bytes, headers, mode, truncated, fields }: { bytes: Uint8Array | null; headers: HeaderList | null; mode: BodyMode; truncated: boolean; fields?: FieldView }) {
   if (!bytes) return <span className="faint">loading body...</span>;
   if (bytes.length === 0) return <span className="faint">(no body)</span>;
   const text = asText(bytes);
   let out: string;
-  if (mode === 'hex' || text === null) out = hexDump(bytes);
+  if (mode === 'fields' && fields) out = fields.text;
+  else if (mode === 'hex' || text === null) out = hexDump(bytes);
   else if (mode === 'pretty') out = prettyBody(text, headers);
   else out = text;
   return (
@@ -40,8 +45,13 @@ function BodyView({ bytes, headers, mode, truncated }: { bytes: Uint8Array | nul
   );
 }
 
-function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrace }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void; onTrace?(text: string): void }) {
+function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrace, fields }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void; onTrace?(text: string): void; fields?: FieldView }) {
   const [mode, setMode] = useState<BodyMode>('pretty');
+  // Saved field codecs apply: show those fields decoded first.
+  useEffect(() => {
+    if (fields) setMode('fields');
+    else setMode((m) => (m === 'fields' ? 'pretty' : m));
+  }, [!!fields]);
   return (
     <section>
       <div className="sec-head">
@@ -73,6 +83,11 @@ function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrac
           </button>
         )}
         <div className="segmented" role="group" aria-label={`${title} body view`}>
+          {fields && (
+            <button className="seg" aria-pressed={mode === 'fields'} onClick={() => setMode('fields')} title={`Decoded with saved field codecs: ${fields.label}`}>
+              Decoded fields
+            </button>
+          )}
           {(['pretty', 'raw', 'hex'] as const).map((m) => (
             <button key={m} className="seg" aria-pressed={mode === m} onClick={() => setMode(m)}>
               {m === 'pretty' ? 'Pretty' : m === 'raw' ? 'Raw' : 'Hex'}
@@ -84,7 +99,7 @@ function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrac
         <div>{first}</div>
         {headers ? <Headers headers={headers} /> : null}
         {'\n'}
-        <BodyView bytes={bytes} headers={headers} mode={mode} truncated={truncated} />
+        <BodyView bytes={bytes} headers={headers} mode={mode} truncated={truncated} fields={fields} />
       </pre>
     </section>
   );
@@ -393,6 +408,8 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
   const [resBody, setResBody] = useState<Uint8Array | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('exchange');
+  const [reqFields, setReqFields] = useState<FieldView>(null);
+  const [resFields, setResFields] = useState<FieldView>(null);
 
   const load = useCallback(async () => {
     try {
@@ -402,6 +419,10 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
       const [rq, rs] = await Promise.all([client.body(id, 'request'), detail.state === 'pending' ? Promise.resolve(new Uint8Array()) : client.body(id, 'response')]);
       setReqBody(rq);
       setResBody(rs);
+      const view = (r: Awaited<ReturnType<typeof client.decodeExchangeFields>>): FieldView => (r ? { text: r.text, label: r.rules.filter((_, i) => r.counts[i]).map((x) => `${x.field} = ${x.chain.join('>')}`).join('; ') } : null);
+      const [fq, fs] = await Promise.all([client.decodeExchangeFields(id, 'request').catch(() => null), detail.state === 'pending' ? null : client.decodeExchangeFields(id, 'response').catch(() => null)]);
+      setReqFields(view(fq));
+      setResFields(view(fs));
       const auth = detail.requestHeaders.find(([k]) => k.toLowerCase() === 'authorization')?.[1];
       setSig(auth?.startsWith('AWS4-HMAC-SHA256') ? ((await client.parseSigV4(id)) as never) : null);
     } catch (e) {
@@ -451,9 +472,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
           {ex.url}
         </span>
         <span className={`mono ${statusClass(ex)}`}>{statusText(ex)}</span>
-        <button className="btn small primary" onClick={() => openReplay(ex)}>
-          <Icon name="replay" size={12} /> Send to replay
-        </button>
+        <ReplayButton exchange={ex} primary />
         {ex.stream ? (
           <button className="btn small" onClick={() => openStream(ex.id)} title="Open this connection in the Streams composer to send messages">
             Open in Streams
@@ -506,6 +525,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
       </div>
       <div className="insp-body">
         {tab === 'exchange' && <ErrorBanner ex={ex} />}
+        {tab === 'exchange' && ex.error && <CertHelp url={ex.url} error={ex.error} />}
         {tab === 'exchange' && <ApiStrip ex={ex} onNotes={() => setTab('notes')} />}
         {tab === 'exchange' && (
           <div className="two-col">
@@ -525,6 +545,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
                   )}
                 </>
               }
+              fields={reqFields}
               onDecode={(t) => sendToCodecs(t, `${ex.method} ${ex.path.split('?')[0]} request`)}
               onTrace={(t) => (t ? traceValue(t, ex.id) : notify('Select a value in the request first, such as an id in the path or body.'))}
             />
@@ -534,6 +555,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
               headers={ex.responseHeaders}
               bytes={resBody}
               truncated={ex.responseBodyTruncated}
+              fields={resFields}
               onDecode={(t) => sendToCodecs(t, `${ex.method} ${ex.path.split('?')[0]} response`)}
             />
           </div>

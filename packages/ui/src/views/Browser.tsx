@@ -3,6 +3,7 @@ import type { BrowserTabState, ExchangeSummary, ScopeDecision } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { fmtTime, statusClass, statusText } from '../format';
+import { ReplayButton } from '../components/ReplayButton';
 
 const START_URL = 'about:blank';
 
@@ -74,18 +75,7 @@ function Feed({ host }: { host: string | null }) {
             <span>{r.path}</span>
             <span style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
               <span className={statusClass(r)}>{statusText(r)}</span>
-              <button
-                className="icon-btn"
-                style={{ width: 20, height: 20 }}
-                aria-label={`Replay ${r.method} ${r.path}`}
-                title="Send to replay"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openReplay(r);
-                }}
-              >
-                <Icon name="replay" size={11} />
-              </button>
+              <ReplayButton exchange={r} iconOnly className="icon-btn" ariaLabel={`Send to Replay: ${r.method} ${r.path}`} />
             </span>
           </div>
         ))}

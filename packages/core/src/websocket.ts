@@ -9,6 +9,7 @@ import { EventEmitter } from 'node:events';
 import { request as httpRequest, type IncomingMessage, type Server as HttpServer } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
+import { upstreamTls } from './upstreamtls.js';
 
 export const OPCODES = { continuation: 0, text: 1, binary: 2, close: 8, ping: 9, pong: 10 } as const;
 export type OpcodeName = keyof typeof OPCODES;
@@ -384,7 +385,7 @@ export function connectWebSocket(url: string | URL, opts: ConnectOptions = {}): 
             }) as never,
           }
         : {}),
-      ...(secure ? { rejectUnauthorized: opts.rejectUnauthorized ?? true, servername: u.hostname } : {}),
+      ...(secure ? { ...upstreamTls(u.hostname.replace(/^\[|\]$/g, ''), opts.rejectUnauthorized === false), servername: u.hostname } : {}),
     });
     const timer = setTimeout(() => {
       req.destroy(new Error('WebSocket handshake timed out'));

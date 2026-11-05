@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Glossary**: each place a field was seen opens the newest request that carried it, the count opens all of them in History (new `id:a,b` filter), and "+N more" expands the list.
+- **Tech view**: a new Tech screen lists every technology across all captured traffic, grouped by provider, with the hosts, evidence and requests behind each, plus the CSRF tokens pages hand out.
+- **CSRF in meta tags**: `<meta name="csrf-token" content="...">` (and hidden CSRF form fields) are found on any site, not only known frameworks. The Inspector and Tech view offer one-click "Keep fresh on replay", tokens are matched across hosts of one site (www and api), and a rotated token is traced back to the page that hands it out.
+- **Dropdowns stay on screen**: the token picker, the History row menu and the title-bar popovers flip and slide to fit the window.
+- **Reference tags**: the History menu item is now "Set reference tag (create or move)", and says whether a name creates a tag or moves it.
+- **Server certificates** (Settings): trust a dev server's self-signed certificate (fetched with one click) or a private CA, or skip checks for listed hosts or all of them. Used by the proxy, Replay, Race, the HTTP/3 lab, WebSockets and MQTT. Failed requests show a "Look at its certificate" helper.
+- **Field codecs**: say a JSON field is, for example, base64 of JSON (`$.payload = base64>json`). The Inspector shows it decoded, Replay opens it decoded and encodes it on send, and Codecs can save one from a field it decoded.
+- **Send to Replay** looks and reads the same everywhere, and every list of recorded requests has it.
+
+
 ## 1.0.0
 
 The first release, for Linux (x64) and Windows (x64). Packages: a .deb for Debian and Ubuntu, a .tar.gz, and a portable .zip for Windows.

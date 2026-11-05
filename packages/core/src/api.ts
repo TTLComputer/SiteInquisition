@@ -326,6 +326,8 @@ export class CoreApiServer {
       'intercept.list': () => core.tools.intercept.list(),
       'intercept.resolve': (p) => core.tools.intercept.resolve(str(p, 'id')!, { action: (p.action as never) ?? 'forward', edits: p.edits as never }),
       'intercept.releaseAll': () => core.tools.intercept.releaseAll(),
+      'intercept.keepAlive': () => core.tools.pausedKeepAlive(),
+      'intercept.setKeepAlive': (p) => core.tools.setPausedKeepAlive(Number(p.ms) || 0),
       'scripts.get': () => ({
         scripts: core.tools.scriptList(),
         stats: Object.fromEntries(core.tools.scripts.stats),

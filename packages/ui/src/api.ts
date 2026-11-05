@@ -460,6 +460,8 @@ export class CoreClient {
   paused = () => this.call<Paused[]>('intercept.list');
   resolvePaused = (id: string, action: 'forward' | 'drop' | 'forward-pause-response', edits?: Record<string, unknown>) => this.call<boolean>('intercept.resolve', { id, action, edits });
   releaseAll = () => this.call<number>('intercept.releaseAll');
+  keepAlivePaused = () => this.call<number>('intercept.keepAlive');
+  setKeepAlivePaused = (ms: number) => this.call<number>('intercept.setKeepAlive', { ms });
   scripts = () => this.call<{ scripts: Script[]; stats: Record<string, ScriptStats>; errors: Record<string, string>; untrusted?: string[] }>('scripts.get');
   trustScript = (id: string) => this.call<boolean>('scripts.trust', { id });
   setScripts = (scripts: Array<Partial<Script>>) => this.call<Script[]>('scripts.set', { scripts });

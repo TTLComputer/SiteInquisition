@@ -203,6 +203,17 @@ export class PowerTools {
     this.core.store.setMeta('breakpoints', out);
     return out;
   }
+  /** PING interval (ms) for HTTP/2 connections held at a breakpoint; 0 is off. */
+  pausedKeepAlive(): number {
+    return this.core.proxy.pausedKeepAlive;
+  }
+  setPausedKeepAlive(ms: number): number {
+    const clean = Math.max(0, Math.round(Number.isFinite(ms) ? ms : 0));
+    this.core.store.setMeta('pausedKeepAliveMs', clean);
+    this.core.proxy.setPausedKeepAlive(clean);
+    this.core.browserProxy?.setPausedKeepAlive(clean);
+    return clean;
+  }
   /** Scripts that ask to run without the sandbox but whose code nobody on this computer trusted yet; they run sandboxed. */
   untrustedScripts(): string[] {
     return this.scriptList()

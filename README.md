@@ -155,13 +155,16 @@ In the app: right-click a row (or press Delete), *Delete matching* in History, a
 | `reqbody:` / `resbody:` | `reqbody:password`, `resbody:"\"admin\":true"` |
 | `reqheader:` / `resheader:` (as `name: value`) | `reqheader:"authorization: bearer"`, `resheader:"server: nginx"` |
 | `body:` / `header:` (either side) | `body:"session expired"` |
+| `resjson:` / `reqjson:` / `json:` (JSONPath, then `=` `!=` `~` `!~` `>` `>=` `<` `<=`, or just the path) | `resjson:$.order.status=open`, `reqjson:"$.payload['some_value']~abc"`, `json:$.items[*].qty>=2` |
+| a bare JSONPath (the field is in either body) | `$.payload.user` |
+| Replay tokens in any value, filled in first | `{{$order.number}}`, `resbody:{{var:userId}}`, `reqjson:$.sku={{pick:/api/products $.items[*].sku}}` |
 | `ws:` `source:` `state:` `scheme:` `tag:` `flow:` `replayof:` | `ws:true`, `tag:bug-123`, `source:browser` |
 | `error:` (server error kind, signature id or severity; `any`) | `error:sql`, `error:high`, `error:any` |
 | `tech:` (technology id or name, after your corrections) | `tech:django`, `tech:aws`, `-tech:cloudflare` |
 | `since:` / `until:` (epoch ms or ISO time) | `since:2026-11-04T09:30 until:2026-11-04T10:00` |
 | free text (URL, headers and bodies) | `"invalid signature"`, `PO-77` |
 
-Text matches any part of a word and ignores case, so `PO-77` finds `PO-7781` and `csrf_tok` finds `csrf_token`. Bodies are searched after Content-Encoding is undone, up to the first 1 MB. Prefix any filter with `-` to negate it, as in `-status:304`. In the app, **Build search** next to the filter writes a query for you and shows how many requests match, and the Inspector highlights the matches and steps through them.
+Text matches any part of a word and ignores case, so `PO-77` finds `PO-7781` and `csrf_tok` finds `csrf_token`. Bodies are searched after Content-Encoding is undone, up to the first 1 MB. JSON filters also look inside fields that hold encoded JSON, so `$.payload.user` works when `payload` is base64 of JSON. Prefix any filter with `-` to negate it, as in `-status:304`. In the app, **Build search** next to the filter writes a query for you and shows how many requests match, and the Inspector highlights the matches and steps through them.
 
 ### Scope
 

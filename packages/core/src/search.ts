@@ -8,6 +8,10 @@
  *   reqbody:password resbody:"\"admin\":true"     (just a body)
  *   reqheader:"x-api-key" resheader:"server: nginx" (just headers, as "name: value")
  *   body:token header:x-trace                     (either side)
+ *   resjson:$.order.status=open                   (a JSON field; also reqjson:, json: for either)
+ *   json:"$.payload['some_value']~abc"            (ops = != ~ !~ > >= < <=; none: the field is there)
+ *   $.payload.user                                (a bare JSONPath: the field is in either body)
+ *   {{$order.number}} resbody:{{var:userId}}      (Replay tokens, filled in before searching)
  *
  *   host:api.example.com method:POST status:>=400 "session expired"
  *   host:*.example.com path:/api/ body:token ws:true -status:304
@@ -18,6 +22,8 @@
  *
  * A leading `-` negates a filter. Quoted text is matched as a phrase.
  */
+
+import { looksLikeJsonPath, parseJsonFilter } from './jsonfilter.js';
 
 export interface CompiledQuery {
   where: string[];
@@ -41,7 +47,11 @@ export const TEXT_KEYS: Record<string, TextColumn[]> = {
 export type TextColumn = 'url' | 'req_headers' | 'req_body' | 'res_headers' | 'res_body';
 const TEXT_ALIASES: Record<string, string> = { request: 'req', response: 'res', reqheaders: 'reqheader', resheaders: 'resheader', headers: 'header' };
 
+/** JSON filter keys, and the body columns they read. */
+const JSON_KEYS: Record<string, TextColumn[]> = { json: ['req_body', 'res_body'], reqjson: ['req_body'], resjson: ['res_body'] };
+
 const FILTER_KEYS = new Set([
+  ...Object.keys(JSON_KEYS),
   ...['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'state', 'flow', 'scheme', 'replayof', 'since', 'until', 'tech', 'error', 'id'],
   ...Object.keys(TEXT_KEYS).filter((k) => k !== 'text'),
   ...Object.keys(TEXT_ALIASES),
@@ -107,6 +117,8 @@ function timeValue(value: string): number {
 export interface CompileContext {
   /** Hosts running a technology; without it `tech:` matches nothing. */
   techHosts?: (tech: string) => string[];
+  /** Fill in Replay tokens ({{var:x}}, {{$tag.field}}, {{pick:...}}) in a value; without it they are searched as typed. */
+  resolveTokens?: (text: string) => string;
 }
 
 export function compileQuery(input: string, ctx: CompileContext = {}): CompiledQuery {
@@ -120,7 +132,25 @@ export function compileQuery(input: string, ctx: CompileContext = {}): CompiledQ
   };
 
   for (const t of tokenize(input)) {
+    if (ctx.resolveTokens && t.value.includes('{{')) {
+      try {
+        t.value = ctx.resolveTokens(t.value);
+      } catch (e) {
+        throw new Error(`Could not fill in ${t.value}: ${(e as Error).message}`);
+      }
+    }
+    if (t.key === undefined && !t.quoted && looksLikeJsonPath(t.value)) t.key = 'json';
     switch (t.key) {
+      case 'json':
+      case 'reqjson':
+      case 'resjson': {
+        const f = parseJsonFilter(t.value);
+        const cols = JSON_KEYS[t.key]!;
+        // Highlight the value it looks for, when it looks for one.
+        if (f.value && (f.op === '=' || f.op === '~')) text.push({ value: f.value, in: cols, negate: t.negate });
+        add(t, `e.id IN (SELECT exchange_id FROM exchange_text WHERE ${cols.map((c) => `siq_json(${c}, ?)`).join(' OR ')})`, cols.map(() => JSON.stringify(f)));
+        break;
+      }
       case undefined:
       case 'body':
       case 'header':

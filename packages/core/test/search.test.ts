@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from '@siteinquisition/devkit/test';
 import { CaptureStore, compileQuery } from '@siteinquisition/core';
+import { parseJsonFilter } from '../src/jsonfilter';
 
 // Text search over request and response bodies and headers, by side.
 let dir: string;
@@ -77,3 +78,51 @@ describe('text search in bodies and headers', () => {
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'exchange_fts'").get()).toEqual({ n: 0 });
   });
 });
+
+describe('JSONPath filters and Replay tokens in search', () => {
+  beforeEach(() => {
+    const payload = Buffer.from(JSON.stringify({ some_value: 'abc-123', user: { role: 'admin' } })).toString('base64');
+    const e = store.addRequest({ source: 'proxy', startedAt: Date.now(), method: 'POST', url: 'https://shop.test/api/event', httpVersion: '1.1', headers: [], body: Buffer.from(JSON.stringify({ payload, qty: 3, items: [{ sku: 'AB-100', qty: 1 }, { sku: 'AB-200', qty: 5 }] })) });
+    store.completeResponse(e.id, { status: 200, headers: [], body: Buffer.from('{"ok":true,"status":"open"}') });
+    ids.event = e.id;
+  });
+
+  it('parses a path, an operator and a value', () => {
+    expect(parseJsonFilter("$.payload['some_value']=abc")).toEqual({ path: "$.payload['some_value']", op: '=', value: 'abc' });
+    expect(parseJsonFilter("items[?(@.sku=='A1')].qty>=2")).toEqual({ path: "$.items[?(@.sku=='A1')].qty", op: '>=', value: '2' });
+    expect(parseJsonFilter('$.a!="x y"')).toEqual({ path: '$.a', op: '!=', value: 'x y' });
+    expect(parseJsonFilter('$.order.number')).toEqual({ path: '$.order.number' });
+    expect(() => parseJsonFilter('$.qty>lots')).toThrow(/compare with a number/);
+  });
+
+  it('finds fields by value, by comparison, or by being there', () => {
+    expect(find('resjson:$.order.number=PO-7781')).toEqual(['order']);
+    expect(find('json:$.order.number=PO-7781')).toEqual(['order']);
+    expect(find('reqjson:$.order.number=PO-7781')).toEqual([]);
+    expect(find('reqjson:$.sku~ab-')).toEqual(['order']);
+    expect(find('reqjson:$.qty>2')).toEqual(['event']);
+    expect(find("reqjson:$.items[?(@.sku=='AB-200')].qty>=5")).toEqual(['event']);
+    expect(find('resjson:$.token')).toEqual(['login']);
+    expect(find('-resjson:$.ok resjson:$.order')).toEqual(['order']);
+  });
+
+  it('looks inside a field that holds encoded JSON, and takes a bare path', () => {
+    expect(find("reqjson:\"$.payload['some_value']=abc-123\"")).toEqual(['event']);
+    expect(find("$.payload['some_value']")).toEqual(['event']);
+    expect(find('$.payload.user.role=admin')).toEqual(['event']);
+    expect(find('$.payload.user.role=guest')).toEqual([]);
+  });
+
+  it('fills in Replay tokens before searching, and says when one cannot be filled', () => {
+    store.resolveTokens = (t) =>
+      t.replace(/\{\{(.+?)\}\}/g, (_m, tok: string) => {
+        if (tok === '$order.number') return 'PO-7781';
+        throw new Error(`no tag "${tok}"`);
+      });
+    expect(find('{{$order.number}}')).toEqual(['order']);
+    expect(find('resjson:$.order.number={{$order.number}}')).toEqual(['order']);
+    expect(store.searchTerms('resbody:{{$order.number}}')).toEqual([{ value: 'PO-7781', in: ['res_body'], negate: false }]);
+    expect(() => store.search('{{$nope.x}}')).toThrow(/Could not fill in \{\{\$nope.x\}\}: no tag/);
+  });
+});
+

@@ -6,7 +6,8 @@ import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { DatabaseSync, type SQLInputValue, type StatementSync } from 'node:sqlite';
 import { bytesToString, decodeContentEncoding, looksLikeText } from '@siteinquisition/codecs';
 import { newId } from './ids.js';
-import { compileQuery } from './search.js';
+import { compileQuery, type TextTerm } from './search.js';
+import { jsonFilterMatches, type JsonFilter } from './jsonfilter.js';
 
 export type HeaderList = Array<[string, string]>;
 export type ExchangeSource = 'browser' | 'proxy' | 'replay' | 'script' | 'mcp' | 'import';
@@ -347,6 +348,16 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     // node:sqlite ships with Node and Electron, so there is no native module to rebuild per runtime.
     this.db = new DatabaseSync(file, { enableForeignKeyConstraints: true });
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;');
+    // JSONPath filters in search (resjson:$.a.b=1) run in SQL; the spec is parsed once per query.
+    const specs = new Map<string, JsonFilter>();
+    this.db.function('siq_json', { deterministic: true }, (text, spec) => {
+      let f = specs.get(spec as string);
+      if (!f) {
+        if (specs.size > 64) specs.clear();
+        specs.set(spec as string, (f = JSON.parse(spec as string) as JsonFilter));
+      }
+      return jsonFilterMatches(typeof text === 'string' ? text : null, f) ? 1 : 0;
+    });
     try {
       this.migrate();
     } catch (err) {
@@ -671,9 +682,16 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   /** Hosts running a technology, for the `tech:` search filter. Set by the tech service. */
   techHosts?: (tech: string) => string[];
+  /** Fills in Replay tokens in search values. Set by the power tools. */
+  resolveTokens?: (text: string) => string;
+
+  /** The text a search looks for, for highlighting. */
+  searchTerms(query: string): TextTerm[] {
+    return compileQuery(query, { techHosts: this.techHosts, resolveTokens: this.resolveTokens }).text;
+  }
 
   search(query = '', opts: SearchOptions = {}): ExchangeSummary[] {
-    const q = compileQuery(query, { techHosts: this.techHosts });
+    const q = compileQuery(query, { techHosts: this.techHosts, resolveTokens: this.resolveTokens });
     const where = [...q.where];
     const params = [...q.params];
     const newest = (opts.order ?? 'newest') === 'newest';
@@ -688,7 +706,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   /** How many exchanges a search matches, counting up to `max`. */
   count(query = '', max = 100_000): number {
-    const q = compileQuery(query, { techHosts: this.techHosts });
+    const q = compileQuery(query, { techHosts: this.techHosts, resolveTokens: this.resolveTokens });
     const sql = `SELECT COUNT(*) AS n FROM (SELECT 1 FROM exchange e ${q.where.length ? `WHERE ${q.where.join(' AND ')}` : ''} LIMIT ?)`;
     return (this.q(sql).get(...(q.params as SQLInputValue[]), max) as unknown as { n: number }).n;
   }

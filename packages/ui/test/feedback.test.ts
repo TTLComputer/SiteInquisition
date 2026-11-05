@@ -270,6 +270,39 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     await page.locator('#filter-input').press('Enter');
   });
 
+  it('searches JSON fields by JSONPath, inside an encoded payload, with Replay tokens for values', async () => {
+    const payload = Buffer.from(JSON.stringify({ some_value: 'gravy-42', user: 'nick' })).toString('base64');
+    await h.send('/api/event', 'POST', JSON.stringify({ payload }));
+    const ev = h.core.store.search('path:/api/event')[0]!;
+    h.core.store.tagExchange(ev.id, ['evt']);
+    h.core.tools.vars.set('wanted', 'gravy-42');
+    await nav('History');
+    const filter = page.locator('#filter-input');
+    await filter.fill("reqjson:\"$.payload['some_value']={{var:wanted}}\"");
+    await filter.press('Enter');
+    await expect.poll(() => page.locator('.row').allTextContents()).toEqual([expect.stringContaining('/api/event')]);
+    // A bare path, and a tag reference: {{$evt.payload}} is the payload this request sent.
+    await filter.fill('$.payload.user=nick');
+    await filter.press('Enter');
+    await expect.poll(() => page.locator('.row').count()).toBe(1);
+    await filter.fill('reqbody:{{$evt.payload}}');
+    await filter.press('Enter');
+    await expect.poll(() => page.locator('.row').count()).toBe(1);
+
+    // The builder offers JSON fields, and reads a bare path back as one.
+    await filter.fill("$.payload['some_value']=gravy-42");
+    await page.getByRole('button', { name: /Build search/ }).click();
+    const dialog = page.getByRole('dialog', { name: 'Build a search' });
+    expect(await dialog.getByLabel('Condition 1 where').inputValue()).toBe('json');
+    await expect.poll(() => page.getByTestId('qb-count').textContent()).toBe('1 request matches');
+    await dialog.getByLabel('Condition 1 where').selectOption('resjson');
+    await expect.poll(() => page.getByTestId('qb-count').textContent()).toBe('0 requests match');
+    await shot('query-builder-json');
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await filter.fill('');
+    await filter.press('Enter');
+  });
+
   it('trusts a self-signed dev server certificate from Settings', async () => {
     await nav('Settings');
     await page.getByRole('tab', { name: 'Server certificates' }).click();

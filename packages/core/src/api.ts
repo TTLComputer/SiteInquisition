@@ -2,7 +2,6 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { collapseNested, decodeFieldsText, decodeLayers, deepDecode, deepEncode, detectChain, expandNested, encodeChain, encodeFieldsText, listCodecs, parseFieldSpecs, replaceThroughChain, type FieldCodec } from '@siteinquisition/codecs';
 import { coverage } from './coverage.js';
-import { compileQuery } from './search.js';
 import { parseSigV4 } from './sigv4.js';
 import { batchPlan, flowRefs, resolveTokens } from './tokens.js';
 import { pickValues, tagValue } from './values.js';
@@ -123,7 +122,7 @@ export class CoreApiServer {
       'core.info': () => core.info(),
       'traffic.count': (p) => store.count(str(p, 'query', false) ?? '', num(p, 'max') ?? 100_000),
       // The text a query looks for, so the Inspector can highlight it.
-      'traffic.terms': (p) => compileQuery(str(p, 'query', false) ?? '').text,
+      'traffic.terms': (p) => store.searchTerms(str(p, 'query', false) ?? ''),
       'traffic.search': (p) =>
         store.search(str(p, 'query', false) ?? '', {
           limit: num(p, 'limit'),

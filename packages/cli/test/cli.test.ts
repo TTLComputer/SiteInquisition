@@ -50,7 +50,7 @@ describe('siq with no core running', () => {
   }, 90_000);
 
   it('prints its version and help', async () => {
-    expect((await siq('--version')).out.trim()).toMatch(/^\d+\.\d+\.\d+$/);
+    expect((await siq('--version')).out.trim()).toMatch(/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/);
     const help = await siq('--help');
     for (const c of ['proxy', 'search', 'show', 'scope', 'delete', 'clear', 'prune', 'lan', 'ca', 'mcp']) expect(help.out).toContain(c);
   }, 90_000);

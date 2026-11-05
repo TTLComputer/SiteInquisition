@@ -91,4 +91,10 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" release/*.tar.gz release/*.deb release/*.zip --title "SiteInquisition ${GITHUB_REF_NAME}" --notes-file CHANGELOG.md --verify-tag
+        # The notes are this version's CHANGELOG section. A tag with a hyphen
+        # (v1.0.0-beta.1, v1.1.0-rc.1) is published as a pre-release.
+        run: |
+          awk -v h="## ${GITHUB_REF_NAME#v}" '$0 == h {on = 1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "CHANGELOG.md has no '## ${GITHUB_REF_NAME#v}' section"; exit 1; }
+          pre=; case "${GITHUB_REF_NAME}" in *-*) pre=--prerelease ;; esac
+          gh release create "${GITHUB_REF_NAME}" release/*.tar.gz release/*.deb release/*.zip --title "SiteInquisition ${GITHUB_REF_NAME}" --notes-file notes.md --verify-tag $pre

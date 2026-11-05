@@ -22,8 +22,11 @@ who already controls your user account.
   your user account, or a copy of the disk, can read captured cookies, tokens
   and passwords. Use full-disk encryption; Settings, Storage tells you whether
   the project folder is on an encrypted disk.
-- With an OS keyring (Secret Service via `secret-tool`), the CA private key and
-  saved identities are encrypted with a master key held in the keyring. A copy
+- With an OS keyring (Secret Service via `secret-tool` on Linux, DPAPI for the
+  current user on Windows), the CA private key and saved identities are
+  encrypted with a master key held in the keyring. On Windows the master key
+  is a DPAPI blob in the data folder that only your Windows account can
+  unwrap. A copy
   of the project or data folder alone does not reveal them. Without a keyring
   they are plain files readable only by you.
 - Use `siq clear`, `siq delete <query>` and retention limits (`siq prune

@@ -1,13 +1,19 @@
 # Runs only for release tags (v*) or when started by hand from the Actions tab.
 # The repo's Actions budget is ~500 minutes/month, so day-to-day checks run locally
 # (`pnpm build && pnpm test`, then `pnpm package` and `pnpm smoke`) before pushing.
-# v1 is Linux only, so there is no Windows job.
+# Windows minutes count double, so the Windows job is the expensive one: start it by
+# hand only to check a Windows change, and let tags run it for releases.
 name: Release
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      windows:
+        description: Also build and test on Windows (minutes count double)
+        type: boolean
+        default: true
 
 concurrency:
   group: release-${{ github.ref }}
@@ -37,17 +43,52 @@ jobs:
       - name: Check the tag matches the version
         if: startsWith(github.ref, 'refs/tags/v')
         run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
-      - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" release/*.tar.gz release/*.deb --title "SiteInquisition ${GITHUB_REF_NAME}" --notes-file CHANGELOG.md --verify-tag
-      - name: Keep the packages (manual runs)
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: siteinquisition-linux
           path: |
             release/*.tar.gz
             release/*.deb
           retention-days: 7
+
+  windows:
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # The interop tests look for python3; Windows names it python.
+      - run: pip install aioquic
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+        env:
+          SIQ_AIOQUIC_PYTHON: python
+      - run: pnpm package --platform win32 --out release
+      - run: pnpm smoke release/win-unpacked/SiteInquisition.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: siteinquisition-windows
+          path: release/*.zip
+          retention-days: 7
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" release/*.tar.gz release/*.deb release/*.zip --title "SiteInquisition ${GITHUB_REF_NAME}" --notes-file CHANGELOG.md --verify-tag

@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { Core, McpServer, ScriptEngine } from '@siteinquisition/core';
 
@@ -70,7 +70,7 @@ describe('script sandbox', () => {
     expect(untrusted.value).toBe('false');
     trusted = true;
     const full = await run(code, {}, false);
-    expect(full.value).toBe('/');
+    expect(full.value).toBe(sep);
     trusted = false;
   });
 

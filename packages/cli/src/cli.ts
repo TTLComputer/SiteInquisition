@@ -425,7 +425,7 @@ caCmd
       console.log(`certificate  ${ca.certPath}`);
       console.log(`sha256       ${ca.fingerprint}`);
       console.log(`expires      ${ca.expiresAt.toISOString().slice(0, 10)}`);
-      console.log(`private key  ${ca.keyProtection === 'keyring' ? 'encrypted with a key from the OS keyring' : paint(33, 'plain file readable only by you (no OS keyring found; install libsecret-tools)')}`);
+      console.log(`private key  ${ca.keyProtection === 'keyring' ? 'encrypted with a key from the OS keyring' : paint(33, `plain file readable only by you (no OS keyring found; ${process.platform === 'win32' ? 'DPAPI needs powershell.exe' : 'install libsecret-tools'})`)}`);
       console.log('Install this certificate as a trusted root on devices whose HTTPS traffic you want to inspect.');
     }
   });

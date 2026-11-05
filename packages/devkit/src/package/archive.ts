@@ -1,4 +1,4 @@
-import { gzipSync } from 'node:zlib';
+import { crc32, deflateRawSync, gzipSync, inflateRawSync } from 'node:zlib';
 
 /**
  * Minimal archive writers for release packaging: POSIX ustar (with the
@@ -89,4 +89,139 @@ export function ar(members: Array<{ name: string; data: Buffer }>, mtime = 0): B
     if (m.data.length % 2) parts.push(Buffer.from('\n'));
   }
   return Buffer.concat(parts);
+}
+
+// ---------- zip (Windows packages) ----------
+
+export interface ZipEntry {
+  /** Forward slashes; folders end with '/'. */
+  path: string;
+  data?: Buffer;
+}
+
+/** MS-DOS date and time, as zip stores them (local time has no meaning in a reproducible build, so UTC). */
+function dosTime(epochSeconds: number): { time: number; date: number } {
+  const d = new Date(Math.max(epochSeconds, 315_532_800) * 1000); // zip cannot go before 1980
+  return {
+    time: (d.getUTCHours() << 11) | (d.getUTCMinutes() << 5) | (d.getUTCSeconds() >> 1),
+    date: ((d.getUTCFullYear() - 1980) << 9) | ((d.getUTCMonth() + 1) << 5) | d.getUTCDate(),
+  };
+}
+
+/**
+ * Write a zip archive (deflate, or stored when that is smaller). No ZIP64:
+ * it throws past 4 GB or 65535 entries, far beyond an app package. Same
+ * input, same bytes.
+ */
+export function zip(entries: ZipEntry[], mtime = 0): Buffer {
+  const { time, date } = dosTime(mtime);
+  const chunks: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const e of entries) {
+    const name = Buffer.from(e.path, 'utf8');
+    const raw = e.data ?? Buffer.alloc(0);
+    const crc = crc32(raw);
+    const deflated = raw.length ? deflateRawSync(raw, { level: 9 }) : raw;
+    const store = deflated.length >= raw.length;
+    const body = store ? raw : deflated;
+    const dir = e.path.endsWith('/');
+    if (body.length > 0xfffffffe || raw.length > 0xfffffffe || offset > 0xfffffffe) throw new Error(`zip entry too large: ${e.path}`);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4); // version needed
+    local.writeUInt16LE(0x0800, 6); // UTF-8 names
+    local.writeUInt16LE(store ? 0 : 8, 8);
+    local.writeUInt16LE(time, 10);
+    local.writeUInt16LE(date, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(raw.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28);
+    const c = Buffer.alloc(46);
+    c.writeUInt32LE(0x02014b50, 0);
+    c.writeUInt16LE(20, 4); // made by: MS-DOS, so Windows tools apply no Unix modes
+    c.writeUInt16LE(20, 6);
+    c.writeUInt16LE(0x0800, 8);
+    c.writeUInt16LE(store ? 0 : 8, 10);
+    c.writeUInt16LE(time, 12);
+    c.writeUInt16LE(date, 14);
+    c.writeUInt32LE(crc, 16);
+    c.writeUInt32LE(body.length, 20);
+    c.writeUInt32LE(raw.length, 24);
+    c.writeUInt16LE(name.length, 28);
+    c.writeUInt32LE(dir ? 0x10 : 0x20, 38); // DOS attributes: directory or archive
+    c.writeUInt32LE(offset, 42);
+    chunks.push(local, name, body);
+    central.push(c, name);
+    offset += local.length + name.length + body.length;
+  }
+  const cd = Buffer.concat(central);
+  if (entries.length > 0xfffe || offset > 0xfffffffe) throw new Error('zip too large; split the package');
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(cd.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...chunks, cd, end]);
+}
+
+/** Read a zip archive (stored and deflate entries; what Electron's own release zips use). */
+export function unzip(buf: Buffer): ZipEntry[] {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65_557); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error('not a zip archive');
+  let count = buf.readUInt16LE(eocd + 10);
+  let cdOffset = buf.readUInt32LE(eocd + 16);
+  if (cdOffset === 0xffffffff || count === 0xffff) {
+    const loc = buf.readUInt32LE(eocd - 20) === 0x07064b50 ? Number(buf.readBigUInt64LE(eocd - 12)) : -1;
+    if (loc < 0 || buf.readUInt32LE(loc) !== 0x06064b50) throw new Error('bad ZIP64 records');
+    count = Number(buf.readBigUInt64LE(loc + 32));
+    cdOffset = Number(buf.readBigUInt64LE(loc + 48));
+  }
+  const out: ZipEntry[] = [];
+  let p = cdOffset;
+  for (let n = 0; n < count; n++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('bad zip central directory');
+    const method = buf.readUInt16LE(p + 10);
+    let csize = buf.readUInt32LE(p + 20);
+    let usize = buf.readUInt32LE(p + 24);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    let local = buf.readUInt32LE(p + 42);
+    const path = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    // ZIP64 extra field: the sizes and offset that did not fit, in this order.
+    for (let x = p + 46 + nameLen; x < p + 46 + nameLen + extraLen; ) {
+      const id = buf.readUInt16LE(x);
+      const size = buf.readUInt16LE(x + 2);
+      if (id === 0x0001) {
+        let y = x + 4;
+        if (usize === 0xffffffff) ((usize = Number(buf.readBigUInt64LE(y))), (y += 8));
+        if (csize === 0xffffffff) ((csize = Number(buf.readBigUInt64LE(y))), (y += 8));
+        if (local === 0xffffffff) local = Number(buf.readBigUInt64LE(y));
+      }
+      x += 4 + size;
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+    if (buf.readUInt32LE(local) !== 0x04034b50) throw new Error(`bad zip entry ${path}`);
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const body = buf.subarray(start, start + csize);
+    if (path.endsWith('/')) {
+      out.push({ path });
+      continue;
+    }
+    if (method !== 0 && method !== 8) throw new Error(`zip entry ${path} uses compression method ${method}`);
+    const data = method === 0 ? Buffer.from(body) : inflateRawSync(body);
+    if (data.length !== usize || crc32(data) !== buf.readUInt32LE(p - (46 + nameLen + extraLen + commentLen) + 16)) throw new Error(`zip entry ${path} is corrupt`);
+    out.push({ path, data });
+  }
+  return out;
 }

@@ -14,7 +14,7 @@ const MAIN = resolve(import.meta.dirname, '../src/main.ts');
 
 let dir: string;
 let project: string;
-const env = () => ({ ...process.env, XDG_CONFIG_HOME: join(dir, 'config'), SIQ_KEYRING: 'none', NO_COLOR: '1' });
+const env = () => ({ ...process.env, SIQ_DATA_DIR: join(dir, 'config', 'siteinquisition'), SIQ_KEYRING: 'none', NO_COLOR: '1' });
 
 function siq(...args: string[]): Promise<{ code: number; out: string; err: string }> {
   return new Promise((done) => {

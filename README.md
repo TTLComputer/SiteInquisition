@@ -1,6 +1,6 @@
 # SiteInquisition
 
-An intercepting proxy, built-in browser and replay toolkit for testing websites, APIs and IoT devices before they are finished. Version 1 runs on Linux (x64); Windows comes later. It is MIT licensed.
+An intercepting proxy, built-in browser and replay toolkit for testing websites, APIs and IoT devices before they are finished. It runs on Linux (x64) and Windows (x64). It is MIT licensed.
 
 This repository contains the core engine, the `siq` CLI and the desktop app. The full design is in the [design spec](https://claude.ai/artifact/HyHcJe2h7r7iCqLT3PmyEM). Before you use it on anything sensitive, read [Security and data](#security-and-data).
 
@@ -18,9 +18,17 @@ tar xzf siteinquisition-1.0.0-linux-x64.tar.gz
 ./siteinquisition-1.0.0-linux-x64/bin/siq --help
 ```
 
+On Windows, unzip `siteinquisition-1.0.0-win-x64.zip` anywhere you can write (for example `%LOCALAPPDATA%\Programs`) and run `SiteInquisition.exe`. For the CLI, add the folder's `bin` to your PATH, or run it directly:
+
+```bat
+siteinquisition-1.0.0-win-x64\bin\siq --help
+```
+
+The Windows build is a portable zip with no installer, and it is not code signed yet, so SmartScreen may warn the first time you run it ("More info", then "Run anyway").
+
 The tarball's Chromium sandbox helper (`chrome-sandbox`) needs to be owned by root and setuid to work; the .deb sets that up. Without it, run with `--no-sandbox` only on a machine you trust.
 
-To uninstall: `sudo apt remove siteinquisition`, or delete the unpacked folder. Your projects and the CA stay behind: remove the CA from every device that trusts it first ([CA trust and removal](docs/ca-trust.md)), then run `siq ca remove` and delete `~/.config/siteinquisition` and your project folders.
+To uninstall: `sudo apt remove siteinquisition`, or delete the unpacked folder. Your projects and the CA stay behind: remove the CA from every device that trusts it first ([CA trust and removal](docs/ca-trust.md)), then run `siq ca remove` and delete the data folder (`~/.config/siteinquisition` on Linux, `%APPDATA%\SiteInquisition` on Windows) and your project folders.
 
 ## What works today
 
@@ -167,8 +175,8 @@ TLS interception is decided per connection, before the path is known. A host is 
 
 ## Security and data
 
-- **Captured traffic is sensitive.** It holds cookies, tokens and passwords as they were sent. Project folders are created readable only by you (0700, database 0600). The database itself is not encrypted, so keep projects on an encrypted disk; Settings, Storage warns when the project folder is not on one (LUKS/dm-crypt, also under LVM, or eCryptfs).
-- **Secrets at rest.** With an OS keyring (GNOME Keyring or KWallet through `secret-tool`, package `libsecret-tools`), the CA's private key and saved identities are encrypted with a master key kept in the keyring. Without one they are files only you can read, and Settings says so.
+- **Captured traffic is sensitive.** It holds cookies, tokens and passwords as they were sent. Project folders are created readable only by you (0700, database 0600). The database itself is not encrypted, so keep projects on an encrypted disk; Settings, Storage warns when the project folder is not on one (LUKS/dm-crypt, also under LVM, or eCryptfs on Linux; BitLocker on Windows). On Windows the folders use your user's default permissions rather than 0700/0600, which in your profile means only you and administrators can read them.
+- **Secrets at rest.** With an OS keyring (on Linux, GNOME Keyring or KWallet through `secret-tool`, package `libsecret-tools`; on Windows, DPAPI for your user account), the CA's private key and saved identities are encrypted with a master key kept in the keyring. Without one they are files only you can read, and Settings says so.
 - **The CA** can sign a certificate for any site, for every device that trusts it. New CAs last two years. Install it only where you need it, and remove it when you are done: [CA trust and removal](docs/ca-trust.md). `siq ca rotate` replaces it.
 - **Scripts and agents**: see the Scripts and MCP notes above, and [SECURITY.md](SECURITY.md) for what the sandbox does and does not stop.
 
@@ -197,6 +205,6 @@ To work on the renderer in a normal browser, start a proxy with `siq proxy`, rea
 
 The test runner and the renderer bundler are in `packages/devkit`. Tests use the vitest API (`describe`, `it`, `expect`, hooks, `.each`, `.skipIf`, `expect.poll`), imported from `@siteinquisition/devkit/test`. Each test file runs in its own process, and TypeScript is compiled with `transpileModule`, so tests are not type-checked.
 
-Packaging: `pnpm package` writes the unpacked app, a .tar.gz and a .deb to `release/`, without electron-builder. `pnpm smoke release/linux-unpacked/siteinquisition` starts the packaged app headless under `xvfb-run`, checks that a script runs and the sandbox holds, loads a page in the built-in browser, and exits. `SIQ_SMOKE_SCREENSHOT=/tmp/siq.png` saves a screenshot. `node scripts/notices.mjs` regenerates THIRD_PARTY_NOTICES.md after a dependency change.
+Packaging: `pnpm package` writes the unpacked app, a .tar.gz and a .deb to `release/`, without electron-builder. `pnpm package --platform win32` writes `release/win-unpacked` and the Windows zip, and works from Linux too (it downloads Electron's Windows build and checks it against Electron's checksums, or uses `SIQ_ELECTRON_WIN32_ZIP`). On Windows, `pnpm smoke release/win-unpacked/SiteInquisition.exe` runs the same smoke test without xvfb. `pnpm smoke release/linux-unpacked/siteinquisition` starts the packaged app headless under `xvfb-run`, checks that a script runs and the sandbox holds, loads a page in the built-in browser, and exits. `SIQ_SMOKE_SCREENSHOT=/tmp/siq.png` saves a screenshot. `node scripts/notices.mjs` regenerates THIRD_PARTY_NOTICES.md after a dependency change.
 
 CI runs only for release tags (`v*`) or when started by hand from the Actions tab, to conserve Actions minutes. A tag builds, tests, packages and smoke-tests, then publishes a GitHub release with the notes from CHANGELOG.md. Run the build and tests locally before pushing.

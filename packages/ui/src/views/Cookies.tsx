@@ -2,16 +2,21 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { confirmLeave } from '../unsaved';
 import type { JarCookie, JarCookieInfo, SessionCookie } from '../api';
 import { CookieToggle } from './Tech';
+import { ReSignPanel, SignedTokens } from './ReSign';
 import { useApp } from '../state';
 import { fmtTime } from '../format';
 
-type Tab = 'jar' | 'macros' | 'vars' | 'aws';
+type Tab = 'jar' | 'macros' | 'vars' | 'aws' | 'signed';
+
+/** True when a value is worth offering a re-sign on: a JWT, or a dotted framework session cookie. */
+const looksSignable = (v: string): boolean => /^eyJ[\w-]+\.[\w-]+\.[\w-]*$/.test(v.trim()) || /^\.?[\w-]{8,}\.[\w-]+\.[\w-]{12,}$/.test(v.trim());
 
 /** Decode a framework session cookie (Flask, Django, Rails, Laravel, Express) on demand. */
-function SessionDecode({ name, value }: { name: string; value: string }) {
+function SessionDecode({ name, value, domain }: { name: string; value: string; domain?: string }) {
   const { client } = useApp();
   const [info, setInfo] = useState<SessionCookie | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [resign, setResign] = useState(false);
   useEffect(() => {
     let live = true;
     client.decodeSessionCookie(name, value).then(
@@ -46,6 +51,14 @@ function SessionDecode({ name, value }: { name: string; value: string }) {
         ))}
       </dl>
       {info.payload !== undefined && <pre className="raw" style={{ marginTop: 6 }}>{JSON.stringify(info.payload, null, 2)}</pre>}
+      {info.structure === 'signed' && info.payload !== undefined && (
+        <div style={{ marginTop: 6 }}>
+          <button className="btn small" aria-expanded={resign} onClick={() => setResign((r) => !r)}>
+            {resign ? 'Hide re-sign' : 'Re-sign / keep evergreen'}
+          </button>
+          {resign && <ReSignPanel value={value} label={`cookie ${name}`} cookie={domain ? { domain, name } : undefined} />}
+        </div>
+      )}
     </div>
   );
 }
@@ -106,6 +119,7 @@ function Jar() {
   const [filter, setFilter] = useState('');
   const [showExpired, setShowExpired] = useState(true);
   const [openSession, setOpenSession] = useState<string | null>(null);
+  const [openResign, setOpenResign] = useState<string | null>(null);
   const load = useCallback(() => client.cookies().then(setCookies, (e: Error) => notify(e.message)), [client, notify]);
   useEffect(() => {
     void load();
@@ -224,13 +238,27 @@ function Jar() {
                         <button className="btn small" aria-expanded={openSession === key} title="Read it as a framework session cookie (Flask, Django, Rails, Laravel, Express)" onClick={() => setOpenSession(openSession === key ? null : key)}>
                           Session
                         </button>{' '}
+                        {looksSignable(c.value) && (
+                          <>
+                            <button className="btn small" aria-expanded={openResign === key} title="Edit and re-sign this token with a known key, or keep it evergreen" onClick={() => setOpenResign(openResign === key ? null : key)}>
+                              Re-sign
+                            </button>{' '}
+                          </>
+                        )}
                         <CookieToggle name={c.name} infra={!!c.infra} onDone={() => void load()} />
                       </td>
                     </tr>
                     {openSession === key && (
                       <tr className="session-row">
                         <td colSpan={7}>
-                          <SessionDecode name={c.name} value={c.value} />
+                          <SessionDecode name={c.name} value={c.value} domain={c.domain} />
+                        </td>
+                      </tr>
+                    )}
+                    {openResign === key && (
+                      <tr className="session-row">
+                        <td colSpan={7}>
+                          <ReSignPanel value={c.value} label={`cookie ${c.name}`} cookie={{ domain: c.domain, name: c.name }} onClose={() => setOpenResign(null)} />
                         </td>
                       </tr>
                     )}
@@ -252,11 +280,12 @@ export function Cookies({ macros, vars, aws }: { macros?: React.ReactNode; vars?
   useEffect(() => {
     if (subTab.cookies) setTab(subTab.cookies as Tab);
   }, [subTab]);
-  const labels: Record<Tab, string> = { jar: 'Cookie jar', macros: 'Login macros', vars: 'Variables', aws: 'AWS SigV4' };
+  const labels: Record<Tab, string> = { jar: 'Cookie jar', macros: 'Login macros', vars: 'Variables', signed: 'Signed tokens', aws: 'AWS SigV4' };
   const body: Record<Tab, React.ReactNode> = {
     jar: <Jar />,
     macros: macros ?? <div className="empty">Login macros arrive with the power tools.</div>,
     vars: vars ?? <div className="empty">Token variables arrive with the power tools.</div>,
+    signed: <SignedTokens />,
     aws: aws ?? <div className="empty">AWS SigV4 signing arrives with the power tools.</div>,
   };
   return (

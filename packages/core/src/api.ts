@@ -273,9 +273,21 @@ export class CoreApiServer {
       'cookies.flaskTrySecrets': (p) => core.tools.flaskSecret(str(p, 'value')!, (p.secrets as string[]) ?? []),
       'cookies.flaskSign': (p) => core.tools.resignFlaskCookie(p.payload, { keyName: str(p, 'keyName', false), secret: str(p, 'secret', false) }, { compress: p.compress === true }),
       'keys.list': () => core.tools.keys.list(),
-      'keys.setSecret': (p) => (core.tools.keys.setSecret(str(p, 'name')!, str(p, 'secret')!), core.tools.keys.list()),
-      'keys.setPem': (p) => (core.tools.keys.setPem(str(p, 'name')!, str(p, 'pem')!, str(p, 'passphrase', false)), core.tools.keys.list()),
+      'keys.status': () => ({ keys: core.tools.keys.list(), canSave: core.tools.keys.canSave, where: core.tools.keys.savedWhere, error: core.tools.keys.loadError ?? null }),
+      'keys.setSecret': (p) => (core.tools.keys.setSecret(str(p, 'name')!, str(p, 'secret')!, p.save === true), core.tools.keys.list()),
+      'keys.setPem': (p) => (core.tools.keys.setPem(str(p, 'name')!, str(p, 'pem')!, str(p, 'passphrase', false), p.save === true), core.tools.keys.list()),
+      'keys.setSaved': (p) => (core.tools.keys.setSaved(str(p, 'name')!, p.save === true), core.tools.keys.list()),
       'keys.delete': (p) => (core.tools.keys.delete(str(p, 'name')!), core.tools.keys.list()),
+      'resign.open': (p) => core.tools.resignOpen(str(p, 'value')!),
+      'resign.preview': (p) =>
+        core.tools.resignPreview(
+          { kind: str(p, 'kind')! as 'jwt' | 'flask', header: p.header as Record<string, unknown> | undefined, payload: p.payload, alg: str(p, 'alg', false), ttlSeconds: num(p, 'ttlSeconds'), bumpIat: p.bumpIat as boolean | undefined, bumpNbf: p.bumpNbf === true, compress: p.compress === true, salt: str(p, 'salt', false) },
+          { keyName: str(p, 'keyName', false), secret: str(p, 'secret', false) },
+        ),
+      'evergreen.list': () => core.tools.evergreen.list(),
+      'evergreen.save': (p) => core.tools.evergreen.save(p.entry as never),
+      'evergreen.delete': (p) => core.tools.evergreen.delete(str(p, 'name')!),
+      'evergreen.render': (p) => core.tools.evergreen.resolve(str(p, 'name')!),
       'aws.requestInfo': (p) => {
         const ex = store.getExchange(str(p, 'id')!);
         if (!ex) throw new RpcError(404, 'exchange not found');

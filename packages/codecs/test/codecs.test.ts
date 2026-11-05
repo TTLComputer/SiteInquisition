@@ -158,6 +158,25 @@ describe('deep decode of nested JSON fields', () => {
     expect(outer.description).toBe('turducken payload');
   });
 
+  it('goes three turduckens deep, alternating JSON strings and base64 of JSON', () => {
+    const deep = 'eyJkZXNjcmlwdGlvbiI6InR1cmR1Y2tlbiBwYXlsb2FkIiwiaW5uZXJfZGF0YSI6IntcIm1lYXRcIjpcInR1cmtleVwiLFwic3R1ZmZpbmdcIjpcImV5SmtaWE5qY21sd2RHbHZiaUk2SW5SMWNtUjFZMnRsYmlCd1lYbHNiMkZrTWlJc0ltbHVibVZ5WDJSaGRHRWlPaUo3WENKdFpXRjBYQ0k2WENKa2RXTnJYQ0lzWENKemRIVm1abWx1WjF3aU9sd2laWGxLYTFwWVRtcGpiV3gzWkVkc2RtSnBTVFpKYmxJeFkyMVNNVmt5ZEd4aWFVSjNXVmhzYzJJeVJtdE5lVWx6U1cxc2RXSnRWbmxZTWxKb1pFZEZhVTlwU2pkWVEwcDBXbGRHTUZoRFNUWllRMHBxWVVkc2FtRXlWblZZUTBseldFTktlbVJJVm0xYWJXeDFXakYzYVU5c2QybFlRMG81U1c0d1BWd2lmU0o5XCJ9In0%3D';
+    const d = deepDecode(deep)!;
+    expect(d.fields.map((f) => [f.path, f.chain.join('>')])).toEqual([
+      ['$.inner_data', 'json'],
+      ['$.inner_data.stuffing', 'base64>json'],
+      ['$.inner_data.stuffing.inner_data', 'json'],
+      ['$.inner_data.stuffing.inner_data.stuffing', 'base64>json'],
+      ['$.inner_data.stuffing.inner_data.stuffing.inner_data', 'json'],
+    ]);
+    const v = d.value as { inner_data: { stuffing: { inner_data: { stuffing: { inner_data: { meat: string } } } } } };
+    expect(v.inner_data.stuffing.inner_data.stuffing.inner_data.meat).toBe('chicken');
+    expect(deepEncode(d, d.value).text).toBe(deep);
+    v.inner_data.stuffing.inner_data.stuffing.inner_data.meat = 'quail';
+    const again = deepDecode(deepEncode(d, v).text)!;
+    expect(JSON.stringify(again.value)).toContain('"meat":"quail"');
+    expect(again.fields.length).toBe(5);
+  });
+
   it('expands fields inside fields, and leaves text and short ids alone', () => {
     const innermost = Buffer.from(JSON.stringify({ secret: 'x' })).toString('base64');
     const doc = { id: 'dGVzdA==', note: 'hello world', list: [JSON.stringify({ deep: innermost })] };

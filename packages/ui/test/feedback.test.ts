@@ -232,6 +232,31 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     await expect.poll(() => tab.evaluate((el) => (el as HTMLElement).style.display)).toBe('flex');
   });
 
+  it('shows every nested layer in the chain, and can keep one encoded', async () => {
+    // Three turduckens deep: JSON strings and base64 of JSON, inside url-encoded base64 JSON.
+    const value = 'eyJkZXNjcmlwdGlvbiI6InR1cmR1Y2tlbiBwYXlsb2FkIiwiaW5uZXJfZGF0YSI6IntcIm1lYXRcIjpcInR1cmtleVwiLFwic3R1ZmZpbmdcIjpcImV5SmtaWE5qY21sd2RHbHZiaUk2SW5SMWNtUjFZMnRsYmlCd1lYbHNiMkZrTWlJc0ltbHVibVZ5WDJSaGRHRWlPaUo3WENKdFpXRjBYQ0k2WENKa2RXTnJYQ0lzWENKemRIVm1abWx1WjF3aU9sd2laWGxLYTFwWVRtcGpiV3gzWkVkc2RtSnBTVFpKYmxJeFkyMVNNVmt5ZEd4aWFVSjNXVmhzYzJJeVJtdE5lVWx6U1cxc2RXSnRWbmxZTWxKb1pFZEZhVTlwU2pkWVEwcDBXbGRHTUZoRFNUWllRMHBxWVVkc2FtRXlWblZZUTBseldFTktlbVJJVm0xYWJXeDFXakYzYVU5c2QybFlRMG81U1c0d1BWd2lmU0o5XCJ9In0%3D';
+    await nav('Codecs');
+    await page.getByRole('button', { name: 'Clear' }).click();
+    await page.getByLabel('Codec input').fill(value);
+    await page.getByRole('button', { name: 'Detect layers' }).click();
+    await expect.poll(() => page.getByLabel('Codec chain').locator('.chain-step').allTextContents()).toEqual(['url›', 'base64›', 'json']);
+    const layers = page.getByTestId('nested-field');
+    await expect.poll(() => layers.count()).toBe(5);
+    const rows = await layers.allTextContents();
+    // Each layer reads as the part of the path below its parent, with the full path on hover.
+    expect(rows[0]).toContain('$.inner_data');
+    expect(rows[1]).toContain('.stuffing');
+    expect(rows[1]).toContain('base64');
+    expect(await layers.nth(4).locator('.nested-path').evaluate((el) => el.getAttribute('title'))).toBe('$.inner_data.stuffing.inner_data.stuffing.inner_data');
+    await expect.poll(() => page.getByLabel('Decoded value').inputValue()).toContain('"meat": "chicken"');
+    await shot('codecs-nested-chain');
+    // Keeping the second layer encoded folds away everything inside it, and the result is still the input.
+    await layers.nth(1).getByRole('button', { name: 'keep encoded' }).click();
+    await expect.poll(() => layers.count()).toBe(1);
+    expect(await page.getByLabel('Decoded value').inputValue()).not.toContain('chicken');
+    expect(await page.getByLabel('Encoded result').textContent()).toBe(value);
+  });
+
   it('builds a body search, then highlights and scrolls to the match in a large request', async () => {
     const filler = Array.from({ length: 600 }, (_, i) => `line ${i} of filler text`).join('\n');
     await h.send('/api/search-big', 'POST', `${filler}\nthe NEEDLE-4242 is here\n${filler}`);

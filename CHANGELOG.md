@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Codecs shows every nested layer**: under the outer chain, the Chain view lists each JSON field that holds more encoded JSON, indented by depth, with its own codecs. Any layer can be kept encoded, and any can be saved as a field codec.
+
 ## 1.0.0-beta.1
 
 The first beta, for Linux (x64) and Windows (x64). Packages: a .deb for Debian and Ubuntu, a .tar.gz, and a portable .zip for Windows.

@@ -590,8 +590,10 @@ textarea.editor.composer-text { min-height: 90px; height: 110px; width: 100%; bo
 .jt-decode { margin-left: 6px; padding: 0 6px; font-size: 11px; line-height: 16px; }
 .nested-edit { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
 .nested-edit .editor { min-height: 120px; }
-.nested-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px 0; font-size: 12px; }
-.nested-fields .chain-step { gap: 6px; }
+.nested-layers { padding: 0 12px 8px; display: flex; flex-direction: column; gap: 4px; }
+.nested-layer { display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
+.nested-layer .link-btn { white-space: nowrap; }
+.nested-layer .nested-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 /* Search matches in the Inspector */
 mark.hit { background: color-mix(in srgb, var(--warn, #d9a400) 35%, transparent); color: inherit; border-radius: 2px; }
@@ -609,3 +611,4 @@ mark.hit.current { background: var(--warn, #d9a400); color: #000; outline: 1px s
 .qb-help { font-size: 12px; }
 .qb-help .link-btn { display: flex; gap: 8px; text-align: left; padding: 2px 0; }
 @media (max-width: 560px) { .qb-row { grid-template-columns: 1fr 1fr auto; } .qb-row input { grid-column: 1 / -1; grid-row: 2; } }
+.nested-step { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-raised); }

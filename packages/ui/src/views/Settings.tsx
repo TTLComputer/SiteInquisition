@@ -5,12 +5,13 @@ import { McpSection } from './Mcp';
 import { LanSettings } from './Lan';
 import { StorageSettings } from './Storage';
 import { KeySettings, TechSettings } from './Tech';
+import { TlsSettings } from './TlsSettings';
 
-type Section = 'proxy' | 'storage' | 'tech' | 'signing' | 'mcp' | 'appearance' | 'keys' | 'together';
+type Section = 'proxy' | 'servers' | 'storage' | 'tech' | 'signing' | 'mcp' | 'appearance' | 'keys' | 'together';
 
 export const SHORTCUTS: Array<[string, string]> = [
   ['Ctrl K', 'Filter traffic (focus the History filter)'],
-  ['Ctrl R', 'Send the selected exchange to replay'],
+  ['Ctrl R', 'Send the selected exchange to Replay'],
   ['Ctrl Enter', 'Send the request in the current replay tab'],
   ['Ctrl Shift Enter', 'Resend the selected exchange without opening the editor'],
   ['Up / Down', 'Move the selection in History'],
@@ -87,7 +88,7 @@ export function Settings() {
     if (subTab.settings) setSection(subTab.settings as Section);
   }, [subTab]);
   const [theme, setTheme] = useState<ThemeChoice>(storedTheme());
-  const labels: Record<Section, string> = { proxy: 'Proxy and TLS', storage: 'Storage', tech: 'Technologies', signing: 'Signing keys', mcp: 'MCP and agents', appearance: 'Appearance', keys: 'Keyboard', together: 'Work together' };
+  const labels: Record<Section, string> = { proxy: 'Proxy and TLS', servers: 'Server certificates', storage: 'Storage', tech: 'Technologies', signing: 'Signing keys', mcp: 'MCP and agents', appearance: 'Appearance', keys: 'Keyboard', together: 'Work together' };
   return (
     <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
       <div className="tabs" role="tablist" aria-label="Settings">
@@ -100,6 +101,7 @@ export function Settings() {
       <div className="page-inner">
         <div className="card" style={{ flex: '1 1 640px', maxWidth: 900 }}>
           {section === 'tech' && <TechSettings />}
+          {section === 'servers' && <TlsSettings />}
           {section === 'signing' && <KeySettings />}
           {section === 'proxy' && (
             <>

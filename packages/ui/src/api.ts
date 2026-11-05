@@ -97,8 +97,10 @@ export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeCon
 export type { ScopeRule } from '@siteinquisition/core';
 export type { ErrorCause, ErrorFinding, ParsedJwt, JwtFlag, AwsRequestInfo, KeyInfo, SessionCookie, SessionFramework, SessionStructure } from '@siteinquisition/core';
 import type { ParsedJwt, AwsRequestInfo, KeyInfo, SessionCookie } from '@siteinquisition/core';
-export type { CookieOverride, CsrfBinding, CsrfFinding, EffectiveTech, HostTechReport, Signature, TechCategory, TechCheck, TechHit, TechOverride } from '@siteinquisition/core';
-import type { CookieOverride, CsrfBinding, CsrfFinding, ErrorFinding, HostTechReport, Signature, TechHit, TechOverride, EffectiveTech } from '@siteinquisition/core';
+export type { UpstreamTlsConfig, TrustedCert, PeerCertInfo, FieldCodecRule } from '@siteinquisition/core';
+import type { UpstreamTlsConfig, PeerCertInfo, FieldCodecRule } from '@siteinquisition/core';
+export type { CookieOverride, CsrfBinding, CsrfFinding, EffectiveTech, HostTechReport, PageCsrfToken, Signature, TechCategory, TechCheck, TechHit, TechOverride, TechOverview, TechOverviewEntry, GlossarySource } from '@siteinquisition/core';
+import type { CookieOverride, CsrfBinding, CsrfFinding, ErrorFinding, HostTechReport, PageCsrfToken, Signature, TechHit, TechOverride, TechOverview, EffectiveTech } from '@siteinquisition/core';
 
 /** A jar cookie, with why it belongs to the platform rather than the app (null when it is the app's). */
 export type JarCookieInfo = JarCookie & { infra?: string | null };
@@ -107,6 +109,8 @@ export interface ExchangeTech {
   hits: Array<TechHit & { name: string }>;
   host: HostTechReport;
   csrf: CsrfFinding[];
+  /** CSRF tokens this response's page hands out (a <meta name="csrf-token">). */
+  pageTokens: PageCsrfToken[];
   cookies: Array<{ name: string; value: string; set: boolean; infra: string | null }>;
 }
 
@@ -321,6 +325,10 @@ export class CoreClient {
   // Typed helpers
   info = () => this.call<CoreInfo>('core.info');
   search = (query: string, opts: { limit?: number; before?: string } = {}) => this.call<ExchangeSummary[]>('traffic.search', { query, ...opts });
+  /** How many recorded requests a search matches (counting stops at max). */
+  count = (query: string, max = 100_000) => this.call<number>('traffic.count', { query, max });
+  /** The text a search looks for, and where, for highlighting. */
+  searchTerms = (query: string) => this.call<SearchTerm[]>('traffic.terms', { query });
   get = (id: string) => this.call<ExchangeDetail>('traffic.get', { id });
   body = (id: string, side: 'request' | 'response', decoded = true) =>
     this.call<{ size: number; base64: string }>('traffic.body', { id, side, decoded }).then((b) => base64ToBytes(b.base64));
@@ -346,6 +354,7 @@ export class CoreClient {
   setTechSignatures = (signatures: unknown[]) => this.call<Signature[]>('tech.setSignatures', { signatures });
   setTechDisabled = (ids: string[]) => this.call<string[]>('tech.setDisabled', { ids });
   techHosts = () => this.call<HostTechSummary[]>('tech.hosts');
+  techOverview = () => this.call<TechOverview>('tech.overview');
   techHost = (host: string) => this.call<HostTechReport>('tech.host', { host });
   techExchange = (id: string) => this.call<ExchangeTech>('tech.exchange', { id });
   techOverrides = () => this.call<TechOverride[]>('tech.overrides');
@@ -383,6 +392,10 @@ export class CoreClient {
     this.call<Array<{ kind: 'bytes'; base64: string } | { kind: 'value'; value: unknown }>>('codecs.layers', { chain, base64: bytesToBase64(bytes) });
   encode = (chain: string[], value: unknown) =>
     this.call<{ base64: string }>('codecs.encode', value instanceof Uint8Array ? { chain, base64: bytesToBase64(value) } : { chain, value }).then((r) => base64ToBytes(r.base64));
+  /** Expand JSON fields that hold more encoded JSON, as deep as they go. */
+  expandNested = (value: unknown) => this.call<{ value: unknown; fields: NestedField[] }>('codecs.expand', { value });
+  /** Put expanded fields back, encoded the way they came; untouched ones go back exactly. */
+  collapseNested = (value: unknown, fields: NestedField[]) => this.call<{ value: unknown; changed: string[]; errors: string[] }>('codecs.collapse', { value, fields });
   replaceIn = (chain: string[], bytes: Uint8Array, o: { find: string; replace: string; regex?: boolean; matchCase?: boolean; keys?: boolean; scope?: 'layer' | 'all' }) =>
     this.call<{ base64: string; counts: number[] }>('codecs.replace', { chain, base64: bytesToBase64(bytes), ...o }).then((r) => ({ output: base64ToBytes(r.base64), counts: r.counts }));
   chains = () => this.call<SavedChain[]>('codecs.chains.get');
@@ -453,6 +466,20 @@ export class CoreClient {
   exportOpenApi = (host: string) => this.call<Record<string, unknown>>('openapi.export', { host });
   values = (p: { host?: string; query?: string; limit?: number } = {}) => this.call<ValueField[]>('values.catalog', p);
   valueOrigin = (value: string, beforeId?: string) => this.call<ValueOrigin[]>('values.origin', { value, beforeId });
+  tlsGet = () => this.call<UpstreamTlsConfig>('tls.get');
+  tlsSet = (cfg: Partial<UpstreamTlsConfig>) => this.call<UpstreamTlsConfig>('tls.set', cfg);
+  tlsTrust = (pem: string, name?: string) => this.call<UpstreamTlsConfig>('tls.trust', { pem, ...(name ? { name } : {}) });
+  tlsUntrust = (id: string) => this.call<UpstreamTlsConfig>('tls.untrust', { id });
+  tlsSkipHost = (host: string) => this.call<UpstreamTlsConfig>('tls.skipHost', { host });
+  tlsPeerCert = (host: string, port = 443) => this.call<PeerCertInfo>('tls.peerCert', { host, port });
+  fieldCodecs = () => this.call<FieldCodecRule[]>('fields.list');
+  setFieldCodecs = (rules: Array<Partial<FieldCodecRule>>) => this.call<FieldCodecRule[]>('fields.set', { rules });
+  fieldCodecsFor = (url: string, side: 'request' | 'response') => this.call<FieldCodecRule[]>('fields.for', { url, side });
+  decodeExchangeFields = (id: string, side: 'request' | 'response') => this.call<{ text: string; counts: number[]; errors: string[]; rules: FieldCodecRule[] } | null>('fields.decodeExchange', { id, side });
+  decodeFields = (text: string, specs: Array<{ path: string; chain: string[] }>) => this.call<{ text: string; counts: number[]; errors: string[] } | null>('fields.decode', { text, specs });
+  encodeFields = (text: string, specs: Array<{ path: string; chain: string[] }>) => this.call<{ text: string; counts: number[]; errors: string[] }>('fields.encode', { text, specs });
+  parseFieldSpecs = (spec: string) => this.call<Array<{ path: string; chain: string[] }>>('fields.parse', { spec });
+  tags = () => this.call<Array<{ tag: string; count: number; newestId: string }>>('tags.list');
   moveTag = (tag: string, id: string) => this.call<string[]>('tags.move', { tag, id });
   tagValue = (ref: string) => this.call<string>('tags.value', { ref });
   contractCheck = (id: string) => this.call<ContractResult | null>('contract.check', { id });
@@ -483,6 +510,22 @@ export class CoreClient {
   endpointNotes = () => this.call<Record<string, { notes: string; tags: string[]; updatedAt: number; by: string }>>('notes.endpoints');
   setEndpointNote = (key: string, notes: string, tags: string[] = []) => this.call<Record<string, { notes: string; tags: string[] }>>('notes.setEndpoint', { key, notes, tags });
   noteFor = (id: string) => this.call<{ key: string; notes: string; tags: string[] } | null>('notes.forExchange', { id });
+}
+
+export type SearchColumn = 'url' | 'req_headers' | 'req_body' | 'res_headers' | 'res_body';
+export interface SearchTerm {
+  value: string;
+  in: SearchColumn[];
+  negate: boolean;
+}
+
+/** A JSON field holding more encoded JSON, as the codecs package finds it. */
+export interface NestedField {
+  at: Array<string | number>;
+  path: string;
+  chain: string[];
+  original: string;
+  decoded: unknown;
 }
 
 export interface SavedChain {

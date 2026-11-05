@@ -130,17 +130,26 @@ describe.skipIf(!ready)('renderer against a real core', () => {
   it('shows the cookie jar with decoded hints and links to the response that set it', async () => {
     await page.getByRole('button', { name: 'Cookies' }).click();
     await expect.poll(() => page.getByTestId('cookie-row').count()).toBe(2);
-    const session = page.getByTestId('cookie-row').filter({ hasText: 'session' });
+    const session = page.locator('[data-testid=cookie-row][data-name=session]');
     expect(await session.textContent()).toContain('base64 › json');
     expect(await session.textContent()).toContain('HttpOnly');
     // Decode it as a framework session cookie: the payload is readable without a key.
-    await session.getByRole('button', { name: 'Decode' }).click();
+    await session.getByRole('button', { name: 'Session' }).click();
     const decoded = page.locator('.session-row');
     await expect.poll(() => decoded.textContent()).toContain('express');
     expect(await decoded.textContent()).toContain('nick');
     await shot('cookies');
-    await session.getByRole('button', { name: 'Decode' }).click();
+    await session.getByRole('button', { name: 'Session' }).click();
     await session.locator('.pill').first().click();
+    await expect.poll(() => page.getByLabel('Inspector', { exact: true }).textContent()).toContain('/api/cart');
+    // Decode opens the value in Codecs with its layers already detected.
+    await page.getByRole('button', { name: 'Cookies' }).click();
+    await page.locator('[data-testid=cookie-row][data-name=session]').getByRole('button', { name: 'Decode', exact: true }).click();
+    await expect.poll(() => page.getByLabel('Codec chain').locator('.chain-step').allTextContents()).toEqual(['base64›', 'json']);
+    expect(await page.getByLabel('Codec input').inputValue()).not.toBe('');
+    await expect.poll(() => page.getByLabel('Decoded value').inputValue()).toContain('nick');
+    await page.getByRole('button', { name: 'History' }).first().click();
+    await page.locator('.row', { hasText: '/api/cart' }).first().click();
     await expect.poll(() => page.getByLabel('Inspector', { exact: true }).textContent()).toContain('/api/cart');
   });
 

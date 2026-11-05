@@ -1,4 +1,5 @@
-import { bytesToString, encodeChain, getCodec, looksLikeText } from '@siteinquisition/codecs';
+import { bytesToString, encodeChain, encodeFieldsText, getCodec, looksLikeText, type FieldCodec } from '@siteinquisition/codecs';
+import type { FieldCodecs } from './fieldcodecs.js';
 import type { FlowRunner } from './flows.js';
 import { cookieJar } from './cookies.js';
 import { newId } from './ids.js';
@@ -42,6 +43,12 @@ export interface SendOptions {
   flow?: string;
   /** The body is written decoded: resolve tokens, then encode it with this codec chain (e.g. ["base64", "json"]). */
   bodyChain?: string[];
+  /**
+   * JSON fields written decoded (a field that is base64 of JSON, say): after
+   * tokens are filled in, encode each one with its chain. "saved" uses the
+   * field codecs saved for the request's URL.
+   */
+  fieldCodecs?: FieldCodec[] | 'saved';
   /** How deep in nested flows this send is (internal). */
   flowDepth?: number;
 }
@@ -85,6 +92,7 @@ export interface SendDeps {
   sessionKeys: Map<string, AwsCredentials>;
   countHit: (ruleId: string) => void;
   tech?: TechService;
+  fieldCodecs?: FieldCodecs;
 }
 
 /** Statuses frameworks answer with when a CSRF token is missing or stale. */
@@ -206,6 +214,23 @@ export class Sender {
     let csrf: CsrfBinding[] = [];
     let csrfMissing: CsrfBinding[] = [];
     let r = opts.tokens === false ? req : this.resolveAll(req, { vars: opts.vars, batch, flows });
+    if (opts.fieldCodecs) {
+      const specs = opts.fieldCodecs === 'saved' ? (this.d.fieldCodecs?.specsFor(r.url, 'request') ?? []) : opts.fieldCodecs;
+      const body = text(r.body);
+      if (specs.length && body) {
+        let out;
+        try {
+          out = encodeFieldsText(body, specs);
+        } catch (e) {
+          throw new Error(`Could not encode fields: the body is not JSON (${(e as Error).message})`);
+        }
+        if (out.errors.length) throw new Error(`Could not encode fields: ${out.errors[0]}`);
+        if (out.counts.some(Boolean)) {
+          r = { ...r, body: new TextEncoder().encode(out.text) };
+          applied.push(`fields:${specs.filter((_, i) => out.counts[i]).map((s) => s.path).join(',')}`);
+        }
+      }
+    }
     if (opts.bodyChain?.length) {
       r = { ...r, body: encodeBody(opts.bodyChain, text(r.body) ?? '') };
       applied.push(`encoded:${opts.bodyChain.join('>')}`);

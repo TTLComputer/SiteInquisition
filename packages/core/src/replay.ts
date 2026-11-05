@@ -2,6 +2,7 @@ import * as http from 'node:http';
 import * as https from 'node:https';
 import { runH3Plan } from './quic/plan.js';
 import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
+import { upstreamTls } from './upstreamtls.js';
 
 export interface ReplayRequest {
   method: string;
@@ -69,7 +70,7 @@ export async function sendReplay(store: CaptureStore, req: ReplayRequest): Promi
           port: url.port || undefined,
           path: url.pathname + url.search,
           headers: headers.flat(),
-          rejectUnauthorized: !req.ignoreTlsErrors,
+          ...upstreamTls(url.hostname.replace(/^\[|\]$/g, ''), req.ignoreTlsErrors),
           servername: url.hostname,
           agent: false,
           timeout: req.timeoutMs ?? 30_000,

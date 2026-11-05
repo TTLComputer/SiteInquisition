@@ -1,3 +1,4 @@
+import { usePlacement } from '../components/placement';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ActivityEntry, Approval, Decision, HeaderList, McpSettings } from '../api';
 import { useApp } from '../state';
@@ -64,6 +65,9 @@ export function ApprovalChip() {
   const { approvals } = useApp();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const chip = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  usePlacement(pop, chip, open);
   useEffect(() => {
     if (!approvals.length) setOpen(false);
   }, [approvals.length]);
@@ -76,12 +80,12 @@ export function ApprovalChip() {
   if (!approvals.length) return null;
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button className="chip-btn attention" onClick={() => setOpen(!open)} aria-expanded={open} data-testid="approval-chip">
+      <button ref={chip} className="chip-btn attention" onClick={() => setOpen(!open)} aria-expanded={open} data-testid="approval-chip">
         <span className="dot" style={{ background: 'var(--warn)' }} />
         {approvals.length === 1 ? 'Agent is waiting for approval' : `${approvals.length} agent requests waiting`}
       </button>
       {open && (
-        <div className="approval-pop">
+        <div ref={pop} className="approval-pop">
           {approvals.map((a) => (
             <ApprovalCard key={a.id} a={a} />
           ))}

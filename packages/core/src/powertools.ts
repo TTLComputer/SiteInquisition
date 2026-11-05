@@ -10,6 +10,7 @@ import { runAuthMatrix, runNegative, type Identity } from './probes.js';
 import { findEndpoint } from './contract.js';
 import { draftFlow, FlowRunner, normalizeFlow, type ApiFlow } from './flows.js';
 import { exportOpenApi, importHar, parseSpec, requestForEndpoint, specCoverage, type ApiSpec } from './specs.js';
+import { FieldCodecs } from './fieldcodecs.js';
 import { moveTag, pickValues, tagValue, valueCatalog, valueOrigin } from './values.js';
 import { cookieJar } from './cookies.js';
 import type { Core } from './core.js';
@@ -45,6 +46,7 @@ import { WsReplays } from './wsreplay.js';
 export class PowerTools {
   readonly vars: Vars;
   readonly tech: TechService;
+  readonly fieldCodecs: FieldCodecs;
   readonly errors: ErrorService;
   readonly scripts: ScriptEngine;
   private readonly trust: TrustedScripts;
@@ -65,6 +67,7 @@ export class PowerTools {
     this.vars = new Vars(store);
     this.errors = new ErrorService(store);
     this.tech = new TechService(store, this.vars, this.errors);
+    this.fieldCodecs = new FieldCodecs(store);
     // Projects recorded before detection (or a newer set of detections) existed get scanned once, in the background.
     // Bump SCAN_VERSION when a release adds detections that old traffic should get.
     const SCAN_VERSION = 2;
@@ -94,6 +97,7 @@ export class PowerTools {
       sessionKeys: this.awsKeys,
       countHit: (id) => this.countHit(id),
       tech: this.tech,
+      fieldCodecs: this.fieldCodecs,
     });
     this.flows = new FlowRunner({
       store,
@@ -715,7 +719,7 @@ export class PowerTools {
       {
         name: 'search_traffic',
         description:
-          'Search recorded exchanges. Query syntax: host:*.example.com method:POST status:>=400 path:/api/ url:token= body:"text" header:"x-api-key" source:browser|proxy|replay ws:true tag:x tech:django error:sql|high|any since:<ISO or ms> "free text"; prefix a filter with - to negate. Newest first.',
+          'Search recorded exchanges. Query syntax: host:*.example.com method:POST status:>=400 path:/api/ url:token= body:"text" header:"x-api-key" req:/res: (one side, headers and body) reqbody: resbody: reqheader: resheader: source:browser|proxy|replay ws:true tag:x tech:django error:sql|high|any since:<ISO or ms> "free text" (text matches any part of a word, ignoring case, in the URL, headers and decoded bodies); prefix a filter with - to negate. Newest first.',
         inputSchema: { type: 'object', properties: { query: str, limit: { type: 'number', description: 'Default 50, max 500' } } },
         write: false,
         run: (a) => store.search(String(a.query ?? ''), { limit: Math.min(Number(a.limit ?? 50), 500) }).map((e) => ({ id: e.id, method: e.method, url: e.url, status: e.status, state: e.state, source: e.source, startedAt: new Date(e.startedAt).toISOString(), durationMs: e.durationMs, tags: e.tags })),

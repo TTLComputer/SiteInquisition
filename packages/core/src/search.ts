@@ -1,12 +1,20 @@
 /**
  * Search language for captured traffic. Filters are `key:value` pairs, and
- * everything else is full-text search over URL, headers and decoded bodies.
+ * everything else is text search over the URL, headers and decoded bodies.
+ * Text matches any part of a word, ignoring case: `PO-77` finds `PO-7781`.
+ *
+ *   csrf_tok "Bearer eyJ"                         (anywhere: URL, headers, bodies)
+ *   req:apikey res:"stack trace"                  (one side: its headers and body)
+ *   reqbody:password resbody:"\"admin\":true"     (just a body)
+ *   reqheader:"x-api-key" resheader:"server: nginx" (just headers, as "name: value")
+ *   body:token header:x-trace                     (either side)
  *
  *   host:api.example.com method:POST status:>=400 "session expired"
  *   host:*.example.com path:/api/ body:token ws:true -status:304
  *   since:2026-11-04T09:00 until:1762246800000   (ISO time or epoch ms)
  *   tech:django tech:aws                          (hosts running a technology)
  *   error:sql error:high error:any                (server errors recognized in responses)
+ *   id:01J...,01J...                              (exact exchanges, comma separated)
  *
  * A leading `-` negates a filter. Quoted text is matched as a phrase.
  */
@@ -14,11 +22,37 @@
 export interface CompiledQuery {
   where: string[];
   params: unknown[];
-  /** FTS5 MATCH expression, or undefined when there is no free text. */
-  match?: string;
+  /** The text the query looks for, in order. */
+  text: TextTerm[];
 }
 
-const FILTER_KEYS = new Set(['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'body', 'header', 'state', 'flow', 'scheme', 'replayof', 'since', 'until', 'tech', 'error']);
+/** Text columns of exchange_text each text key searches. */
+export const TEXT_KEYS: Record<string, TextColumn[]> = {
+  text: ['url', 'req_headers', 'req_body', 'res_headers', 'res_body'],
+  body: ['req_body', 'res_body'],
+  header: ['req_headers', 'res_headers'],
+  req: ['req_headers', 'req_body'],
+  res: ['res_headers', 'res_body'],
+  reqbody: ['req_body'],
+  resbody: ['res_body'],
+  reqheader: ['req_headers'],
+  resheader: ['res_headers'],
+};
+export type TextColumn = 'url' | 'req_headers' | 'req_body' | 'res_headers' | 'res_body';
+const TEXT_ALIASES: Record<string, string> = { request: 'req', response: 'res', reqheaders: 'reqheader', resheaders: 'resheader', headers: 'header' };
+
+const FILTER_KEYS = new Set([
+  ...['host', 'method', 'status', 'path', 'url', 'source', 'ws', 'tag', 'state', 'flow', 'scheme', 'replayof', 'since', 'until', 'tech', 'error', 'id'],
+  ...Object.keys(TEXT_KEYS).filter((k) => k !== 'text'),
+  ...Object.keys(TEXT_ALIASES),
+]);
+
+/** A piece of text a query looks for, and where; the Inspector highlights these. */
+export interface TextTerm {
+  value: string;
+  in: TextColumn[];
+  negate: boolean;
+}
 
 interface Token {
   key?: string;
@@ -32,7 +66,8 @@ export function tokenize(input: string): Token[] {
   const re = /(-)?(?:([a-z]+):)?(?:"((?:[^"\\]|\\.)*)"|(\S+))/gi;
   for (const m of input.matchAll(re)) {
     const [, neg, rawKey, quoted, bare] = m;
-    const key = rawKey?.toLowerCase();
+    const lower = rawKey?.toLowerCase();
+    const key = lower ? (TEXT_ALIASES[lower] ?? lower) : undefined;
     if (key && !FILTER_KEYS.has(key)) {
       // Not a filter we know, so treat the whole thing as free text.
       tokens.push({ value: m[0].replace(/^-/, ''), negate: !!neg, quoted: false });
@@ -77,7 +112,7 @@ export interface CompileContext {
 export function compileQuery(input: string, ctx: CompileContext = {}): CompiledQuery {
   const where: string[] = [];
   const params: unknown[] = [];
-  const fts: string[] = [];
+  const text: TextTerm[] = [];
 
   const add = (t: Token, sql: string, p: unknown[]) => {
     where.push(t.negate ? `NOT (${sql})` : sql);
@@ -87,13 +122,19 @@ export function compileQuery(input: string, ctx: CompileContext = {}): CompiledQ
   for (const t of tokenize(input)) {
     switch (t.key) {
       case undefined:
-        fts.push(t.negate ? `NOT ${ftsPhrase(t.value)}` : ftsPhrase(t.value));
-        break;
       case 'body':
-      case 'header': {
-        const col = t.key === 'body' ? 'body' : 'headers';
-        const expr = `${col}:${ftsPhrase(t.value)}`;
-        fts.push(t.negate ? `NOT ${expr}` : expr);
+      case 'header':
+      case 'req':
+      case 'res':
+      case 'reqbody':
+      case 'resbody':
+      case 'reqheader':
+      case 'resheader': {
+        const cols = TEXT_KEYS[t.key ?? 'text']!;
+        text.push({ value: t.value, in: cols, negate: t.negate });
+        // Trigrams need three characters; shorter text is a plain substring scan.
+        if ([...t.value].length >= 3) add(t, 'e.id IN (SELECT exchange_id FROM exchange_text WHERE exchange_text MATCH ?)', [`{${cols.join(' ')}} : ${ftsPhrase(t.value)}`]);
+        else add(t, `e.id IN (SELECT exchange_id FROM exchange_text WHERE ${cols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(' OR ')})`, cols.map(() => `%${globLike(t.value)}%`));
         break;
       }
       case 'host':
@@ -144,24 +185,16 @@ export function compileQuery(input: string, ctx: CompileContext = {}): CompiledQ
         else add(t, 'EXISTS (SELECT 1 FROM exchange_error x WHERE x.exchange_id = e.id AND (x.kind = ? OR x.sig = ? OR x.severity = ?))', [v, v, v]);
         break;
       }
+      case 'id': {
+        const ids = t.value.split(',').map((x) => x.trim()).filter(Boolean).slice(0, 500);
+        add(t, ids.length ? `e.id IN (${ids.map(() => '?').join(', ')})` : '0', ids);
+        break;
+      }
       case 'tag':
         add(t, 'EXISTS (SELECT 1 FROM json_each(e.tags) WHERE json_each.value = ?)', [t.value]);
         break;
     }
   }
 
-  // FTS5 cannot start an expression with NOT, so anchor pure negations on the url column.
-  let match: string | undefined;
-  if (fts.length) {
-    const positives = fts.filter((f) => !f.startsWith('NOT '));
-    const negatives = fts.filter((f) => f.startsWith('NOT '));
-    if (positives.length) match = [positives.join(' AND '), ...negatives].join(' ');
-    else {
-      for (const n of negatives) {
-        where.push('e.id NOT IN (SELECT exchange_id FROM exchange_fts WHERE exchange_fts MATCH ?)');
-        params.push(n.slice(4));
-      }
-    }
-  }
-  return { where, params, match };
+  return { where, params, text };
 }

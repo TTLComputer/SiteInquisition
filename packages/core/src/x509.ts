@@ -154,6 +154,30 @@ export function generateCA(subject: Subject, opts: { bits?: number; validDays?: 
   return { cert, key: privateKey.export({ type: 'pkcs8', format: 'pem' }) as string };
 }
 
+/** A self-signed server certificate for one host name, the kind dev servers run on. */
+export function generateSelfSigned(host: string, opts: { validDays?: number } = {}): { cert: string; key: string } {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const now = Date.now();
+  const ip = isIP(host);
+  const san = ip ? tlv(0x87, ip === 4 ? Buffer.from(host.split('.').map(Number)) : ipv6Bytes(host)) : tlv(0x82, Buffer.from(host, 'ascii'));
+  const subject = { commonName: host.slice(0, 64) };
+  const cert = buildCert({
+    subject,
+    issuer: subject,
+    publicKey,
+    signingKey: privateKey,
+    notBefore: new Date(now - DAY),
+    notAfter: new Date(now + (opts.validDays ?? 365) * DAY),
+    extensions: [
+      ext(OID.basicConstraints, true, seq()),
+      ext(OID.keyUsage, true, bits(Buffer.of(0xa0), 5)), // digitalSignature, keyEncipherment
+      ext(OID.extKeyUsage, false, seq(oid(OID.serverAuth))),
+      ext(OID.subjectAltName, false, seq(san)),
+    ],
+  });
+  return { cert, key: privateKey.export({ type: 'pkcs8', format: 'pem' }) as string };
+}
+
 /** The subject Name of a certificate as raw DER, to use as the issuer of certificates it signs. */
 function subjectDer(certPem: string): { der: Buffer; organizationName?: string } {
   const der = new X509Certificate(certPem).raw;

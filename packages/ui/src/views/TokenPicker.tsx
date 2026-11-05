@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ApiFlow, JarCookie, ValueField, VarValue } from '../api';
 import { pickToken } from './Api';
 import { useApp } from '../state';
+import { usePlacement } from '../components/placement';
 
 const GENERATORS: Array<[string, string]> = [
   ['{{uuid}}', 'random UUID'],
@@ -14,7 +15,7 @@ const GENERATORS: Array<[string, string]> = [
 ];
 
 const REFERENCES: Array<[string, string]> = [
-  ['{{$my-tag.field}}', 'a field of the newest request tagged my-tag (right-click a row, Move a reference tag here)'],
+  ['{{$my-tag.field}}', 'a field of the newest request tagged my-tag (right-click a row, Set reference tag)'],
   ['{{$my-tag.@status}}', 'its status; also @url @path @id header.Name query.name'],
   ['{{var:name | base64}}', 'pipes encode any token: url base64 base64url hex json jsonesc upper lower'],
 ];
@@ -29,6 +30,9 @@ export function TokenPicker({ onPick, label = 'Insert token' }: { onPick(token: 
   const [flows, setFlows] = useState<ApiFlow[]>([]);
   const [filter, setFilter] = useState('');
   const ref = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  usePlacement(menu, button, open, { align: 'end' });
 
   useEffect(() => {
     if (!open) return;
@@ -62,11 +66,11 @@ export function TokenPicker({ onPick, label = 'Insert token' }: { onPick(token: 
 
   return (
     <div className="token-picker" ref={ref}>
-      <button className="btn small" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button ref={button} className="btn small" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
         {'{{ }}'} {label}
       </button>
       {open && (
-        <div className="context-menu token-menu" role="menu">
+        <div ref={menu} className="context-menu token-menu" role="menu">
           <input className="input" autoFocus placeholder="Filter tokens" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter tokens" />
           {groups.map((g) => (
             <div key={g}>

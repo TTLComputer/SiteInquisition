@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { bulk, formatPath, query, setAt, type BulkOp, type PathSeg } from '@siteinquisition/codecs/jsonpath';
-import { base64ToBytes, type SavedChain } from '../api';
+import { base64ToBytes, type NestedField, type SavedChain } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
+import { FieldCodecRules } from './FieldCodecs';
 import { asText, hexDump } from '../format';
 import { TokenPicker } from './TokenPicker';
+import { ReplayButton } from '../components/ReplayButton';
 
 type Layer = { kind: 'bytes'; bytes: Uint8Array } | { kind: 'value'; value: unknown };
 
 const enc = new TextEncoder();
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 function layerText(l: Layer): string {
   if (l.kind === 'value') return JSON.stringify(l.value, null, 2);
@@ -69,7 +72,8 @@ export function Codecs() {
   const { client, codecInput, notify, openDraft } = useApp();
   const [input, setInput] = useState('');
   const [label, setLabel] = useState('');
-  const [returnTo, setReturnTo] = useState<((text: string) => void) | null>(null);
+  const [returnTo, setReturnTo] = useState<((text: string, live?: boolean) => void) | null>(null);
+  const [sync, setSync] = useState(true);
   const [chain, setChain] = useState<string[]>([]);
   const [codecs, setCodecs] = useState<Array<{ id: string; label: string; terminal: boolean }>>([]);
   const [layers, setLayers] = useState<Layer[]>([]);
@@ -77,6 +81,10 @@ export function Codecs() {
   const [edit, setEdit] = useState('');
   const [editDirty, setEditDirty] = useState(false);
   const [output, setOutput] = useState<string | null>(null);
+  const [encodeError, setEncodeError] = useState<string | null>(null);
+  // JSON fields inside the innermost layer that hold more encoded JSON, expanded in the editor.
+  const [deep, setDeep] = useState(true);
+  const [nestedFields, setNestedFields] = useState<NestedField[]>([]);
   const [saved, setSaved] = useState<SavedChain[]>([]);
   // JSONPath
   const [path, setPath] = useState('');
@@ -133,16 +141,28 @@ export function Codecs() {
         const mapped: Layer[] = ls.map((l) => (l.kind === 'bytes' ? { kind: 'bytes', bytes: base64ToBytes(l.base64) } : { kind: 'value', value: l.value }));
         setLayers(mapped);
         setError(null);
-        setEdit(layerText(mapped[mapped.length - 1]!));
         setEditDirty(false);
+        setNestedFields([]);
+        const last = mapped[mapped.length - 1]!;
+        if (deep && last.kind === 'value' && last.value !== null && typeof last.value === 'object') {
+          return client.expandNested(last.value).then((x) => {
+            if (!live) return;
+            setNestedFields(x.fields);
+            setEdit(JSON.stringify(x.value, null, 2));
+          });
+        }
+        setEdit(layerText(last));
       })
       .catch((e: Error) => live && (setError(`Could not decode with ${chain.join(' > ') || 'no codecs'}: ${e.message}`), setLayers([])));
     return () => {
       live = false;
     };
+    // `deep` is read when a new input decodes; toggling it reshapes the current edit instead (toggleDeep).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, chain, input]);
 
   // A value inside the JSON that is itself encoded (a JSON string, base64, a JWT...), decoded on its own.
+  const [ruleDraft, setRuleDraft] = useState<{ field: string; chain: string[] } | null>(null);
   const [nested, setNested] = useState<{ path: PathSeg[]; chain: string[]; isValue: boolean; text: string } | null>(null);
   const decodeNested = async (at: PathSeg[], value: string) => {
     try {
@@ -156,17 +176,25 @@ export function Codecs() {
       notify((e as Error).message);
     }
   };
-  const putNestedBack = async () => {
-    if (!nested || parsedEdit === undefined) return;
+  // Edits to a nested value go straight back into its field, encoded the same way: there is no "put back" step.
+  const [nestedError, setNestedError] = useState<string | null>(null);
+  const editNested = async (text: string) => {
+    if (!nested) return;
+    const at = nested.path;
+    setNested({ ...nested, text });
     try {
-      const bytes = await client.encode(nested.chain, nested.isValue ? JSON.parse(nested.text) : enc.encode(nested.text));
-      setEdit(JSON.stringify(setAt(parsedEdit, nested.path, new TextDecoder().decode(bytes)), null, 2));
+      const bytes = await client.encode(nested.chain, nested.isValue ? JSON.parse(text) : enc.encode(text));
+      setNestedError(null);
+      setEdit((cur) => {
+        try {
+          return JSON.stringify(setAt(structuredClone(JSON.parse(cur)), at, new TextDecoder().decode(bytes)), null, 2);
+        } catch {
+          return cur;
+        }
+      });
       setEditDirty(true);
-      setOutput(null);
-      notify(`Put back into ${formatPath(nested.path)} as ${nested.chain.join(' > ')}`);
-      setNested(null);
     } catch (e) {
-      notify(`Could not encode: ${(e as Error).message}`);
+      setNestedError(nested.isValue ? `Not valid JSON yet: ${(e as Error).message}` : `Could not encode: ${(e as Error).message}`);
     }
   };
 
@@ -201,15 +229,65 @@ export function Codecs() {
     return () => window.clearTimeout(t);
   }, [client, chain, input, find, replace, regex, matchCase, keys, scopeAll]);
 
-  const encodeEdit = async () => {
+  // The result follows the editor: every edit is put back through nested fields and the whole chain as you type.
+  useEffect(() => {
+    if (!editDirty || !inner) {
+      setOutput(null);
+      setEncodeError(null);
+      return;
+    }
+    let live = true;
+    const t = window.setTimeout(() => {
+      void (async () => {
+        let value: unknown;
+        if (inner.kind === 'value') {
+          try {
+            value = JSON.parse(edit);
+          } catch (e) {
+            if (live) setEncodeError(`The JSON does not parse yet: ${(e as Error).message}`);
+            return;
+          }
+          if (nestedFields.length) {
+            const r = await client.collapseNested(value, nestedFields);
+            if (r.errors.length) throw new Error(r.errors.join('; '));
+            value = r.value;
+          }
+          // Back to how it came in: give the input back exactly, not a re-encoding of it.
+          if (sameJson(value, inner.value)) {
+            if (live) (setOutput(input), setEncodeError(null));
+            return;
+          }
+        } else value = enc.encode(edit);
+        const bytes = await client.encode(chain, value);
+        if (live) (setOutput(asText(bytes) ?? hexDump(bytes)), setEncodeError(null));
+      })().catch((e: Error) => live && setEncodeError(`Could not encode: ${e.message}`));
+    }, 150);
+    return () => {
+      live = false;
+      window.clearTimeout(t);
+    };
+  }, [client, chain, edit, editDirty, inner, input, nestedFields]);
+
+  // Came from another screen: keep it updated as the result changes.
+  useEffect(() => {
+    if (sync && returnTo && editDirty && output !== null) returnTo(output, true);
+  }, [sync, returnTo, editDirty, output]);
+
+  const toggleDeep = async (on: boolean) => {
+    setDeep(on);
+    if (parsedEdit === undefined) return;
     try {
-      const value = inner?.kind === 'value' ? JSON.parse(edit) : enc.encode(edit);
-      const bytes = await client.encode(chain, value);
-      const text = asText(bytes);
-      setOutput(text ?? hexDump(bytes));
-      setError(null);
+      if (on) {
+        const x = await client.expandNested(parsedEdit);
+        setNestedFields(x.fields);
+        setEdit(JSON.stringify(x.value, null, 2));
+      } else {
+        const r = await client.collapseNested(parsedEdit, nestedFields);
+        setNestedFields([]);
+        setEdit(JSON.stringify(r.value, null, 2));
+      }
     } catch (e) {
-      setError(`Could not encode: ${(e as Error).message}`);
+      notify((e as Error).message);
     }
   };
 
@@ -269,6 +347,7 @@ export function Codecs() {
 
   const total = counts?.reduce((a, b) => a + b, 0) ?? 0;
   const result = output ?? (editDirty ? null : input);
+  const sourceSynced = !!returnTo && sync;
 
   return (
     <div className="page codecs">
@@ -381,6 +460,11 @@ export function Codecs() {
             <b style={{ color: 'var(--text)' }}>Innermost layer</b>
             <span>{inner ? (innerIsJson ? 'JSON: edit it, or click a key in the tree to target it' : 'text') : ''}</span>
             <span style={{ flex: 1 }} />
+            {innerIsJson && (
+              <label className="check" title="Fields that hold more encoded JSON (a JSON string, base64 of JSON, url-encoded...) open up in place, and go back encoded the same way">
+                <input type="checkbox" checked={deep} onChange={(e) => void toggleDeep(e.target.checked)} /> Expand nested JSON
+              </label>
+            )}
             <TokenPicker onPick={insertToken} />
           </div>
           <div className="codec-edit-split">
@@ -402,20 +486,36 @@ export function Codecs() {
               </div>
             )}
           </div>
+          {innerIsJson && nestedFields.length > 0 && (
+            <div className="nested-fields" data-testid="nested-fields" aria-label="Expanded fields">
+              <span className="muted">Expanded in place, re-encoded on the way out:</span>
+              {nestedFields.map((f) => (
+                <span key={f.path} className="chain-step" data-testid="nested-field">
+                  <span className="mono">{f.path}</span>
+                  <span className="faint mono">{f.chain.join(' > ')}</span>
+                  <button className="link-btn" onClick={() => setRuleDraft({ field: f.path, chain: f.chain })} title="Save a field codec, so the Inspector and Replay decode this field by themselves">
+                    always decode
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           {nested && (
             <div className="nested-edit" aria-label="Nested value">
               <div className="sec-head">
                 <b style={{ color: 'var(--text)' }}>{formatPath(nested.path)}</b>
                 <span className="mono">{nested.chain.join(' > ')}</span>
+                <span className="faint">edits go back into the field as you type</span>
                 <span style={{ flex: 1 }} />
-                <button className="btn small primary" onClick={() => void putNestedBack()}>
-                  Put back
+                <button className="btn small" onClick={() => setRuleDraft({ field: formatPath(nested.path), chain: nested.chain })} title="Save a field codec, so the Inspector and Replay decode this field by themselves">
+                  Always decode this field…
                 </button>
-                <button className="btn small" onClick={() => setNested(null)}>
-                  Cancel
+                <button className="btn small" onClick={() => (setNested(null), setNestedError(null))}>
+                  Done
                 </button>
               </div>
-              <textarea className="editor" aria-label="Decoded nested value" spellCheck={false} value={nested.text} onChange={(e) => setNested({ ...nested, text: e.target.value })} rows={8} />
+              {nestedError && <div className="faint" role="status">{nestedError}</div>}
+              <textarea className="editor" aria-label="Decoded nested value" spellCheck={false} value={nested.text} onChange={(e) => void editNested(e.target.value)} rows={8} />
             </div>
           )}
           {innerIsJson && (
@@ -467,40 +567,38 @@ export function Codecs() {
         <section className="card codec-output">
           <div className="sec-head">
             <b style={{ color: 'var(--text)' }}>Result</b>
-            <span>Re-encoded through the chain, innermost last.</span>
+            <span>{sourceSynced ? `Re-encoded as you edit, and written back into ${label}.` : 'Re-encoded as you edit, through every layer.'}</span>
             <span style={{ flex: 1 }} />
-            <button className="btn small primary" onClick={() => void encodeEdit()} disabled={!inner}>
-              Encode
-            </button>
             <button className="btn small" disabled={result === null} onClick={() => navigator.clipboard.writeText(result ?? '').then(() => notify('Copied'), () => notify('Could not copy'))}>
               Copy
             </button>
+            {returnTo && (
+              <label className="check" title={`Write each change back into ${label} as you make it`}>
+                <input type="checkbox" checked={sync} onChange={(e) => setSync(e.target.checked)} /> Keep {label} updated
+              </label>
+            )}
             {returnTo && (
               <button
                 className="btn small"
                 disabled={result === null}
                 onClick={() => {
                   returnTo(result ?? '');
-                  notify(`Put back into ${label}`);
+                  if (!sync) notify(`Put back into ${label}`);
                 }}
               >
-                Put back into {label}
+                {sync ? `Back to ${label}` : `Put back into ${label}`}
               </button>
             )}
-            <button
-              className="btn small"
-              disabled={result === null}
-              title="Open a new Replay tab with this as the body"
-              onClick={() => openDraft({ method: 'POST', url: 'http://localhost/', headers: [['Content-Type', 'text/plain']], body: result ?? '' }, 'from Codecs')}
-            >
-              New replay with this body
-            </button>
+            <ReplayButton disabled={result === null} title="Open in Replay as a new request with this as the body" label="from Codecs" draft={{ method: 'POST', url: 'http://localhost/', headers: [['Content-Type', 'text/plain']], body: result ?? '' }}>
+              Send to Replay as body
+            </ReplayButton>
           </div>
           <pre className="raw" aria-label="Encoded result">
-            {result ?? <span className="faint">Edited. Press Encode to rebuild the outer value.</span>}
+            {encodeError ? <span className="faint" role="status">{encodeError}</span> : (result ?? <span className="faint">Encoding…</span>)}
           </pre>
         </section>
       </div>
+      <FieldCodecRules draft={ruleDraft} onDraftDone={() => setRuleDraft(null)} />
     </div>
   );
 }

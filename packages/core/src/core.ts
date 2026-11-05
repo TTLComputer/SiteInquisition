@@ -15,6 +15,7 @@ import { newId } from './ids.js';
 
 export { VERSION } from './version.js';
 import { VERSION } from './version.js';
+import { UpstreamTlsSettings } from './upstreamtls.js';
 
 export interface CoreOptions {
   /** Folder holding project.sqlite. Created if missing. */
@@ -104,6 +105,8 @@ export class Core {
   readonly secrets: SecretBox | undefined;
   private disk?: DiskEncryption;
   readonly tools: PowerTools;
+  /** How upstream server certificates are checked (trusted self-signed certs, hosts that skip checks). */
+  readonly upstreamTls: UpstreamTlsSettings;
 
   private constructor(
     private readonly opts: CoreOptions,
@@ -113,6 +116,8 @@ export class Core {
     this.dataDir = resolve(opts.dataDir ?? defaultDataDir());
     this.secrets = SecretBox.open(opts.keyring === undefined ? defaultKeyring() : opts.keyring);
     this.store = CaptureStore.openProject(this.projectDir, { ...opts.store, actor: opts.actor });
+    // The --insecure-upstream flag stays the proxy's own; this is the saved setting every sender uses.
+    this.upstreamTls = new UpstreamTlsSettings(this.store);
     this.scope = new Scope(this.store.getMeta<ScopeConfig>('scope') ?? DEFAULT_SCOPE);
     const saved = this.store.getMeta<string[]>('lanAllow') ?? [];
     this.lan = new LanGate(!!opts.proxy?.allowLan || !!opts.mqtt?.some((m) => m.allowLan), [...saved, ...(opts.proxy?.lanAllow ?? [])]);

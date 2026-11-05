@@ -122,7 +122,7 @@ describe('schema migration', () => {
     const cols = (store.db.prepare('PRAGMA table_info(stream_message)').all() as Array<{ name: string }>).map((c) => c.name);
     expect(cols).toContain('meta');
     expect((store.db.prepare('PRAGMA table_info(exchange)').all() as Array<{ name: string }>).map((c) => c.name)).toContain('replay_of');
-    expect((store.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string }).value).toBe('3');
+    expect((store.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string }).value).toBe('4');
   });
 
   it('refuses projects from a newer version', () => {
@@ -137,6 +137,6 @@ describe('compileQuery', () => {
     expect(() => compileQuery('status:abc')).toThrow(/invalid status/);
   });
   it('treats unknown keys as text', () => {
-    expect(compileQuery('foo:bar').match).toBe('"foo:bar"');
+    expect(compileQuery('foo:bar').text).toEqual([{ value: 'foo:bar', in: ['url', 'req_headers', 'req_body', 'res_headers', 'res_body'], negate: false }]);
   });
 });

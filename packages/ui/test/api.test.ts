@@ -99,10 +99,18 @@ describe.skipIf(!ready)('API understanding in the renderer', () => {
   it('moves a reference tag from the History menu and resolves {{$tag.field}} in Replay', async () => {
     await nav('History');
     await page.locator('.row', { hasText: '/api/orders/PO-7781' }).first().click({ button: 'right' });
-    await page.getByRole('menuitem', { name: /Move a reference tag here/ }).click();
+    await page.getByRole('menuitem', { name: /Set reference tag \(create or move\)/ }).click();
     await page.getByLabel('Reference tag').fill('order');
-    await page.getByRole('button', { name: 'Move here' }).click();
+    await expect.poll(() => page.getByTestId('tag-hint').textContent()).toContain('Creates "order"');
+    await page.getByRole('button', { name: 'Create tag' }).click();
     await expect.poll(() => h.core.store.search('tag:order').length).toBe(1);
+    // An existing name moves the tag instead, and the menu says so.
+    await page.locator('.row', { hasText: '/api/cart' }).first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: /Set reference tag/ }).click();
+    await page.getByLabel('Reference tag').fill('order');
+    await expect.poll(() => page.getByTestId('tag-hint').textContent()).toContain('moves to this one');
+    await expect.poll(() => page.getByRole('button', { name: 'Move here' }).count()).toBe(1);
+    await page.keyboard.press('Escape');
     await page.locator('.row', { hasText: '/api/cart' }).first().click();
     await page.keyboard.press('Control+r');
     const editor = page.getByLabel('Raw request');
@@ -162,7 +170,7 @@ describe.skipIf(!ready)('API understanding in the renderer', () => {
     // Opening a documented endpoint fills its path parameter with a real order number from History.
     await nav('API');
     await page.getByRole('tab', { name: 'API files' }).click();
-    await page.locator('.spec-card tr', { hasText: '/api/orders/{orderId}' }).getByRole('button', { name: 'Open in Replay' }).click();
+    await page.locator('.spec-card tr', { hasText: '/api/orders/{orderId}' }).getByRole('button', { name: 'Send to Replay' }).click();
     const editor = page.getByLabel('Raw request').last();
     await expect.poll(() => editor.inputValue()).toContain(`${base}/api/orders/PO-7781`);
   });

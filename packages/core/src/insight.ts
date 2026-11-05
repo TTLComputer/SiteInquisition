@@ -227,6 +227,17 @@ export interface GlossaryEntry {
   format?: string;
   /** Where it appears: "GET /api/orders/{ref} $.status". */
   seenIn: string[];
+  /** The same places with the exchanges that carried the field, newest first (up to 20 each). */
+  sources: GlossarySource[];
+}
+
+export interface GlossarySource {
+  /** "GET /api/orders/{ref} $.status", as in seenIn. */
+  where: string;
+  /** Exchanges this field was seen in at that place, newest first. */
+  exchangeIds: string[];
+  /** How many exchanges in all, when there were more than exchangeIds holds. */
+  count: number;
 }
 
 const FORMAT_TESTS: Array<[string, RegExp]> = [
@@ -240,7 +251,7 @@ const FORMAT_TESTS: Array<[string, RegExp]> = [
 
 export function glossary(store: CaptureStore, opts: { host?: string; limit?: number } = {}): GlossaryEntry[] {
   const rows = store.search(opts.host ? `host:${opts.host}` : '', { limit: opts.limit ?? 1500 });
-  type Acc = GlossaryEntry & { set: Set<string>; strings: string[] };
+  type Acc = GlossaryEntry & { set: Set<string>; strings: string[]; srcMap: Map<string, GlossarySource> };
   const map = new Map<string, Acc>();
   for (const e of rows) {
     if (e.isWebSocket || !e.resBodySize) continue;
@@ -257,13 +268,19 @@ export function glossary(store: CaptureStore, opts: { host?: string; limit?: num
       }
       if (!name) return;
       let a = map.get(name);
-      if (!a) map.set(name, (a = { name, types: [], nullable: false, count: 0, distinct: 0, seenIn: [], set: new Set(), strings: [] }));
+      if (!a) map.set(name, (a = { name, types: [], nullable: false, count: 0, distinct: 0, seenIn: [], sources: [], set: new Set(), strings: [], srcMap: new Map() }));
       a.count++;
       const t = v === null ? 'null' : Number.isInteger(v) ? 'integer' : typeof v;
       if (t === 'null') a.nullable = true;
       else if (!a.types.includes(t)) a.types.push(t);
       const loc = `${where} ${path}`;
       if (a.seenIn.length < 12 && !a.seenIn.includes(loc)) a.seenIn.push(loc);
+      let src = a.srcMap.get(loc);
+      if (!src && a.srcMap.size < 50) a.srcMap.set(loc, (src = { where: loc, exchangeIds: [], count: 0 }));
+      if (src && src.exchangeIds[src.exchangeIds.length - 1] !== e.id) {
+        src.count++;
+        if (src.exchangeIds.length < 20) src.exchangeIds.push(e.id);
+      }
       if (v === null) return;
       const s = String(v);
       if (a.set.size < 200) a.set.add(s);
@@ -279,8 +296,9 @@ export function glossary(store: CaptureStore, opts: { host?: string; limit?: num
     walk(json, '', '$', 0);
   }
   const out: GlossaryEntry[] = [];
-  for (const { set, strings, ...g } of map.values()) {
+  for (const { set, strings, srcMap, ...g } of map.values()) {
     g.distinct = set.size;
+    g.sources = [...srcMap.values()];
     if (g.types.length === 1 && g.types[0] === 'string' && set.size <= 8 && g.count >= 3 && set.size < g.count) g.values = [...set];
     if (g.types.length === 1 && g.types[0] === 'boolean') g.values = [...set];
     if (strings.length) g.format = FORMAT_TESTS.find(([, re]) => strings.every((x) => re.test(x)))?.[0];

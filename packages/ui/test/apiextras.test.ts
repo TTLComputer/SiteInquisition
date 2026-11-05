@@ -222,7 +222,7 @@ describe.skipIf(!ready)('API extras in the renderer', () => {
     await expect.poll(() => card.textContent()).toContain('schema from');
     expect(await card.textContent()).toContain('order');
     await shot('extras-graphql');
-    await card.locator('tr', { hasText: 'order' }).getByRole('button', { name: 'Open in Replay' }).click();
+    await card.locator('tr', { hasText: 'order' }).getByRole('button', { name: 'Send to Replay' }).click();
     const editor = page.getByLabel('Raw request').last();
     await expect.poll(() => editor.inputValue()).toContain(`POST ${g}/graphql`);
     expect(await editor.inputValue()).toContain('Authorization: Bearer preprod');

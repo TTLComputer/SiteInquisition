@@ -23,6 +23,14 @@ async function startUpstream() {
       if (req.url === '/old') {
         res.writeHead(302, { location: '/api/cart' });
         res.end();
+      } else if (req.url === '/api/blob' || req.url === '/api/blob-echo') {
+        // A JSON field that is base64 of more JSON, for field codecs.
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(req.method === 'POST' ? body : JSON.stringify({ id: 7, blob: Buffer.from(JSON.stringify({ secret: 'inner-value', level: 3 })).toString('base64') }));
+      } else if (req.url === '/app') {
+        // A page with no framework markers that hands out its CSRF token in a meta tag.
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end('<!doctype html><head><meta name="csrf-token" content="meta-token-1234567890"/></head><body>app</body>');
       } else if (req.url?.startsWith('/api/')) {
         const cookies = req.url === '/api/cart' ? { 'set-cookie': ['session=eyJ1c2VyIjoibmljayJ9; Path=/; HttpOnly', 'cart=42; Max-Age=600'] } : {};
         res.writeHead(200, { 'content-type': 'application/json', ...cookies });

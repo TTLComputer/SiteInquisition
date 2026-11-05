@@ -259,6 +259,61 @@ export function readCsrfSource(src: CsrfSource, res: { headers: HeaderList | nul
   return v;
 }
 
+/** A CSRF token an HTML page hands out, whatever the framework. */
+export interface PageToken {
+  source: CsrfSource;
+  value: string;
+  /** The form field name a page names in <meta name="csrf-param"> (Rails and friends). */
+  param?: string;
+}
+
+const NOT_A_TOKEN_META = /param|csp|policy|referrer|viewport/i;
+
+/**
+ * CSRF tokens in a page: `<meta name="csrf-token" content="...">` and the
+ * like, and hidden form fields with a CSRF-looking name.
+ */
+export function pageCsrfTokens(html: string): PageToken[] {
+  const out: PageToken[] = [];
+  const metas = htmlTags(html, 'meta');
+  const param = metas.find((a) => (a.name ?? '').toLowerCase() === 'csrf-param')?.content;
+  const seen = new Set<string>();
+  for (const a of metas) {
+    const name = a.name ?? a.property ?? '';
+    const value = a.content ?? '';
+    if (!name || value.length < 8 || NOT_A_TOKEN_META.test(name) || !GENERIC_CSRF_NAME.test(name)) continue;
+    const key = `meta:${name.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ source: { from: 'meta', name }, value, ...(param ? { param } : {}) });
+  }
+  for (const a of htmlTags(html, 'input')) {
+    const name = a.name ?? '';
+    const value = a.value ?? '';
+    if (!name || value.length < 8 || (a.type ?? '').toLowerCase() !== 'hidden' || !GENERIC_CSRF_NAME.test(name)) continue;
+    const key = `input:${name.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ source: { from: 'input', name }, value });
+  }
+  return out;
+}
+
+/** The host glob that covers two hosts of one site (www.example.com and api.example.com give *.example.com). */
+export function sharedHostGlob(a: string, b: string): string | undefined {
+  const x = a.toLowerCase().split('.');
+  const y = b.toLowerCase().split('.');
+  if (x.join('.') === y.join('.')) return x.join('.');
+  const common: string[] = [];
+  while (x.length && y.length && x[x.length - 1] === y[y.length - 1]) {
+    common.unshift(x.pop()!);
+    y.pop();
+  }
+  // Two labels at least, and not just a public suffix like co.uk.
+  if (common.length < 2 || (common.length === 2 && common[0]!.length <= 3 && common[1]!.length === 2)) return undefined;
+  return `*.${common.join('.')}`;
+}
+
 // ---------- user settings ----------
 
 export interface TechOverride {
@@ -325,12 +380,42 @@ export interface CsrfFinding {
   source?: CsrfSource;
   sourceExchangeId?: string;
   /** How the source was worked out. */
-  how: 'cookie-echo' | 'value-match' | 'framework-pattern' | 'unknown';
+  how: 'cookie-echo' | 'value-match' | 'page-token' | 'framework-pattern' | 'unknown';
   tech?: string;
   /** An existing binding that already keeps this sink fresh. */
   bindingId?: string;
   /** A ready-made binding to save. */
   suggestion?: Omit<CsrfBinding, 'id'>;
+}
+
+/** A CSRF token found in a recorded page, with a binding that would keep it fresh. */
+export interface PageCsrfToken extends PageToken {
+  host: string;
+  exchangeId: string;
+  url: string;
+  at: number;
+  /** An existing binding that already reads this token. */
+  bindingId?: string;
+  suggestion?: Omit<CsrfBinding, 'id'>;
+}
+
+/** One technology across every host it was seen on. */
+export interface TechOverviewEntry {
+  id: string;
+  name: string;
+  category: TechCategory;
+  vendor?: string;
+  docs?: string;
+  /** The strongest status on any host. */
+  status: EffectiveTech['status'];
+  confidence: number;
+  hosts: Array<{ host: string; status: EffectiveTech['status']; confidence: number; evidence: string[]; sampleId: string | null; hits: number; lastAt: number | null; impliedBy?: string }>;
+}
+
+export interface TechOverview {
+  tech: TechOverviewEntry[];
+  hosts: string[];
+  csrf: PageCsrfToken[];
 }
 
 export const DETECTED_THRESHOLD = 0.5;
@@ -584,6 +669,129 @@ export class TechService {
     }));
   }
 
+  /** Every technology across all captured traffic, with the hosts and requests that show it. */
+  overview(): TechOverview {
+    const rows = this.store.hostTech();
+    const byHost = new Map<string, typeof rows>();
+    for (const r of rows) byHost.set(r.host, [...(byHost.get(r.host) ?? []), r]);
+    const hosts = new Set([...byHost.keys(), ...(this.overrides().some((o) => o.action === 'pin') ? this.store.hosts().map((x) => x.toLowerCase()) : [])]);
+    const rank: Record<EffectiveTech['status'], number> = { pinned: 0, detected: 1, implied: 2, possible: 3 };
+    const out = new Map<string, TechOverviewEntry>();
+    for (const host of hosts) {
+      const raw = new Map((byHost.get(host) ?? []).map((r) => [r.tech, r]));
+      for (const t of this.hostReport(host, byHost.get(host) ?? []).tech) {
+        const sig = this.byId.get(t.id);
+        let e = out.get(t.id);
+        if (!e) out.set(t.id, (e = { id: t.id, name: t.name, category: t.category, ...(sig?.vendor ? { vendor: sig.vendor } : {}), ...(t.docs ? { docs: t.docs } : {}), status: t.status, confidence: t.confidence, hosts: [] }));
+        if (rank[t.status] < rank[e.status]) e.status = t.status;
+        e.confidence = Math.max(e.confidence, t.confidence);
+        const r = raw.get(t.id);
+        e.hosts.push({ host, status: t.status, confidence: t.confidence, evidence: t.evidence, sampleId: t.sampleId ?? null, hits: r?.hits ?? 0, lastAt: r?.lastAt ?? null, ...(t.impliedBy ? { impliedBy: t.impliedBy } : {}) });
+      }
+    }
+    const tech = [...out.values()];
+    for (const t of tech) t.hosts.sort((a, b) => rank[a.status] - rank[b.status] || b.hits - a.hits || a.host.localeCompare(b.host));
+    tech.sort((a, b) => rank[a.status] - rank[b.status] || CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category) || a.name.localeCompare(b.name));
+    return { tech, hosts: [...hosts].sort(), csrf: this.pageTokens() };
+  }
+
+  /**
+   * CSRF tokens recorded pages hand out (a `<meta name="csrf-token">` and
+   * the like), newest per host and name, each with a binding to keep it fresh.
+   */
+  pageTokens(opts: { host?: string; limit?: number } = {}, describe = true): PageCsrfToken[] {
+    const seenIds = new Set<string>();
+    const found = new Map<string, PageCsrfToken>();
+    const scope = opts.host ? `host:${opts.host} ` : '';
+    let parsed = 0;
+    for (const word of ['csrf', 'xsrf', 'authenticity', 'requestverificationtoken', 'csrfmiddlewaretoken', 'antiforgery']) {
+      let list: Array<{ id: string }> = [];
+      try {
+        list = this.store.search(`${scope}"${word}"`, { limit: opts.limit ?? 200 });
+      } catch {
+        continue;
+      }
+      for (const { id } of list) {
+        if (seenIds.has(id) || parsed > 400) continue;
+        seenIds.add(id);
+        const ex = this.store.getExchange(id);
+        if (!ex?.responseHeaders) continue;
+        const ct = ex.responseHeaders.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '';
+        if (!/html/i.test(ct)) continue;
+        parsed++;
+        const body = this.text(ex, 'response', 1024 * 1024);
+        if (!body) continue;
+        for (const t of pageCsrfTokens(body)) {
+          const key = `${ex.host.toLowerCase()} ${t.source.from}:${t.source.name.toLowerCase()}`;
+          const prev = found.get(key);
+          if (prev && prev.exchangeId > ex.id) continue;
+          found.set(key, { ...t, host: ex.host.toLowerCase(), exchangeId: ex.id, url: ex.url, at: ex.startedAt });
+        }
+      }
+    }
+    const list = [...found.values()].sort((a, b) => a.host.localeCompare(b.host) || b.at - a.at);
+    if (describe) for (const t of list) this.describePageToken(t);
+    return list;
+  }
+
+  /** Attach the binding that reads a page token, or a suggestion for one. */
+  private describePageToken(t: PageCsrfToken) {
+    const bound = this.bindingsFor(t.host).find((b) => b.source.from === t.source.from && b.source.name.toLowerCase() === t.source.name.toLowerCase());
+    if (bound) {
+      t.bindingId = bound.id;
+      return;
+    }
+    // Where later requests sent this value, if any did; otherwise where this kind of token usually goes.
+    const sinks: CsrfSink[] = [];
+    let host = t.host;
+    const piece = t.value.split(/[^A-Za-z0-9]+/).sort((a, b) => b.length - a.length)[0] ?? '';
+    if (piece.length >= 6) {
+      try {
+        for (const s of this.store.search(`"${piece}"`, { limit: 10, order: 'oldest', before: t.exchangeId })) {
+          const glob = sharedHostGlob(t.host, s.host);
+          if (!glob) continue;
+          for (const f of this.csrfFindings(s.id)) {
+            if (f.value !== t.value || sinks.some((x) => x.in === f.sink.in && x.name.toLowerCase() === f.sink.name.toLowerCase())) continue;
+            sinks.push(f.sink);
+            if (glob !== host && !host.startsWith('*.')) host = glob;
+          }
+        }
+      } catch {
+        // search is best effort
+      }
+    }
+    if (!sinks.length) {
+      const pattern = [...this.byId.values()].flatMap((s) => s.csrf ?? []).find((p) => p.source.from === t.source.from && p.source.name.toLowerCase() === t.source.name.toLowerCase());
+      if (pattern) sinks.push(...pattern.sinks);
+      else if (t.source.from === 'input') sinks.push({ in: 'form', name: t.source.name });
+      else sinks.push({ in: 'header', name: 'X-CSRF-Token' });
+      if (t.param && !sinks.some((x) => x.in === 'form' && x.name === t.param)) sinks.push({ in: 'form', name: t.param });
+    }
+    const src = this.store.getSummary(t.exchangeId);
+    t.suggestion = {
+      host,
+      varName: this.freeVarName(t.host),
+      source: t.source,
+      sinks,
+      ...(src && SAFE_METHODS.has(src.method) && src.status !== null && src.status < 400 ? { refreshUrl: src.url } : {}),
+    };
+  }
+
+  /** CSRF tokens in one exchange's response page. */
+  exchangePageTokens(exchangeId: string): PageCsrfToken[] {
+    const ex = this.store.getExchange(exchangeId);
+    if (!ex?.responseHeaders) return [];
+    const ct = ex.responseHeaders.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '';
+    if (!/html/i.test(ct)) return [];
+    const body = this.text(ex, 'response', 1024 * 1024);
+    if (!body) return [];
+    return pageCsrfTokens(body).map((t) => {
+      const out: PageCsrfToken = { ...t, host: ex.host.toLowerCase(), exchangeId: ex.id, url: ex.url, at: ex.startedAt };
+      this.describePageToken(out);
+      return out;
+    });
+  }
+
   /** Hosts running a technology (by id, or by name ignoring case), for `tech:` searches. */
   hostsWith(tech: string): string[] {
     const want = tech.toLowerCase();
@@ -682,6 +890,7 @@ export class TechService {
     const sentCookies = exchangeCookies(ex.requestHeaders, null);
     const bindings = this.bindingsFor(ex.host);
     const out: CsrfFinding[] = [];
+    let pageTokens: PageCsrfToken[] | undefined;
     for (const { sink, value } of candidates) {
       const finding: CsrfFinding = { sink, value, how: 'unknown' };
       const bound = bindings.find((b) => b.sinks.some((s) => s.in === sink.in && s.name.toLowerCase() === sink.name.toLowerCase()));
@@ -695,16 +904,27 @@ export class TechService {
         finding.source = { from: 'cookie', name: echo.name, ...(echo.value !== value ? { urlDecode: true } : {}) };
         finding.how = 'cookie-echo';
       }
-      // 2. Find the response that handed this value out.
+      // 2. Find the response that handed this value out (on this host, or another host of the same site).
+      let bindHost = ex.host.toLowerCase();
       if (!finding.source) {
         const found = this.findValueSource(ex, value);
         if (found) {
           finding.source = found.source;
           finding.sourceExchangeId = found.exchangeId;
           finding.how = 'value-match';
+          if (found.host) bindHost = found.host;
         }
       }
-      // 3. Fall back to what the framework normally does.
+      // 3. A page on this host hands out a token in <meta name="csrf-token"> or a hidden field, though not this value (it rotated).
+      if (!finding.source && (pageTokens ??= this.pageTokens({ host: ex.host, limit: 30 }, false)).length) {
+        const t = pageTokens.find((p) => p.source.from === 'input' && sink.in === 'form' && p.source.name.toLowerCase() === sink.name.toLowerCase()) ?? (sink.in !== 'form' || pageTokens.some((p) => p.param === sink.name) ? pageTokens.find((p) => p.source.from === 'meta') : undefined);
+        if (t) {
+          finding.source = t.source;
+          finding.sourceExchangeId = t.exchangeId;
+          finding.how = 'page-token';
+        }
+      }
+      // 4. Fall back to what the framework normally does.
       if (!finding.source && pattern) {
         finding.source = pattern.source;
         finding.how = 'framework-pattern';
@@ -712,7 +932,7 @@ export class TechService {
       if (finding.source && !bound) {
         const srcEx = finding.sourceExchangeId ? this.store.getSummary(finding.sourceExchangeId) : undefined;
         finding.suggestion = {
-          host: ex.host.toLowerCase(),
+          host: bindHost,
           varName: this.freeVarName(ex.host),
           source: finding.source,
           sinks: [sink],
@@ -732,16 +952,27 @@ export class TechService {
     for (let i = 2; ; i++) if (!taken.has(`${base}.${i}`)) return `${base}.${i}`;
   }
 
-  private findValueSource(ex: Exchange, value: string): { source: CsrfSource; exchangeId: string } | undefined {
+  private findValueSource(ex: Exchange, value: string): { source: CsrfSource; exchangeId: string; host?: string } | undefined {
+    const same = this.findValueSourceIn(ex, value, `host:${ex.host}`);
+    if (same) return same;
+    // A page on www.example.com may hand out the token that requests to api.example.com carry.
+    const other = this.findValueSourceIn(ex, value, `-host:${ex.host}`);
+    if (!other) return undefined;
+    const glob = sharedHostGlob(ex.host, this.store.getSummary(other.exchangeId)?.host ?? '');
+    return glob ? { ...other, host: glob } : undefined;
+  }
+
+  private findValueSourceIn(ex: Exchange, value: string, scope: string): { source: CsrfSource; exchangeId: string } | undefined {
     // Search on the longest plain run of the token: HTML may carry the rest escaped (&#43; for +).
     const piece = value.split(/[^A-Za-z0-9]+/).sort((a, b) => b.length - a.length)[0] ?? '';
     if (piece.length < 6) return undefined;
-    let hits: Array<{ id: string }> = [];
+    let hits: Array<{ id: string; host: string }> = [];
     try {
-      hits = this.store.search(`host:${ex.host} "${piece}"`, { limit: 25, before: ex.id });
+      hits = this.store.search(`${scope} "${piece}"`, { limit: 25, before: ex.id });
     } catch {
       return undefined;
     }
+    if (scope.startsWith('-')) hits = hits.filter((h) => sharedHostGlob(ex.host, h.host));
     for (const s of hits) {
       const r = this.store.getExchange(s.id);
       if (!r?.responseHeaders) continue;

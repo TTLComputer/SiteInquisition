@@ -128,7 +128,7 @@ export interface StoreOptions {
   maxIndexBytes?: number;
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 /** Selects the error kinds recognized in an exchange's response as one column. */
 const ERRS = '(SELECT group_concat(DISTINCT x.kind) FROM exchange_error x WHERE x.exchange_id = e.id) AS errs';
@@ -250,8 +250,9 @@ CREATE TABLE IF NOT EXISTS exchange_error (
   PRIMARY KEY (exchange_id, sig)
 );
 CREATE INDEX IF NOT EXISTS exchange_error_kind ON exchange_error(kind);
-CREATE VIRTUAL TABLE IF NOT EXISTS exchange_fts USING fts5(
-  exchange_id UNINDEXED, url, headers, body, tokenize = 'unicode61'
+-- Searchable text, per side. Trigrams match any part of a word (ids, tokens, "csrf_tok"), case-insensitively.
+CREATE VIRTUAL TABLE IF NOT EXISTS exchange_text USING fts5(
+  exchange_id UNINDEXED, url, req_headers, req_body, res_headers, res_body, tokenize = 'trigram'
 );
 `;
 
@@ -396,9 +397,31 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     if (version < 2 && !hasColumn('stream_message', 'meta')) this.db.exec('ALTER TABLE stream_message ADD COLUMN meta TEXT');
     if (version < 3 && !hasColumn('exchange', 'replay_of')) this.db.exec('ALTER TABLE exchange ADD COLUMN replay_of TEXT');
     this.db.exec('CREATE INDEX IF NOT EXISTS exchange_replay_of ON exchange(replay_of)');
+    if (version < 4) this.reindexText();
     this.db
       .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run(String(SCHEMA_VERSION));
+  }
+
+  /** Build the search text for every exchange again (the move to per-side trigram search). */
+  private reindexText(): void {
+    this.tx(() => {
+      this.db.exec('DROP TABLE IF EXISTS exchange_fts; DELETE FROM exchange_text;');
+      const ins = this.db.prepare('INSERT INTO exchange_text (exchange_id, url, req_headers, req_body, res_headers, res_body) VALUES (?, ?, ?, ?, ?, ?)');
+      type Row = { id: string; url: string; req_headers: string; req_body: string | null; res_headers: string | null; res_body: string | null };
+      for (const r of this.db.prepare('SELECT id, url, req_headers, req_body, res_headers, res_body FROM exchange').iterate() as Iterable<Row>) {
+        const reqH = JSON.parse(r.req_headers) as HeaderList;
+        const resH = JSON.parse(r.res_headers ?? '[]') as HeaderList;
+        ins.run(
+          r.id,
+          r.url,
+          headersText(reqH),
+          this.indexText(r.req_body ? this.getBlob(r.req_body) : undefined, reqH),
+          headersText(resH),
+          this.indexText(r.res_body ? this.getBlob(r.res_body) : undefined, resH),
+        );
+      }
+    });
   }
 
   // ---------- meta ----------
@@ -544,7 +567,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
         this.q("UPDATE flow SET kind = 'redirect' WHERE id = ? AND kind = 'single'").run(flowId);
       }
       this.db
-        .prepare('INSERT INTO exchange_fts (exchange_id, url, headers, body) VALUES (?, ?, ?, ?)')
+        .prepare("INSERT INTO exchange_text (exchange_id, url, req_headers, req_body, res_headers, res_body) VALUES (?, ?, ?, ?, '', '')")
         .run(id, url.href, headersText(req.headers), this.indexText(req.body, req.headers));
       const summary = this.getSummary(id)!;
       this.recordChange('exchange.request', 'exchange', id, summary);
@@ -562,13 +585,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
         )
         .run(res.status, res.statusMessage ?? null, JSON.stringify(res.headers), body?.sha ?? null, body?.size ?? 0, body?.truncated ? 1 : 0, JSON.stringify(res.timings ?? {}), id);
       if (info.changes === 0) throw new Error(`no exchange ${id}`);
-      const resText = this.indexText(res.body, res.headers);
-      const ftsRow = this.q('SELECT rowid, headers, body FROM exchange_fts WHERE exchange_id = ?').get(id) as unknown as { rowid: number; headers: string; body: string } | undefined;
-      if (ftsRow) {
-        this.db
-          .prepare('UPDATE exchange_fts SET headers = ?, body = ? WHERE rowid = ?')
-          .run(`${ftsRow.headers}\n${headersText(res.headers)}`, [ftsRow.body, resText].filter(Boolean).join('\n'), ftsRow.rowid);
-      }
+      this.q('UPDATE exchange_text SET res_headers = ?, res_body = ? WHERE exchange_id = ?').run(headersText(res.headers), this.indexText(res.body, res.headers), id);
       const summary = this.getSummary(id)!;
       this.recordChange('exchange.response', 'exchange', id, summary);
       return summary;
@@ -659,10 +676,6 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     const q = compileQuery(query, { techHosts: this.techHosts });
     const where = [...q.where];
     const params = [...q.params];
-    if (q.match) {
-      where.push('e.id IN (SELECT exchange_id FROM exchange_fts WHERE exchange_fts MATCH ?)');
-      params.push(q.match);
-    }
     const newest = (opts.order ?? 'newest') === 'newest';
     if (opts.before) {
       where.push(newest ? 'e.id < ?' : 'e.id > ?');
@@ -671,6 +684,18 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     const sql = `SELECT e.*, ${ERRS} FROM exchange e ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY e.id ${newest ? 'DESC' : 'ASC'} LIMIT ?`;
     params.push(Math.min(Math.max(opts.limit ?? 100, 1), 10_000));
     return (this.q(sql).all(...(params as SQLInputValue[])) as unknown as ExchangeRow[]).map(toSummary);
+  }
+
+  /** How many exchanges a search matches, counting up to `max`. */
+  count(query = '', max = 100_000): number {
+    const q = compileQuery(query, { techHosts: this.techHosts });
+    const sql = `SELECT COUNT(*) AS n FROM (SELECT 1 FROM exchange e ${q.where.length ? `WHERE ${q.where.join(' AND ')}` : ''} LIMIT ?)`;
+    return (this.q(sql).get(...(q.params as SQLInputValue[]), max) as unknown as { n: number }).n;
+  }
+
+  /** Every tag in use, with how many exchanges carry it, most used first. */
+  tagCounts(limit = 500): Array<{ tag: string; count: number; newestId: string }> {
+    return this.q('SELECT j.value AS tag, COUNT(*) AS count, MAX(e.id) AS newestId FROM exchange e, json_each(e.tags) j GROUP BY j.value ORDER BY count DESC, tag LIMIT ?').all(limit) as unknown as Array<{ tag: string; count: number; newestId: string }>;
   }
 
   /** Every exchange in a flow (a redirect chain or a replay batch), in order. */
@@ -791,7 +816,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
         this.db.prepare(`DELETE FROM stream_message WHERE stream_id IN (SELECT id FROM stream WHERE exchange_id IN (${marks}))`).run(...part);
         this.db.prepare(`DELETE FROM stream WHERE exchange_id IN (${marks})`).run(...part);
         this.db.prepare(`DELETE FROM exchange_error WHERE exchange_id IN (${marks})`).run(...part);
-        this.db.prepare(`DELETE FROM exchange_fts WHERE exchange_id IN (${marks})`).run(...part);
+        this.db.prepare(`DELETE FROM exchange_text WHERE exchange_id IN (${marks})`).run(...part);
         this.db.prepare(`DELETE FROM change WHERE entity = 'exchange' AND entity_id IN (${marks})`).run(...part);
         deleted += Number(this.db.prepare(`DELETE FROM exchange WHERE id IN (${marks})`).run(...part).changes);
       }
@@ -816,7 +841,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   clearTraffic(): number {
     const n = (this.q('SELECT COUNT(*) AS n FROM exchange').get() as unknown as { n: number }).n;
     this.tx(() => {
-      this.db.exec(`DELETE FROM stream_message; DELETE FROM stream; DELETE FROM exchange_error; DELETE FROM exchange_fts;
+      this.db.exec(`DELETE FROM stream_message; DELETE FROM stream; DELETE FROM exchange_error; DELETE FROM exchange_text;
         DELETE FROM change WHERE entity = 'exchange'; UPDATE exchange SET parent_id = NULL; DELETE FROM exchange; DELETE FROM flow;
         DELETE FROM blob; DELETE FROM tls_failure; DELETE FROM host_tech;`);
       this.recordChange('exchange.cleared', 'exchange', '*', { count: n });

@@ -3,6 +3,7 @@ import type { CoverageReport, SiteMapHost, SpecCoverage } from '../api';
 import { useApp } from '../state';
 import { fmtMs, fmtTime } from '../format';
 import { bodyText, templatePrefix } from '../actions';
+import { ReplayButton } from '../components/ReplayButton';
 
 const AUTH_HEADER = /^(authorization|cookie|x-api-key|api-key|apikey|x-auth-token|x-access-token|x-session-token)$/i;
 
@@ -235,25 +236,21 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                     <button className="btn small" title="Inspect one example, a successful one when there is one" onClick={() => select(e.exampleId)}>
                       Example
                     </button>{' '}
-                    <button className="btn small" title="Open the example in Replay" onClick={() => openReplayById(e.exampleId).catch((err: Error) => notify(err.message))}>
-                      Replay
-                    </button>
+                    <ReplayButton id={e.exampleId} compact />
                     {e.auth && !(e.auth.length === 1 && e.auth[0] === 'none') && (
                       <>
                         {' '}
-                        <button
-                          className="btn small"
+                        <ReplayButton
                           title="Open the example in Replay with its Authorization, Cookie and API key headers removed, to check whether the endpoint really needs them"
-                          onClick={() =>
-                            void (async () => {
-                              const ex = await client.get(e.exampleId);
-                              const body = ex.reqBodySize ? await bodyText(client, ex.id, 'request').catch(() => '') : '';
-                              openDraft({ method: ex.method, url: ex.url, headers: ex.requestHeaders.filter(([k]) => !AUTH_HEADER.test(k)), body }, `${e.method} ${e.template} without auth`);
-                            })().catch((err: Error) => notify(err.message))
-                          }
+                          label={`${e.method} ${e.template} without auth`}
+                          draft={async () => {
+                            const ex = await client.get(e.exampleId);
+                            const body = ex.reqBodySize ? await bodyText(client, ex.id, 'request').catch(() => '') : '';
+                            return { method: ex.method, url: ex.url, headers: ex.requestHeaders.filter(([k]) => !AUTH_HEADER.test(k)), body };
+                          }}
                         >
-                          Try without auth
-                        </button>
+                          Replay without auth
+                        </ReplayButton>
                       </>
                     )}
                   </td>
@@ -278,9 +275,7 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                       <td className="faint">{d.endpoint.summary}</td>
                       <td className="faint">{d.specName}</td>
                       <td>
-                        <button className="btn small" onClick={() => void tryDocumented(d.specId, d.endpoint.key)}>
-                          Try it
-                        </button>
+                        <ReplayButton build={() => tryDocumented(d.specId, d.endpoint.key)} title="Open in Replay with example values, real ids from History where it finds them" />
                       </td>
                     </tr>
                   ))}
@@ -306,13 +301,7 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                         <button className="btn small" onClick={() => select(u.foundIn)} title="Inspect the response that mentions it">
                           Where
                         </button>{' '}
-                        <button
-                          className="btn small"
-                          onClick={() => void tryPath(u.path)}
-                          title="Open a GET for it in Replay"
-                        >
-                          Try it
-                        </button>
+                        <ReplayButton build={() => tryPath(u.path)} title="Open a GET for it in Replay" />
                       </td>
                     </tr>
                   ))}

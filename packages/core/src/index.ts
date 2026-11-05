@@ -42,6 +42,8 @@ export * from './contract.js';
 export * from './exporters.js';
 export * from './graphql.js';
 export * from './insight.js';
+export * from './fieldcodecs.js';
+export * from './upstreamtls.js';
 export * from './probes.js';
 export { LanGate, parseRange, type LanPending } from './lan.js';
 export { SecretBox, SecretToolKeyring, DpapiKeyring, MemoryKeyring, bitlockerState, defaultKeyring, diskEncryption, type Keyring, type DiskEncryption } from './secrets.js';

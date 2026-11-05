@@ -1,3 +1,4 @@
+import { usePlacement } from '../components/placement';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { ExchangeSummary, HostTechSummary, SiteMapHost } from '../api';
 import { useApp } from '../state';
@@ -6,6 +7,8 @@ import { fmtMs, fmtSize, fmtTime, statusClass, statusText, toRawRequest, downloa
 import { bodyText, breakOn, mockFromExchange } from '../actions';
 import { Coverage } from './Coverage';
 import { Inspector } from './Inspector';
+import { QueryBuilder } from './QueryBuilder';
+import { ReplayButton } from '../components/ReplayButton';
 
 const replayName = (path: string) => {
   const last = (path.split('?')[0] ?? path).split('/').filter(Boolean).pop();
@@ -18,8 +21,8 @@ export const DRAG_TYPE = 'application/x-siq-exchange';
 
 const CHIPS: Array<{ label: string; query: string }> = [
   { label: 'All', query: '' },
-  { label: 'HTML', query: 'header:"text/html"' },
-  { label: 'XHR', query: 'header:"application/json"' },
+  { label: 'HTML', query: 'resheader:"content-type: text/html"' },
+  { label: 'XHR', query: 'resheader:"content-type: application/json"' },
   { label: 'WebSocket', query: 'ws:true' },
   { label: 'Errors', query: 'status:>=400' },
   { label: 'Server errors', query: 'error:any' },
@@ -101,11 +104,56 @@ interface MenuState {
   row: ExchangeSummary;
 }
 
+/** Name a reference tag: a new name creates it on this request, an existing one moves here. */
+function TagForm({ known, rowId, rowTags, value, onChange, onSubmit }: { known: Array<{ tag: string; count: number }>; rowId: string; rowTags: string[]; value: string; onChange(v: string): void; onSubmit(tag: string): void }) {
+  const t = value.trim();
+  const existing = known.find((k) => k.tag === t);
+  const onlyHere = !!existing && existing.count === 1 && rowTags.includes(t);
+  const others = existing ? existing.count - (rowTags.includes(t) ? 1 : 0) : 0;
+  return (
+    <form
+      className="menu-form tag-form"
+      data-row={rowId}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (t && !onlyHere) onSubmit(t);
+      }}
+    >
+      <div className="tag-form-row">
+        <input className="input mono" list="reference-tags" autoFocus placeholder="new or existing tag" value={value} onChange={(e) => onChange(e.target.value)} aria-label="Reference tag" onKeyDown={(e) => e.stopPropagation()} />
+        <datalist id="reference-tags">
+          {known.map((k) => (
+            <option key={k.tag} value={k.tag}>
+              {k.count === 1 ? 'on 1 request' : `on ${k.count} requests`}
+            </option>
+          ))}
+        </datalist>
+        <button className="btn small primary" type="submit" disabled={!t || onlyHere}>
+          {!t ? 'Set tag' : onlyHere ? 'Already here' : existing ? 'Move here' : 'Create tag'}
+        </button>
+      </div>
+      <div className="faint tag-form-hint" data-testid="tag-hint">
+        {!t
+          ? 'Type a new name to create a tag, or pick an existing one to move it here.'
+          : onlyHere
+            ? `"${t}" is already on this request.`
+            : existing
+              ? `"${t}" is on ${others === 1 ? 'another request' : `${others} other requests`}; it moves to this one.`
+              : `Creates "${t}" on this request. {{$${t}.field}} then reads from it.`}
+      </div>
+    </form>
+  );
+}
+
 function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): void; setQuery(q: string): void; query: string }) {
   const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select, flowPicks, setFlowPicks, openAt, compareMark, setCompareMark, sendToApi, selectedId } = useApp();
   const ref = useRef<HTMLDivElement>(null);
   const [tagging, setTagging] = useState(false);
   const [tagName, setTagName] = useState('');
+  const [knownTags, setKnownTags] = useState<Array<{ tag: string; count: number; newestId: string }>>([]);
+  useEffect(() => {
+    if (tagging) client.tags().then(setKnownTags, () => undefined);
+  }, [tagging, client]);
   useEffect(() => {
     ref.current?.querySelector('button')?.focus();
     const onDown = (e: MouseEvent) => {
@@ -124,15 +172,14 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
     Promise.resolve(fn()).catch((e: Error) => notify(e.message));
   };
   const { row } = menu;
-  const x = Math.min(menu.x, window.innerWidth - 280);
-  const y = Math.max(8, Math.min(menu.y, window.innerHeight - 480));
+  usePlacement(ref, { x: menu.x, y: menu.y }, true, { gap: 0 });
   return (
-    <div ref={ref} className="context-menu" role="menu" style={{ left: x, top: y }}>
+    <div ref={ref} className="context-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
       <button role="menuitem" onClick={run(() => openReplay(row))}>
-        Send to replay <kbd>Ctrl R</kbd>
+        Send to Replay <kbd>Ctrl R</kbd>
       </button>
       <button role="menuitem" onClick={run(() => openReplay(row, { refreshCookies: true }))}>
-        Send to replay, cookies from jar
+        Send to Replay with fresh cookies
       </button>
       <button role="menuitem" onClick={run(() => resendNow(row.id))}>
         {row.isWebSocket || row.scheme.startsWith('mqtt') ? 'Open in Streams' : 'Resend now'} <kbd>Ctrl Shift Enter</kbd>
@@ -205,26 +252,22 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
         </button>
       )}
       {tagging ? (
-        <form
-          className="menu-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const t = tagName.trim();
-            if (!t) return;
+        <TagForm
+          known={knownTags}
+          rowId={row.id}
+          rowTags={row.tags}
+          value={tagName}
+          onChange={setTagName}
+          onSubmit={(t) =>
             run(async () => {
               const moved = await client.moveTag(t, row.id);
-              notify(`Tag "${t}" is now on this request${moved.length ? `, moved from ${moved.length} other` : ''}. Use {{$${t}.field}} in requests.`);
-            })();
-          }}
-        >
-          <input className="input mono" autoFocus placeholder="tag name" value={tagName} onChange={(e) => setTagName(e.target.value)} aria-label="Reference tag" onKeyDown={(e) => e.stopPropagation()} />
-          <button className="btn small primary" type="submit">
-            Move here
-          </button>
-        </form>
+              notify(`${moved.length ? `Moved tag "${t}" here from ${moved.length} other ${moved.length === 1 ? 'request' : 'requests'}` : `Tagged this request "${t}"`}. Use {{$${t}.field}} in requests.`);
+            })()
+          }
+        />
       ) : (
-        <button role="menuitem" onClick={() => setTagging(true)} title="Put a tag on this request only; {{$tag.field}} tokens then read from it">
-          Move a reference tag here...
+        <button role="menuitem" onClick={() => setTagging(true)} title="Create a reference tag on this request, or move an existing one here. {{$tag.field}} tokens read from the request that has it.">
+          Set reference tag (create or move)...
         </button>
       )}
       {compareMark && compareMark !== row.id ? (
@@ -335,16 +378,7 @@ function Row({ row, selected, top, onSelect, onMenu }: { row: ExchangeSummary; s
           </span>
         ))}
       </span>
-      <button
-        className="pill"
-        title="Send to replay (Ctrl R)"
-        onClick={(e) => {
-          e.stopPropagation();
-          openReplay(row);
-        }}
-      >
-        <Icon name="replay" size={11} /> Replay
-      </button>
+      <ReplayButton exchange={row} compact className="pill" />
     </div>
   );
 }
@@ -544,7 +578,7 @@ export function History() {
             id="filter-input"
             value={draft}
             spellCheck={false}
-            placeholder='host:*.example.com method:POST status:>=400 "free text" -path:/static'
+            placeholder='Search text in requests and responses, or host:*.example.com status:>=400 resbody:"error"'
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') setQuery(draft);
@@ -562,6 +596,13 @@ export function History() {
             </button>
           )}
         </label>
+        <QueryBuilder
+          query={draft}
+          onSearch={(q) => {
+            setDraft(q);
+            setQuery(q);
+          }}
+        />
         <div className="segmented" role="group" aria-label="Quick filters">
           {CHIPS.map((c) => (
             <button key={c.label} className="seg" aria-pressed={activeChip === c} onClick={() => setQuery(c.query)} title={c.query || 'Everything recorded'}>

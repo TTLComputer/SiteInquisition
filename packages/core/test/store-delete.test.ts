@@ -37,7 +37,7 @@ describe('deleting traffic', () => {
     expect(store.search('host:a.test').map((e) => e.id)).toEqual([child.id]);
     expect(store.getExchange(child.id)!.parentId).toBeNull();
     expect(count('SELECT COUNT(*) AS n FROM stream_message')).toBe(0);
-    expect(count(`SELECT COUNT(*) AS n FROM exchange_fts WHERE exchange_id = '${a.id}'`)).toBe(0);
+    expect(count(`SELECT COUNT(*) AS n FROM exchange_text WHERE exchange_id = '${a.id}'`)).toBe(0);
     // b still uses the request body a had.
     expect(Buffer.from(store.getBody(b.id, 'request')!).toString()).toBe('shared');
     expect(store.deleteMatching('host:b.test')).toBe(1);

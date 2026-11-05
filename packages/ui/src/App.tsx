@@ -16,6 +16,7 @@ import { H3Lab } from './views/H3Lab';
 import { Streams } from './views/Streams';
 import { Scripts } from './views/Scripts';
 import { Api } from './views/Api';
+import { TechOverview } from './views/TechOverview';
 import { Aws, Macros, Variables } from './views/CookiesTools';
 import { ApprovalChip } from './views/Mcp';
 import { LanChip } from './views/Lan';
@@ -35,6 +36,7 @@ const NAV: Array<{ id: ViewId; label: string }> = [
   { id: 'streams', label: 'Streams' },
   { id: 'scripts', label: 'Scripts' },
   { id: 'api', label: 'API' },
+  { id: 'tech', label: 'Tech' },
   { id: 'settings', label: 'Settings' },
 ];
 
@@ -314,7 +316,7 @@ export function App() {
             </div>
           ))}
           {view === 'replay' && !activeReplay && (
-            <Placeholder title="Replay" text="Send a request here from History: the Replay pill on any row, Ctrl R, or the right-click menu." />
+            <Placeholder title="Replay" text="Send a request here with Send to Replay: the Replay pill on any History row, Ctrl R, the right-click menu, or the button in the Inspector, Timeline and API screens." />
           )}
           {view === 'browser' && <Browser />}
           {view === 'timeline' && <Timeline />}
@@ -325,6 +327,7 @@ export function App() {
           {view === 'streams' && <Streams />}
           {view === 'scripts' && <Scripts />}
           {view === 'api' && <Api />}
+          {view === 'tech' && <TechOverview />}
           {view === 'rules' && <Rules />}
           {view === 'settings' && <Settings />}
         </main>

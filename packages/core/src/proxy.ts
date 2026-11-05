@@ -7,6 +7,7 @@ import { H3Capture } from './quic/capture.js';
 import { LOOPBACK, type LanGate } from './lan.js';
 import type { HookMessage } from './rules.js';
 import { globToRegExp, type Scope } from './scope.js';
+import { skipsTlsChecks } from './upstreamtls.js';
 import type { PlanStep, SentStep } from './wsplan.js';
 import type { SeenHosts } from './seen.js';
 import type { CaptureStore, ExchangeSource, ExchangeSummary, HeaderList, Timings } from './store.js';
@@ -229,7 +230,7 @@ export class ProxyEngine extends EventEmitter<{
     const server = new Interceptor({
       issuer: leafIssuer(this.ca),
       shouldDecrypt: (host) => decrypt.some((re) => re.test(host)),
-      ignoreUpstreamTlsErrors: (host) => (ignoreHosts ? ignoreHosts.has(host.toLowerCase()) : ignore === true),
+      ignoreUpstreamTlsErrors: (host) => (ignoreHosts ? ignoreHosts.has(host.toLowerCase()) : ignore === true) || skipsTlsChecks(host),
       // Refuse other machines before any byte is read unless LAN access is on (this covers tunnels and TLS passthrough too).
       acceptClient: (socket) => this.acceptAddress(socket.remoteAddress, 'proxy'),
       hooks: this.interceptorHooks(),
@@ -245,7 +246,7 @@ export class ProxyEngine extends EventEmitter<{
       const h3 = new H3Capture({
         issuer: leafIssuer(this.ca),
         caCert: this.ca.cert,
-        ignoreUpstreamTlsErrors: (host) => (ignoreHosts ? ignoreHosts.has(host.toLowerCase()) : ignore === true),
+        ignoreUpstreamTlsErrors: (host) => (ignoreHosts ? ignoreHosts.has(host.toLowerCase()) : ignore === true) || skipsTlsChecks(host),
         hooks: this.interceptorHooks(),
         acceptClient: (address) => this.acceptAddress(address, 'http3'),
       });

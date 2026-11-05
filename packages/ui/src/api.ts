@@ -38,6 +38,10 @@ import type {
   H3PlanOptions,
   H3PlanRequest,
   H3PlanResult,
+  H2PlanOptions,
+  H2PlanRequest,
+  H2PlanResult,
+  LadderStep,
   ReplaceRule,
   RunResult,
   ScopeConfig,
@@ -470,6 +474,9 @@ export class CoreClient {
     this.call<H3PlanResult>('h3.run', { requests: requests.map((r) => ({ ...r, ...wire(r), body: undefined })), options });
   h3Tickets = () => this.call<Array<{ origin: string; receivedAt: number; maxEarlyData: number; lifetimeSec: number }>>('h3.tickets');
   h3ClearTickets = () => this.call<boolean>('h3.clearTickets');
+  h2Run = (requests: Array<Omit<H2PlanRequest, 'body'> & WireRequest>, options: H2PlanOptions) =>
+    this.call<H2PlanResult>('h2.run', { requests: requests.map((r) => ({ ...r, ...wire(r), body: undefined })), options });
+  protocolLadder = (url: string, ignoreTlsErrors = false) => this.call<LadderStep[]>('protocol.ladder', { url, ignoreTlsErrors });
   browserHttp3 = () => this.call<{ hosts: string[]; port: number | null }>('browser.http3');
   setBrowserHttp3Hosts = (hosts: string[]) => this.call<{ hosts: string[]; restartNeeded: boolean }>('browser.setHttp3Hosts', { hosts });
   liveStreams = () => this.call<{ mqtt: string[]; ws: string[]; wsProxied: string[] }>('stream.live');

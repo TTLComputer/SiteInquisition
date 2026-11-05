@@ -20,6 +20,8 @@ import { McpServer, type McpSettings, type ToolDef } from './mcp.js';
 import type { ProxyHooks } from './proxy.js';
 import { runRace, type RaceOptions, type RaceRequest } from './race.js';
 import { h3Tickets, runH3Plan, type H3PlanOptions, type H3PlanRequest } from './quic/plan.js';
+import { runH2Plan, type H2PlanOptions, type H2PlanRequest } from './h2/plan.js';
+import { protocolLadder as runProtocolLadder } from './h2/connect.js';
 import { applyRule, conditionsMatch, normalizeMock, normalizeReplaceRule, type HookMessage, type MockRule, type ReplaceRule, type RuleInput } from './rules.js';
 import { normalizeScript, ScriptEngine, type Script, type Sdk } from './scripts.js';
 import { TrustedScripts } from './trust.js';
@@ -683,9 +685,27 @@ export class PowerTools {
     return runRace(this.core.store, requests, opts);
   }
 
-  /** HTTP/3 stream plan (the HTTP/3 lab). */
+  /** HTTP/3 stream plan (the protocol lab). */
   h3Plan(rows: H3PlanRequest[], opts: H3PlanOptions) {
     return runH3Plan(this.core.store, rows, opts);
+  }
+
+  /** HTTP/2 stream plan (the protocol lab). */
+  h2Plan(rows: H2PlanRequest[], opts: H2PlanOptions) {
+    return runH2Plan(this.core.store, rows, opts);
+  }
+
+  /** Try every way of getting HTTP/2 (and HTTP/3) from a server and report which it accepts. */
+  protocolLadder(url: string, opts: { ignoreTlsErrors?: boolean } = {}) {
+    return runProtocolLadder(new URL(url), { ignoreTlsErrors: opts.ignoreTlsErrors, h3: async (u) => {
+      try {
+        const r = await runH3Plan(this.core.store, [{ method: 'GET', url: u.href, headers: [] }], { ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: 5000 });
+        const row = r.runs[0]!.rows[0]!;
+        return row.status !== null ? { ok: true, detail: `HTTP/3, status ${row.status}` } : { ok: false, detail: row.error ?? 'no response' };
+      } catch (e) {
+        return { ok: false, detail: (e as Error).message };
+      }
+    } });
   }
 
   h3Tickets() {
@@ -1122,6 +1142,32 @@ export class PowerTools {
           store.tagExchange(res.id, [...res.tags, 'mcp']);
           return { ...summarize(res.id), responseBody: this.textBody(res.id, 'response')?.slice(0, 65_536) ?? null };
         },
+      },
+      {
+        name: 'protocol_lab',
+        description:
+          'Drive a plan of requests on one HTTP/2 or HTTP/3 connection and record each stream. Use it to test how a server handles concurrency, stream resets, priority, flow control, trailers and header compression. requests: [{method, url, headers, body, hold ("fin"|"last-byte"), resetAfterBytes, resetCode, priority, trailers, continuationSize, openAtMs, after}]. options: {protocol ("h2"|"h3"), connect ("alpn"|"upgrade"|"prior-knowledge"), concurrency, gate ("single-packet"), settings, goawayAtMs}. Returns per-stream results and the connection frame log.',
+        inputSchema: {
+          type: 'object',
+          properties: { protocol: { type: 'string', enum: ['h2', 'h3'] }, requests: { type: 'array', items: { type: 'object' } }, options: { type: 'object' } },
+          required: ['requests'],
+        },
+        write: true,
+        summary: (a) => `${String(a.protocol ?? 'h2').toUpperCase()} lab: ${(a.requests as unknown[] | undefined)?.length ?? 0} requests`,
+        run: async (a) => {
+          const rows = ((a.requests as Array<Record<string, unknown>>) ?? []).map((r) => ({ ...r, method: String(r.method ?? 'GET'), url: String(r.url), headers: (r.headers as HeaderList) ?? [], body: typeof r.body === 'string' ? new TextEncoder().encode(r.body) : undefined }));
+          const opts = (a.options as Record<string, unknown>) ?? {};
+          const result = String(a.protocol ?? opts.protocol ?? 'h2') === 'h3' ? await this.h3Plan(rows as never, opts as never) : await this.h2Plan(rows as never, opts as never);
+          for (const run of (result as { runs: Array<{ rows: Array<{ exchangeId: string }> }> }).runs) for (const row of run.rows) store.tagExchange(row.exchangeId, [...(store.getSummary(row.exchangeId)?.tags ?? []), 'mcp']);
+          return result;
+        },
+      },
+      {
+        name: 'protocol_support',
+        description: 'Try every way of getting HTTP/2 and HTTP/3 from a server (TLS ALPN, h2c upgrade, prior knowledge, QUIC) and report which it accepts, with the server\'s SETTINGS. Reads only; opens connections but records nothing.',
+        inputSchema: { type: 'object', properties: { url: str, ignoreTlsErrors: { type: 'boolean' } }, required: ['url'] },
+        write: false,
+        run: (a) => this.protocolLadder(String(a.url), { ignoreTlsErrors: a.ignoreTlsErrors === true }),
       },
       {
         name: 'websocket_script',

@@ -35,8 +35,10 @@ export interface SendOptions {
   csrf?: boolean;
   ignoreTlsErrors?: boolean;
   timeoutMs?: number;
-  /** Send over HTTP/3 ('h3') instead of HTTP/1.1. */
-  protocol?: 'h1' | 'h3';
+  /** Send over HTTP/2 ('h2') or HTTP/3 ('h3') instead of HTTP/1.1. */
+  protocol?: 'h1' | 'h2' | 'h3';
+  /** For protocol 'h2': how it negotiates (ALPN, h2c upgrade, prior knowledge). */
+  h2Method?: 'alpn' | 'upgrade' | 'prior-knowledge';
   /** Variables that override project variables for this send (a flow's own). */
   vars?: Record<string, string>;
   /** Run this flow first; its variables are visible as {{var:name}} and {{flow:name.var}}. */
@@ -311,13 +313,13 @@ export class Sender {
       prepared = this.prepare(req, { ...o, refreshCookies: opts.refreshCookies ?? true }, batch, fl.flows);
     }
     const { req: r, applied } = prepared;
-    let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
+    let res = await sendReplay(this.d.store, { ...r, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol, h2Method: opts.h2Method });
     this.addTags(res.id, [...applied, ...[...fl.flows.keys()].map((n) => `used-flow:${n}`)]);
 
     if (prepared.csrf.length && res.status !== null && CSRF_REJECTED.has(res.status)) {
       await this.refreshCsrf(prepared.csrf, r.url, opts);
       const again = this.prepare(req, { ...o, refreshCookies: opts.refreshCookies ?? true }, batch, fl.flows);
-      res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
+      res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol, h2Method: opts.h2Method });
       this.addTags(res.id, [...again.applied, 'after-csrf-refresh']);
     }
 
@@ -333,7 +335,7 @@ export class Sender {
         }
         // Resend with fresh tokens and cookies; the login's responses have updated both.
         const again = this.prepare(req, { ...o, refreshCookies: opts.refreshCookies ?? true }, batch, fl.flows);
-        res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol });
+        res = await sendReplay(this.d.store, { ...again.req, ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs, protocol: opts.protocol, h2Method: opts.h2Method });
         this.addTags(res.id, [...again.applied, `after-login:${macro?.name ?? loginFlow!.name}`]);
       }
     }

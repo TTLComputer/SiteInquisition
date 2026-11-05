@@ -1,6 +1,8 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
 import { runH3Plan } from './quic/plan.js';
+import { runH2Plan } from './h2/plan.js';
+import type { H2ConnectMethod } from './h2/connect.js';
 import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
 import { upstreamTls } from './upstreamtls.js';
 
@@ -14,8 +16,10 @@ export interface ReplayRequest {
   /** Skip certificate checks on the target. */
   ignoreTlsErrors?: boolean;
   timeoutMs?: number;
-  /** 'h3' sends over HTTP/3 with the in-house QUIC stack; otherwise HTTP/1.1. */
-  protocol?: 'h1' | 'h3';
+  /** How to send: HTTP/1.1, HTTP/2 (how it negotiates in h2Method), or HTTP/3. */
+  protocol?: 'h1' | 'h2' | 'h3';
+  /** For protocol 'h2': ALPN, h2c upgrade or prior knowledge (default by scheme). */
+  h2Method?: H2ConnectMethod;
 }
 
 /** Headers Node manages per connection; sending captured values would break the request. */
@@ -29,6 +33,7 @@ const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'tra
  */
 export async function sendReplay(store: CaptureStore, req: ReplayRequest): Promise<ExchangeSummary> {
   if (req.protocol === 'h3') return sendH3(store, req);
+  if (req.protocol === 'h2') return sendH2(store, req);
   const url = new URL(req.url);
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error(`cannot replay ${url.protocol} URLs yet`);
   const body = req.body ?? new Uint8Array();
@@ -107,6 +112,16 @@ export async function sendReplay(store: CaptureStore, req: ReplayRequest): Promi
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
+
+/** One request over HTTP/2, recorded like any other replay. */
+async function sendH2(store: CaptureStore, req: ReplayRequest): Promise<ExchangeSummary> {
+  const r = await runH2Plan(store, [{ method: req.method, url: req.url, headers: req.headers.filter(([k]) => k.toLowerCase() !== 'content-length' && !k.startsWith(':')), body: req.body, replayOf: req.replayOf }], {
+    connect: req.h2Method,
+    ignoreTlsErrors: req.ignoreTlsErrors,
+    timeoutMs: req.timeoutMs,
+  });
+  return store.getSummary(r.runs[0]!.rows[0]!.exchangeId)!;
+}
 
 /** One request over HTTP/3, recorded like any other replay. */
 async function sendH3(store: CaptureStore, req: ReplayRequest): Promise<ExchangeSummary> {

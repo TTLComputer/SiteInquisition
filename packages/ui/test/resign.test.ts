@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
-import { parseJwt, verifyJwt } from '@siteinquisition/core';
+import { MemoryKeyring, parseJwt, verifyJwt } from '@siteinquisition/core';
 import { DIST, startHarness, type Harness } from './harness';
 
 // Re-signing and evergreen tokens, driven through the built renderer against a real core.
@@ -24,7 +24,8 @@ describe.skipIf(!ready)('re-signing and evergreen tokens in the renderer', () =>
   const nav = (name: string) => page.getByRole('navigation', { name: 'Views' }).getByRole('button', { name, exact: false }).first().click();
 
   beforeAll(async () => {
-    h = await startHarness();
+    // A memory keyring makes saving keys available (as a real OS keyring would).
+    h = await startHarness({ keyring: new MemoryKeyring() });
     // A stored HMAC key to sign with, and a captured JWT cookie to re-sign.
     h.core.tools.keys.setSecret('app', 'secret');
     await h.send('/api/jwt-cookie');
@@ -80,5 +81,22 @@ describe.skipIf(!ready)('re-signing and evergreen tokens in the renderer', () =>
     // The shared panel opens and recognizes it as a JWT.
     await expect.poll(() => page.getByLabel('Payload to re-sign').count()).toBe(1);
     await shot('cookie-resign');
+  });
+
+  it('saves a signing key to the encrypted project when Save is ticked', async () => {
+    await nav('Settings');
+    await page.getByRole('tab', { name: 'Signing keys' }).click();
+    await page.getByLabel('Key name').fill('shared-hs');
+    await page.getByLabel('HMAC secret').fill('team-secret');
+    await page.getByLabel('Save to project').check();
+    await page.getByRole('button', { name: 'Add key' }).click();
+    const row = page.locator('[data-testid=key-row][data-name=shared-hs]');
+    await row.waitFor();
+    await expect.poll(() => row.textContent()).toContain('saved');
+    await shot('signing-keys');
+
+    // Persisted and encrypted: a fresh key store over the same project reloads it.
+    expect(h.core.tools.keys.list().find((k) => k.name === 'shared-hs')?.saved).toBe(true);
+    expect(String(h.core.store.getMeta('signingKeys')).startsWith('siq1:')).toBe(true);
   });
 });

@@ -30,7 +30,7 @@ import { resolveTokens } from './tokens.js';
 import { ErrorService } from './errors.js';
 import { awsRequestInfo, parsePresignedUrl } from './awsinfo.js';
 import { EXAMPLE_SECRETS, parseJwt, signJwt, tryHmacSecrets, verifyJwt, type SigningKey } from './jwt.js';
-import { SessionKeyStore } from './keys.js';
+import { KeyStore, type KeyVault, type PersistedKey } from './keys.js';
 import { Evergreen, renderEvergreen, signableKind, type EvergreenEntry, type SignableKind } from './evergreen.js';
 import { decodeSessionCookie, signFlaskCookie, tryFlaskSecrets, verifyFlaskCookie } from './sessioncookies.js';
 import { TechService } from './tech.js';
@@ -61,13 +61,35 @@ export class PowerTools {
   readonly live = new EventEmitter<{ change: [Change] }>();
   private hits = new Map<string, number>();
   readonly awsKeys = new Map<string, AwsCredentials>();
-  /** Session-only signing keys; replaced by the real key store when it lands. */
-  readonly keys = new SessionKeyStore();
+  /** Signing keys: session-only unless the user saves one to the encrypted project. */
+  readonly keys: KeyStore;
   /** Saved evergreen signed tokens (JWTs and session cookies), re-minted on each send. */
   readonly evergreen: Evergreen;
 
   constructor(private readonly core: Core) {
     const store = core.store;
+    // Saved signing keys are encrypted with the keyring master key, like saved identities.
+    const vault: KeyVault = {
+      get canEncrypt() {
+        return !!core.secrets;
+      },
+      get where() {
+        return core.secrets?.keyring.name ?? null;
+      },
+      load: () => {
+        const raw = store.getMeta<PersistedKey[] | string>('signingKeys');
+        if (raw === undefined) return { keys: [] };
+        if (!SecretBox.isSealed(raw)) return { keys: raw as PersistedKey[] };
+        if (!core.secrets) return { keys: [], error: 'Saved signing keys are encrypted with a key from the OS keyring, which is not available here. Unlock the keyring and reopen the project.' };
+        try {
+          return { keys: JSON.parse(core.secrets.open(raw).toString('utf8')) as PersistedKey[] };
+        } catch {
+          return { keys: [], error: 'Saved signing keys were encrypted on another computer or with another keyring and cannot be read here. Save new ones to replace them.' };
+        }
+      },
+      save: (keys) => store.setMeta('signingKeys', core.secrets && keys.length ? core.secrets.seal(JSON.stringify(keys)) : keys),
+    };
+    this.keys = new KeyStore(vault);
     this.evergreen = new Evergreen(store, this.keys);
     this.vars = new Vars(store);
     this.errors = new ErrorService(store);

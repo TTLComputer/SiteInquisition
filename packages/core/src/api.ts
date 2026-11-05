@@ -273,8 +273,10 @@ export class CoreApiServer {
       'cookies.flaskTrySecrets': (p) => core.tools.flaskSecret(str(p, 'value')!, (p.secrets as string[]) ?? []),
       'cookies.flaskSign': (p) => core.tools.resignFlaskCookie(p.payload, { keyName: str(p, 'keyName', false), secret: str(p, 'secret', false) }, { compress: p.compress === true }),
       'keys.list': () => core.tools.keys.list(),
-      'keys.setSecret': (p) => (core.tools.keys.setSecret(str(p, 'name')!, str(p, 'secret')!), core.tools.keys.list()),
-      'keys.setPem': (p) => (core.tools.keys.setPem(str(p, 'name')!, str(p, 'pem')!, str(p, 'passphrase', false)), core.tools.keys.list()),
+      'keys.status': () => ({ keys: core.tools.keys.list(), canSave: core.tools.keys.canSave, where: core.tools.keys.savedWhere, error: core.tools.keys.loadError ?? null }),
+      'keys.setSecret': (p) => (core.tools.keys.setSecret(str(p, 'name')!, str(p, 'secret')!, p.save === true), core.tools.keys.list()),
+      'keys.setPem': (p) => (core.tools.keys.setPem(str(p, 'name')!, str(p, 'pem')!, str(p, 'passphrase', false), p.save === true), core.tools.keys.list()),
+      'keys.setSaved': (p) => (core.tools.keys.setSaved(str(p, 'name')!, p.save === true), core.tools.keys.list()),
       'keys.delete': (p) => (core.tools.keys.delete(str(p, 'name')!), core.tools.keys.list()),
       'resign.open': (p) => core.tools.resignOpen(str(p, 'value')!),
       'resign.preview': (p) =>

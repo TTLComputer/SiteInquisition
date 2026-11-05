@@ -384,8 +384,10 @@ export class CoreClient {
   signJwt = (p: { header: Record<string, unknown>; payload: Record<string, unknown>; keyName?: string; secret?: string; alg?: string }) => this.call<string>('jwt.sign', p);
   tryJwtSecrets = (token: string, secrets: string[]) => this.call<string | null>('jwt.trySecrets', { token, secrets });
   keys = () => this.call<KeyInfo[]>('keys.list');
-  setKeySecret = (name: string, secret: string) => this.call<KeyInfo[]>('keys.setSecret', { name, secret });
-  setKeyPem = (name: string, pem: string, passphrase?: string) => this.call<KeyInfo[]>('keys.setPem', { name, pem, ...(passphrase ? { passphrase } : {}) });
+  keysStatus = () => this.call<{ keys: KeyInfo[]; canSave: boolean; where: string | null; error: string | null }>('keys.status');
+  setKeySecret = (name: string, secret: string, save = false) => this.call<KeyInfo[]>('keys.setSecret', { name, secret, save });
+  setKeyPem = (name: string, pem: string, passphrase?: string, save = false) => this.call<KeyInfo[]>('keys.setPem', { name, pem, save, ...(passphrase ? { passphrase } : {}) });
+  setKeySaved = (name: string, save: boolean) => this.call<KeyInfo[]>('keys.setSaved', { name, save });
   deleteKey = (name: string) => this.call<KeyInfo[]>('keys.delete', { name });
   awsRequestInfo = (id: string) => this.call<AwsRequestInfo>('aws.requestInfo', { id });
   decodeSessionCookie = (name: string, value: string) => this.call<SessionCookie>('cookies.decodeSession', { name, value });

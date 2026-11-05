@@ -848,12 +848,24 @@ export function AwsPanel({ ex }: { ex: ExchangeDetail }) {
 export function KeySettings() {
   const { client, notify } = useApp();
   const [keys, setKeys] = useState<KeyInfo[]>([]);
+  const [canSave, setCanSave] = useState(false);
+  const [where, setWhere] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [secret, setSecret] = useState('');
   const [pem, setPem] = useState('');
-  useEffect(() => {
-    client.keys().then(setKeys, (e: Error) => notify(e.message));
+  const [save, setSave] = useState(false);
+  const load = useCallback(() => {
+    client.keysStatus().then((s) => {
+      setKeys(s.keys);
+      setCanSave(s.canSave);
+      setWhere(s.where);
+      setLoadError(s.error);
+    }, (e: Error) => notify(e.message));
   }, [client, notify]);
+  useEffect(() => {
+    load();
+  }, [load]);
   const run = (p: Promise<KeyInfo[]>, msg: string) => p.then((k) => (setKeys(k), notify(msg)), (e: Error) => notify(e.message));
   return (
     <>
@@ -861,8 +873,15 @@ export function KeySettings() {
         Signing keys
       </div>
       <p className="muted" style={{ padding: '0 14px', margin: 0, fontSize: 13 }}>
-        Secrets and private keys used to re-sign JWTs and signed session cookies. They are held for this session only and never written to disk. Reference them by name when re-signing, or bind one to an evergreen <code className="mono">{'{{sign:name}}'}</code> token (Cookies › Signed tokens) that is re-minted fresh on every send.
+        Secrets and private keys used to re-sign JWTs and signed session cookies. Reference them by name when re-signing, or bind one to an evergreen <code className="mono">{'{{sign:name}}'}</code> token (Cookies › Signed tokens) that is re-minted fresh on every send.
+        {' '}By default a key is held for this session only. Tick <b>Save</b> to keep it in the project
+        {canSave ? <> (encrypted with the key kept in {where}), so it survives restarts and is ready to share with the project.</> : <> — unavailable right now: no OS keyring was found to encrypt it, so keys stay in memory. Set one up in <b>Settings › Storage</b>.</>}
       </p>
+      {loadError && (
+        <p className="warn-text" style={{ padding: '0 14px', margin: '0 0 8px', fontSize: 13 }}>
+          {loadError}
+        </p>
+      )}
       <div className="settings-block">
         <div className="label">Your keys</div>
         {keys.length === 0 ? (
@@ -871,9 +890,15 @@ export function KeySettings() {
           <table className="data-table">
             <tbody>
               {keys.map((k) => (
-                <tr key={k.name}>
+                <tr key={k.name} data-testid="key-row" data-name={k.name}>
                   <td className="mono">{k.name}</td>
                   <td>{k.kind === 'hmac' ? 'HMAC secret' : 'private key (PEM)'}</td>
+                  <td>
+                    <label className="muted" style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }} title={canSave ? 'Keep this key in the project, encrypted' : 'Saving needs an OS keyring (Settings › Storage)'}>
+                      <input type="checkbox" checked={k.saved} disabled={!canSave && !k.saved} onChange={(e) => void run(client.setKeySaved(k.name, e.target.checked), e.target.checked ? `${k.name} saved to the project` : `${k.name} kept for this session only`)} aria-label={`Save ${k.name}`} /> Save
+                    </label>
+                  </td>
+                  <td>{k.saved ? <span className="pill faint" title={`Encrypted with the key kept in ${where ?? 'the keyring'}`}>saved · encrypted</span> : <span className="faint" style={{ fontSize: 12 }}>session only</span>}</td>
                   <td>
                     <button className="btn small" onClick={() => void run(client.deleteKey(k.name), `${k.name} removed`)}>
                       Remove
@@ -890,10 +915,13 @@ export function KeySettings() {
         <input className="input mono" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} aria-label="Key name" />
         <input className="input mono" placeholder="HMAC secret (for HS256/384/512)" value={secret} onChange={(e) => setSecret(e.target.value)} aria-label="HMAC secret" />
         <textarea className="input mono" style={{ height: 120, padding: 8 }} placeholder={'-----BEGIN PRIVATE KEY-----\n… (for RS/PS/ES/EdDSA)'} value={pem} onChange={(e) => setPem(e.target.value)} aria-label="Private key PEM" />
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn primary" disabled={!name.trim() || (!secret && !pem.trim())} onClick={() => void run(pem.trim() ? client.setKeyPem(name, pem) : client.setKeySecret(name, secret), `${name} added`).then(() => { setName(''); setSecret(''); setPem(''); })}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <button className="btn primary" disabled={!name.trim() || (!secret && !pem.trim())} onClick={() => void run(pem.trim() ? client.setKeyPem(name, pem, undefined, save) : client.setKeySecret(name, secret, save), `${name} added`).then(() => { setName(''); setSecret(''); setPem(''); load(); })}>
             Add key
           </button>
+          <label className="muted" style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center' }} title={canSave ? `Keep this key in the project, encrypted with the key kept in ${where}` : 'Saving needs an OS keyring (Settings › Storage)'}>
+            <input type="checkbox" checked={save && canSave} disabled={!canSave} onChange={(e) => setSave(e.target.checked)} aria-label="Save to project" /> Save to project{!canSave && ' (no keyring)'}
+          </label>
         </div>
       </div>
     </>

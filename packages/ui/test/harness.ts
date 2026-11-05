@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { serveWebSockets } from '@siteinquisition/core';
-import { Core } from '@siteinquisition/core';
+import { Core, type Keyring } from '@siteinquisition/core';
 
 export const DIST = join(import.meta.dirname, '..', 'dist');
 
@@ -109,10 +109,10 @@ export interface Harness {
   close(): Promise<void>;
 }
 
-export async function startHarness(opts: { traffic?: boolean } = {}): Promise<Harness> {
+export async function startHarness(opts: { traffic?: boolean; keyring?: Keyring | null } = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'siq-ui-'));
   const upstream = await startUpstream();
-  const core = await Core.open({ projectDir: join(dir, 'project'), dataDir: join(dir, 'data'), api: { token: 'ui-test-token' } });
+  const core = await Core.open({ projectDir: join(dir, 'project'), dataDir: join(dir, 'data'), api: { token: 'ui-test-token' }, ...(opts.keyring !== undefined ? { keyring: opts.keyring } : {}) });
   await core.setScope({ defaultAction: 'ignore', rules: [{ id: 'r1', action: 'include', host: '127.0.0.1', port: upstream.port }] });
   const { proxyPort, apiPort } = await core.start();
   const base = `http://127.0.0.1:${upstream.port}`;

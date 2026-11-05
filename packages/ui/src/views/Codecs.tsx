@@ -273,6 +273,26 @@ export function Codecs() {
     if (sync && returnTo && editDirty && output !== null) returnTo(output, true);
   }, [sync, returnTo, editDirty, output]);
 
+  // A nested field sits inside another when its path starts with the other's.
+  const within = (outer: NestedField, f: NestedField) => outer.at.length <= f.at.length && outer.at.every((s, i) => f.at[i] === s);
+  const depthOf = (f: NestedField) => nestedFields.filter((g) => g !== f && within(g, f)).length;
+  // Under its parent, a field reads as the part of the path below it: "└ .stuffing".
+  const labelOf = (f: NestedField) => {
+    const parent = nestedFields.filter((g) => g !== f && within(g, f)).sort((x, y) => y.at.length - x.at.length)[0];
+    return parent && f.path.startsWith(parent.path) && f.path !== parent.path ? f.path.slice(parent.path.length) : f.path;
+  };
+  const keepEncoded = async (f: NestedField) => {
+    if (parsedEdit === undefined) return;
+    const sub = nestedFields.filter((g) => within(f, g));
+    try {
+      const r = await client.collapseNested(parsedEdit, sub);
+      setNestedFields(nestedFields.filter((g) => !sub.includes(g)));
+      setEdit(JSON.stringify(r.value, null, 2));
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
   const toggleDeep = async (on: boolean) => {
     setDeep(on);
     if (parsedEdit === undefined) return;
@@ -443,6 +463,34 @@ export function Codecs() {
               {error}
             </div>
           )}
+          {innerIsJson && nestedFields.length > 0 && (
+            <div className="nested-layers" data-testid="nested-fields" aria-label="Nested layers">
+              <div className="faint" style={{ fontSize: 12 }}>
+                Inside the JSON, {nestedFields.length === 1 ? 'one field holds' : `${nestedFields.length} fields hold`} more encoded JSON. They are expanded in the editor and re-encoded on the way out.
+              </div>
+              {nestedFields.map((f) => (
+                <div key={f.path} className="nested-layer" data-testid="nested-field" style={{ paddingLeft: depthOf(f) * 16 }}>
+                  <span className="faint">{depthOf(f) ? '└' : '›'}</span>
+                  <span className="mono nested-path" title={f.path}>
+                    {labelOf(f)}
+                  </span>
+                  {f.chain.map((c, i) => (
+                    <span key={`${c}-${i}`} className="nested-step mono">
+                      {c}
+                      {i < f.chain.length - 1 && <span className="faint">›</span>}
+                    </span>
+                  ))}
+                  <span style={{ flex: 1 }} />
+                  <button className="link-btn" onClick={() => void keepEncoded(f)} title="Show this field (and what is inside it) encoded, as it is sent">
+                    keep encoded
+                  </button>
+                  <button className="link-btn" onClick={() => setRuleDraft({ field: f.path, chain: f.chain })} title="Save a field codec, so the Inspector and Replay decode this field by themselves">
+                    always decode
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="layers">
             {layers.slice(1, -1).map((l, i) => (
               <details key={i} className="layer">
@@ -486,20 +534,6 @@ export function Codecs() {
               </div>
             )}
           </div>
-          {innerIsJson && nestedFields.length > 0 && (
-            <div className="nested-fields" data-testid="nested-fields" aria-label="Expanded fields">
-              <span className="muted">Expanded in place, re-encoded on the way out:</span>
-              {nestedFields.map((f) => (
-                <span key={f.path} className="chain-step" data-testid="nested-field">
-                  <span className="mono">{f.path}</span>
-                  <span className="faint mono">{f.chain.join(' > ')}</span>
-                  <button className="link-btn" onClick={() => setRuleDraft({ field: f.path, chain: f.chain })} title="Save a field codec, so the Inspector and Replay decode this field by themselves">
-                    always decode
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
           {nested && (
             <div className="nested-edit" aria-label="Nested value">
               <div className="sec-head">

@@ -24,6 +24,12 @@ export async function breakOn(client: CoreClient, ex: Pick<ExchangeSummary, 'hos
   await client.setBreakpoints([...breakpoints, { enabled: true, phase, host: ex.host, method: ex.method, pathPrefix: ex.path.split('?')[0] }]);
 }
 
+/** Pause WebSocket messages on connections like this one (Rules, Breakpoints). */
+export async function breakOnMessages(client: CoreClient, ex: Pick<ExchangeSummary, 'host' | 'path'>, direction: 'client' | 'server' | 'both' = 'both', match = ''): Promise<void> {
+  const { breakpoints } = await client.rules();
+  await client.setBreakpoints([...breakpoints, { enabled: true, phase: 'messages', host: ex.host, pathPrefix: ex.path.split('?')[0], direction, ...(match ? { match } : {}) }]);
+}
+
 /** The literal part of a path template before its first placeholder, for a path: filter. */
 export const templatePrefix = (t: string) => {
   const i = t.indexOf('{');

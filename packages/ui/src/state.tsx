@@ -16,6 +16,8 @@ export interface ReplayTab {
   id: string;
   /** The exchange this tab replays; empty for a tab opened from a draft. */
   exchangeId: string;
+  /** "ws" replays a WebSocket connection: handshake plus an editable message script. */
+  kind?: 'http' | 'ws';
   label: string;
   method: string;
   draft?: Draft;
@@ -77,7 +79,8 @@ interface AppState {
   activeTab: string;
   setActiveTab(id: string): void;
   replayTabs: ReplayTab[];
-  openReplay(e: Pick<ExchangeSummary, 'id' | 'method' | 'path'>, options?: ReplayTab['options']): void;
+  /** Open (or switch to) the Replay tab for an exchange; a WebSocket opens the WebSocket replay editor. */
+  openReplay(e: ReplayTarget, options?: ReplayTab['options']): void;
   closeReplay(id: string): void;
   resendNow(id: string): Promise<void>;
   selectedId: string | null;
@@ -127,6 +130,9 @@ interface AppState {
   sendToApi(kind: 'compare' | 'auth' | 'negative', ids: string[]): void;
   apiInput: { kind: 'compare' | 'auth' | 'negative'; ids: string[]; nonce: number } | null;
 }
+
+/** What opening Replay needs to know about a recorded exchange. */
+export type ReplayTarget = Pick<ExchangeSummary, 'id' | 'method' | 'path'> & Partial<Pick<ExchangeSummary, 'isWebSocket'>>;
 
 const Ctx = createContext<AppState | null>(null);
 
@@ -220,9 +226,10 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     if (v === 'history') setActiveTab('history');
   }, []);
 
-  const openReplay = useCallback((e: Pick<ExchangeSummary, 'id' | 'method' | 'path'>, options?: ReplayTab['options']) => {
+  const openReplay = useCallback((e: ReplayTarget, options?: ReplayTab['options']) => {
     const id = `replay-${e.id}`;
-    setReplayTabs((tabs) => (tabs.some((t) => t.id === id) ? tabs : [...tabs, { id, exchangeId: e.id, label: replayLabel(e.path), method: e.method, options }]));
+    const kind = e.isWebSocket ? 'ws' : 'http';
+    setReplayTabs((tabs) => (tabs.some((t) => t.id === id) ? tabs : [...tabs, { id, exchangeId: e.id, kind, label: replayLabel(e.path), method: kind === 'ws' ? 'WS' : e.method, options }]));
     setActiveTab(id);
     setViewState('replay');
   }, []);

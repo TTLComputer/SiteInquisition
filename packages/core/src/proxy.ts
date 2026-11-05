@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { createServer, type AddressInfo } from 'node:net';
 import { leafIssuer, type CertificateAuthority } from './ca.js';
 import type { EventEmitter as Emitter } from 'node:events';
-import { Interceptor, decodeBody, type InterceptorEvents, type InterceptorHooks, type ProxiedRequest, type Timings as WireTimings } from './interceptor.js';
+import { Interceptor, decodeBody, type InterceptorEvents, type InterceptorHooks, type WsMessageAction, type ProxiedRequest, type Timings as WireTimings } from './interceptor.js';
 import { H3Capture } from './quic/capture.js';
 import { LOOPBACK, type LanGate } from './lan.js';
 import type { HookMessage } from './rules.js';
@@ -54,6 +54,10 @@ export interface ProxyHooks {
    * are buffered so the hook sees the whole body. Missing means always.
    */
   wantsResponse?(req: { method: string; url: string; status: number }, ctx: { key: string }): boolean;
+  /** Whether WebSocket messages on this URL go through wsMessage (message breakpoints). */
+  wantsWsMessages?(url: string): boolean;
+  /** One WebSocket data message on its way through; may drop it or send something else instead. */
+  wsMessage?(msg: { exchangeId?: string; url: string; from: 'client' | 'server'; opcode: string; payload: Buffer; fragments: number }, ctx: { source: ExchangeSource }): Promise<WsMessageAction | void>;
 }
 
 interface Live {
@@ -172,6 +176,19 @@ export class ProxyEngine extends EventEmitter<{
               const changedBody = !body.equals(Buffer.from(msg.body));
               if (before === JSON.stringify([msg.method, msg.url, msg.headers]) && !changedBody) return;
               return { replace: { method: msg.method, url: msg.url, headers: msg.headers.filter(([k]) => !k.startsWith(':')), ...(changedBody ? { body: msg.body } : {}) } };
+            } catch (err) {
+              fail(err);
+              return;
+            }
+          }
+        : undefined,
+      wantsWsMessages: hooks.wantsWsMessages ? (url) => hooks.wantsWsMessages!(url) : undefined,
+      wsMessage: hooks.wsMessage
+        ? async (m) => {
+            try {
+              const exchangeId = [...this.wsExchanges].find(([, id]) => id === m.id)?.[0];
+              const out = await hooks.wsMessage!({ exchangeId, url: m.url, from: m.from, opcode: m.opcode, payload: m.payload, fragments: m.fragments }, { source });
+              return out ?? undefined;
             } catch (err) {
               fail(err);
               return;

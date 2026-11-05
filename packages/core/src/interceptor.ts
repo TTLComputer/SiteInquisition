@@ -25,7 +25,7 @@ import { performance } from 'node:perf_hooks';
 import { Duplex, type Readable } from 'node:stream';
 import type { TLSSocket } from 'node:tls';
 import * as zlib from 'node:zlib';
-import { FrameParser, MessageAssembler } from './websocket.js';
+import { FrameParser, MessageAssembler, encodeFrame, isControl, OPCODES, type AssembledMessage, type Frame } from './websocket.js';
 import { runPlan, type PlanStep, type SentStep } from './wsplan.js';
 import type { LeafIssuer } from './x509.js';
 import { CERT_REFUSED, upstreamTls } from './upstreamtls.js';
@@ -86,9 +86,30 @@ export type RequestAction =
 
 export type ResponseAction = { close: true } | { replace: { status: number; statusMessage?: string; headers: HeaderPairs; body?: Uint8Array } };
 
+/** One complete WebSocket data message offered to the wsMessage hook before it is passed on. */
+export interface WsHookMessage {
+  /** The proxy's id for the connection (the websocket-request id). */
+  id: string;
+  url: string;
+  from: 'client' | 'server';
+  opcode: string;
+  payload: Buffer;
+  fragments: number;
+}
+
+/** Nothing (pass it on as it came), drop it, or send this instead as one frame. */
+export type WsMessageAction = { drop: true } | { replace: { opcode: 'text' | 'binary'; payload: Uint8Array } };
+
 export interface InterceptorHooks {
   /** Whether hooks run for this URL. Hooked exchanges are buffered in full. */
   wants(url: string): boolean;
+  /**
+   * Whether this WebSocket's messages should go through wsMessage. Asked at
+   * each message boundary, so a breakpoint added mid-connection takes effect
+   * on the next message; when it says no, bytes are relayed untouched.
+   */
+  wantsWsMessages?(url: string): boolean;
+  wsMessage?(msg: WsHookMessage): Promise<WsMessageAction | void>;
   /** Called with the decoded body. */
   request?(req: ProxiedRequest, decodedBody: Buffer): Promise<RequestAction | void>;
   response?(req: ProxiedRequest, res: { status: number; statusMessage?: string; headers: HeaderPairs; decodedBody: Buffer }): Promise<ResponseAction | void>;
@@ -1066,36 +1087,111 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
       this.wsLive.set(preq.id, live);
       let recording = true;
       let closeFrame: { code?: number; reason: string } | undefined;
-      const observe = (from: 'client' | 'server', parser: FrameParser, asm: MessageAssembler) => (chunk: Buffer) => {
-        if (!recording) return;
+      const record = (from: 'client' | 'server', m: AssembledMessage, extra: Record<string, unknown> = {}, payload: Buffer = m.payload, opcode = m.opcode) => {
+        if (m.close && !closeFrame) closeFrame = m.close;
+        const meta: Record<string, unknown> = {};
+        if (m.fragments > 1) meta.fragments = m.fragments;
+        if (m.violations.length) meta.violations = m.violations;
+        if (m.close) Object.assign(meta, m.close.code !== undefined ? { code: m.close.code } : {}, m.close.reason ? { reason: m.close.reason } : {});
+        Object.assign(meta, extra);
+        this.emit('websocket-message', { id: preq.id, from, opcode, data: payload, at: Date.now(), ...(Object.keys(meta).length ? { meta } : {}) });
+      };
+      const hooks = this.opts.hooks;
+      const gate = () => {
+        if (!hooks?.wsMessage || !hooks.wantsWsMessages) return false;
         try {
-          for (const f of parser.push(chunk)) {
-            const m = asm.push(f);
-            if (!m) continue;
-            if (m.close && !closeFrame) closeFrame = m.close;
-            const meta: Record<string, unknown> = {};
-            if (m.fragments > 1) meta.fragments = m.fragments;
-            if (m.violations.length) meta.violations = m.violations;
-            if (m.close) Object.assign(meta, m.close.code !== undefined ? { code: m.close.code } : {}, m.close.reason ? { reason: m.close.reason } : {});
-            this.emit('websocket-message', { id: preq.id, from, opcode: m.opcode, data: m.payload, at: Date.now(), ...(Object.keys(meta).length ? { meta } : {}) });
-          }
-        } catch (err) {
-          // Framing is lost for the record only; the bytes still flow.
-          recording = false;
-          this.emit('error', new Error(`WebSocket recording stopped for ${url.href}: ${(err as Error).message}`));
+          return hooks.wants(url.href) && hooks.wantsWsMessages(url.href);
+        } catch {
+          return false;
         }
       };
-      const fromClient = observe('client', live.fromClient, live.clientMsgs);
-      const fromServer = observe('server', live.fromServer, live.serverMsgs);
-      socket.on('data', (c: Buffer) => {
-        fromClient(c);
-        if (!upstream.write(c)) socket.pause();
-      });
+      /**
+       * One direction of the relay. Normally bytes pass straight through and a
+       * copy is parsed for the record. While a message breakpoint covers the
+       * connection it switches (at a frame boundary) to forwarding message by
+       * message: each data message's frames are held until the hook has looked
+       * at it, then sent on exactly as received, replaced, or dropped. Control
+       * frames other than close are not held, so pings still get answered.
+       */
+      const relay = (from: 'client' | 'server', src: Duplex, dest: Duplex, parser: FrameParser, asm: MessageAssembler) => {
+        let gated = false;
+        let held: Buffer[] = [];
+        let inFlight = 0;
+        let queue: Promise<void> = Promise.resolve();
+        const enqueue = (job: () => Promise<void> | void) => {
+          inFlight++;
+          queue = queue.then(job).then(() => undefined, (err: Error) => void this.emit('error', new Error(`WebSocket breakpoint on ${url.href}: ${err.message}`))).finally(() => void inFlight--);
+        };
+        const write = (b: Buffer) => {
+          if (!dest.destroyed) dest.write(b);
+        };
+        return (chunk: Buffer) => {
+          if (!gated && recording && parser.pending === 0 && !asm.inMessage && gate()) gated = true;
+          else if (gated && parser.pending === 0 && !asm.inMessage && !held.length && !inFlight && !gate()) gated = false;
+          if (!gated) {
+            if (recording) {
+              try {
+                for (const f of parser.push(chunk)) {
+                  const m = asm.push(f);
+                  if (m) record(from, m);
+                }
+              } catch (err) {
+                // Framing is lost for the record only; the bytes still flow.
+                recording = false;
+                this.emit('error', new Error(`WebSocket recording stopped for ${url.href}: ${(err as Error).message}`));
+              }
+            }
+            if (!dest.write(chunk)) src.pause();
+            return;
+          }
+          let frames: Frame[];
+          try {
+            frames = parser.push(chunk);
+          } catch (err) {
+            // Held bytes cannot be passed on faithfully any more: end the connection rather than corrupt it.
+            this.emit('error', new Error(`WebSocket relay stopped for ${url.href}: ${(err as Error).message}`));
+            src.destroy();
+            dest.destroy();
+            return;
+          }
+          for (const f of frames) {
+            const raw = reencode(f);
+            const m = asm.push(f);
+            if (isControl(f.opcode) && f.opcode !== OPCODES.close) {
+              if (m) record(from, m);
+              write(raw);
+              continue;
+            }
+            if (f.opcode === OPCODES.close) {
+              enqueue(() => {
+                if (m) record(from, m);
+                write(raw);
+              });
+              continue;
+            }
+            held.push(raw);
+            if (!m) continue;
+            const frameBytes = Buffer.concat(held);
+            held = [];
+            enqueue(async () => {
+              const verdict = await hooks!.wsMessage!({ id: preq.id, url: url.href, from, opcode: m.opcode, payload: m.payload, fragments: m.fragments });
+              if (verdict && 'drop' in verdict) return record(from, m, { dropped: true });
+              if (verdict && 'replace' in verdict) {
+                const payload = Buffer.from(verdict.replace.payload);
+                write(encodeFrame({ opcode: verdict.replace.opcode, payload }, from === 'client'));
+                return record(from, { ...m, fragments: 1, violations: [] }, { edited: true, originalBase64: m.payload.subarray(0, 64 * 1024).toString('base64') }, payload, verdict.replace.opcode);
+              }
+              write(frameBytes);
+              record(from, m);
+            });
+          }
+        };
+      };
+      const fromClient = relay('client', socket, upstream, live.fromClient, live.clientMsgs);
+      const fromServer = relay('server', upstream, socket, live.fromServer, live.serverMsgs);
+      socket.on('data', fromClient);
       upstream.on('drain', () => socket.resume());
-      upstream.on('data', (c: Buffer) => {
-        fromServer(c);
-        if (!socket.write(c)) upstream.pause();
-      });
+      upstream.on('data', fromServer);
       socket.on('drain', () => upstream.resume());
       socket.once('end', () => upstream.end());
       upstream.once('end', () => socket.end());
@@ -1111,17 +1207,19 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
       socket.once('close', finish);
       upstream.once('close', finish);
       upstream.on('error', () => undefined);
-      if (head.length) {
-        fromClient(head);
-        upstream.write(head);
-      }
-      if (upHead.length) {
-        fromServer(upHead);
-        socket.write(upHead);
-      }
+      if (head.length) fromClient(head);
+      if (upHead.length) fromServer(upHead);
     });
     upReq.end();
   }
+}
+
+/** A parsed frame's exact bytes again (same mask, same length field). */
+function reencode(f: Frame): Buffer {
+  return encodeFrame(
+    { opcode: f.opcode, payload: f.payload, fin: f.fin, rsv1: f.rsv1, rsv2: f.rsv2, rsv3: f.rsv3, mask: f.masked ? f.mask! : false, lengthField: f.lengthBytes === 9 ? 64 : f.lengthBytes === 3 ? 16 : 'auto' },
+    false,
+  );
 }
 
 interface LiveWebSocket {

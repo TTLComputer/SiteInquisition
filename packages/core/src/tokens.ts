@@ -172,7 +172,10 @@ export function batchPlan(texts: string[], projectDir?: string, max = 10_000, ea
 
 export function hasTokens(text: string): boolean {
   TOKEN_RE.lastIndex = 0;
-  return TOKEN_RE.test(text);
+  const found = TOKEN_RE.test(text);
+  // matchAll starts where the shared regex left off, so leave it at the start.
+  TOKEN_RE.lastIndex = 0;
+  return found;
 }
 
 export function resolveTokens(text: string, ctx: TokenContext): string {

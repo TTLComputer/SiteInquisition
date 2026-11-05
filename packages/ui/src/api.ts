@@ -96,7 +96,21 @@ export type {
 export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage };
 export type { ScopeRule } from '@siteinquisition/core';
 export type { ErrorCause, ErrorFinding, ParsedJwt, JwtFlag, AwsRequestInfo, KeyInfo, SessionCookie, SessionFramework, SessionStructure } from '@siteinquisition/core';
-import type { ParsedJwt, AwsRequestInfo, KeyInfo, SessionCookie } from '@siteinquisition/core';
+import type { ParsedJwt, AwsRequestInfo, KeyInfo, SessionCookie, WsScript, WsScriptStep, WsRunState } from '@siteinquisition/core';
+export type { WsScript, WsScriptStep, WsRunState, WsStepResult } from '@siteinquisition/core';
+
+/** Send options for a WebSocket replay (the WS Replay tab). */
+export interface WsRunOptions {
+  ignoreTlsErrors?: boolean;
+  refreshCookies?: boolean;
+  keepAlive?: boolean;
+  tokens?: boolean;
+  speed?: number;
+  closeAtEnd?: boolean;
+  encode?: string[];
+  fields?: Array<{ path: string; chain: string[] }>;
+  flow?: string;
+}
 export type { UpstreamTlsConfig, TrustedCert, PeerCertInfo, FieldCodecRule } from '@siteinquisition/core';
 import type { UpstreamTlsConfig, PeerCertInfo, FieldCodecRule } from '@siteinquisition/core';
 export type { CookieOverride, CsrfBinding, CsrfFinding, EffectiveTech, HostTechReport, PageCsrfToken, Signature, TechCategory, TechCheck, TechHit, TechOverride, TechOverview, TechOverviewEntry, GlossarySource } from '@siteinquisition/core';
@@ -443,6 +457,10 @@ export class CoreClient {
     this.call<{ exchangeId: string; sent: number }>('stream.replaySession', { exchangeId, ...opts });
   streamSend = (exchangeId: string, payload: Uint8Array, opcode: 'text' | 'binary') => this.call<boolean>('stream.send', { exchangeId, base64: bytesToBase64(payload), opcode });
   streamClose = (exchangeId: string, code?: number, reason?: string) => this.call<boolean>('stream.close', { exchangeId, code, reason });
+  wsScript = (exchangeId: string, opts: { timing?: boolean; waits?: boolean; keepAlive?: boolean } = {}) => this.call<WsScript>('ws.script', { exchangeId, ...opts });
+  wsRun = (script: WsScript, options: WsRunOptions, replayOf?: string | null) => this.call<{ exchangeId: string; state: WsRunState | undefined }>('ws.run', { script, options, ...(replayOf ? { replayOf } : {}) });
+  wsRunMore = (exchangeId: string, steps: WsScriptStep[], options: Pick<WsRunOptions, 'tokens' | 'encode' | 'fields'> = {}) => this.call<WsRunState>('ws.runMore', { exchangeId, steps, options });
+  wsRunState = (exchangeId: string) => this.call<WsRunState | null>('ws.runState', { exchangeId });
   streamIsOpen = (exchangeId: string) => this.call<boolean>('stream.isOpen', { exchangeId });
   mqttPublish = (p: { exchangeId: string; to: 'broker' | 'device'; topic: string; payload: Uint8Array; qos: 0 | 1; retain: boolean }) =>
     this.call<boolean>('mqtt.publish', { ...p, payload: undefined, base64: bytesToBase64(p.payload) });

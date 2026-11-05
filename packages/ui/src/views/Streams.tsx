@@ -5,6 +5,7 @@ import { useApp } from '../state';
 import { fmtTime } from '../format';
 import { Messages } from './Inspector';
 import { FramePlanner } from './FramePlanner';
+import { ReplayButton } from '../components/ReplayButton';
 
 const enc = new TextEncoder();
 
@@ -42,7 +43,6 @@ export function Streams() {
   const [mode, setMode] = useState<'message' | 'frames'>('message');
   const [wsTo, setWsTo] = useState<'server' | 'client'>('server');
   const [handshake, setHandshake] = useState<string | null>(null);
-  const [timing, setTiming] = useState<'none' | 'original'>('none');
   const [current, setCurrent] = useState<string | null>(streamId);
   const [payload, setPayload] = useState('');
   const [format, setFormat] = useState<'text' | 'hex' | 'base64'>('text');
@@ -125,18 +125,6 @@ export function Streams() {
     }
   };
 
-  const replaySession = async () => {
-    if (!sel) return;
-    try {
-      const r = await client.replayStreamSession(sel.id, { ignoreTlsErrors: ignoreTls, timing });
-      await load();
-      setCurrent(r.exchangeId);
-      notify(`Replaying ${r.sent} client ${r.sent === 1 ? 'message' : 'messages'} on a new connection`);
-    } catch (e) {
-      notify(`Could not replay: ${(e as Error).message}`);
-    }
-  };
-
   return (
     <div className="two-pane streams">
       <aside className="side-list" aria-label="Connections">
@@ -179,17 +167,7 @@ export function Streams() {
               >
                 Show in History
               </button>
-              {!isMqtt && (
-                <>
-                  <select className="input" aria-label="Replay timing" value={timing} onChange={(e) => setTiming(e.target.value as 'none' | 'original')}>
-                    <option value="none">As fast as possible</option>
-                    <option value="original">With the original timing</option>
-                  </select>
-                  <button className="btn small" onClick={() => void replaySession()} title="Open a new connection like this one and send its client messages again">
-                    Replay session
-                  </button>
-                </>
-              )}
+              {!isMqtt && <ReplayButton exchange={sel} title="Open in Replay to edit the handshake and messages and run the connection again" />}
               {!isMqtt && isLive && !isProxied && (
                 <button className="btn small" onClick={() => client.streamClose(sel.id).then(load, (e: Error) => notify(e.message))}>
                   Close connection

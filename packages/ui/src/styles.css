@@ -628,3 +628,42 @@ mark.hit.current { background: var(--warn, #d9a400); color: #000; outline: 1px s
 .qb-help .link-btn { display: flex; gap: 8px; text-align: left; padding: 2px 0; }
 @media (max-width: 560px) { .qb-row { grid-template-columns: 1fr 1fr auto; } .qb-row input { grid-column: 1 / -1; grid-row: 2; } }
 .nested-step { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-raised); }
+
+/* ---------- decoded regions ---------- */
+/* A value shown decoded in place: heavier, tinted, with a dotted underline. Nested ones tint deeper. */
+.decoded, .decoded-sample {
+  font-weight: 600; color: var(--text-strong); border-radius: 3px; cursor: pointer;
+  background: color-mix(in srgb, var(--script) 14%, transparent);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--script) 70%, transparent);
+}
+.decoded .decoded { background: color-mix(in srgb, var(--script) 26%, transparent); }
+.decoded.by-rule { box-shadow: inset 0 -1px 0 var(--script); }
+.decoded:hover { background: color-mix(in srgb, var(--script) 22%, transparent); }
+.decoded-sample { padding: 0 4px; cursor: default; }
+.region-menu, .decode-chip {
+  position: fixed; z-index: 60; padding: 6px; border-radius: 8px; background: var(--bg-panel); border: 1px solid var(--line);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); display: flex; gap: 6px; align-items: center; font-family: var(--font-ui); font-weight: 400;
+}
+.region-menu { flex-direction: column; align-items: stretch; min-width: 240px; }
+.region-menu-head { font-size: 12px; color: var(--text-muted); display: flex; gap: 6px; align-items: center; padding: 2px 4px; }
+.region-menu-head .mono { color: var(--script-soft); }
+.region-menu-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-chain { font-family: var(--font-mono); font-size: 11px; opacity: 0.85; }
+.decode-chip .menu-form { padding: 0; }
+.region-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.region-editor-body { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.region-editor-body > textarea { flex: 1; }
+.region-backdrop {
+  position: absolute; inset: 0; margin: 0; overflow: hidden; pointer-events: none; color: var(--text);
+  /* Same metrics as textarea.editor, so every character sits under its twin. */
+  padding: 10px 12px; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; tab-size: 2; white-space: pre;
+}
+.region-backdrop .decoded { cursor: text; }
+textarea.region-ta { position: relative; background: transparent !important; color: transparent; caret-color: var(--text); }
+textarea.region-ta::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); color: transparent; }
+.region-editor.has-regions .region-editor-body { background: var(--bg-app); }
+.region-strip {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 4px 8px; font-size: 12px;
+  background: color-mix(in srgb, var(--script) 8%, var(--bg-panel)); border-bottom: 1px solid var(--line);
+}
+.region-strip .mono { color: var(--script-soft); }

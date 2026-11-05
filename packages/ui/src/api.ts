@@ -111,6 +111,14 @@ export interface WsRunOptions {
   fields?: Array<{ path: string; chain: string[] }>;
   flow?: string;
 }
+import type { TextRegion } from '@siteinquisition/codecs/regionedit';
+export type { TextRegion } from '@siteinquisition/codecs/regionedit';
+export interface RegionPlan {
+  start: number;
+  end: number;
+  display: string;
+  region: Omit<TextRegion, 'start' | 'end' | 'id'>;
+}
 export type { UpstreamTlsConfig, TrustedCert, PeerCertInfo, FieldCodecRule } from '@siteinquisition/core';
 import type { UpstreamTlsConfig, PeerCertInfo, FieldCodecRule } from '@siteinquisition/core';
 export type { CookieOverride, CsrfBinding, CsrfFinding, EffectiveTech, HostTechReport, PageCsrfToken, Signature, TechCategory, TechCheck, TechHit, TechOverride, TechOverview, TechOverviewEntry, GlossarySource } from '@siteinquisition/core';
@@ -412,6 +420,14 @@ export class CoreClient {
   collapseNested = (value: unknown, fields: NestedField[]) => this.call<{ value: unknown; changed: string[]; errors: string[] }>('codecs.collapse', { value, fields });
   replaceIn = (chain: string[], bytes: Uint8Array, o: { find: string; replace: string; regex?: boolean; matchCase?: boolean; keys?: boolean; scope?: 'layer' | 'all' }) =>
     this.call<{ base64: string; counts: number[] }>('codecs.replace', { chain, base64: bytesToBase64(bytes), ...o }).then((r) => ({ output: base64ToBytes(r.base64), counts: r.counts }));
+  /** Decode start..end of a text in place: the span actually decoded (it can be widened or trimmed), what it reads as, and the region to mark. */
+  decodeRegion = (text: string, start: number, end: number, chain?: string[]) => this.call<RegionPlan>('codecs.region.decode', { text, start, end, chain });
+  /** Every region back to its encoded form; with blocks, regions holding {{tokens}} are encoded by the sender after the tokens are filled in. */
+  encodeRegions = (text: string, regions: TextRegion[], blocks = false) => this.call<{ text: string; blocks: number }>('codecs.regions.encode', { text, regions, blocks });
+  /** The JSONPath of the JSON field a region replaced, or null. */
+  regionPath = (text: string, start: number, end: number) => this.call<string | null>('codecs.region.path', { text, start, end });
+  /** A JSON body pretty printed with its saved field codecs decoded in place as regions; null when none apply. */
+  fieldRegions = (text: string, url: string, side: 'request' | 'response') => this.call<{ text: string; regions: TextRegion[]; errors: string[] } | null>('fields.regions', { text, url, side });
   chains = () => this.call<SavedChain[]>('codecs.chains.get');
   setChains = (chains: SavedChain[]) => this.call<boolean>('codecs.chains.set', { chains });
   coverage = (host: string) => this.call<CoverageReport>('traffic.coverage', { host });

@@ -9,6 +9,9 @@
 - Agents and scripts: MCP tools `websocket_script` and `replay_websocket`, and `siq.websocket.script()` / `siq.websocket.run()` in scripts.
 - Fixed: a text whose tokens had been checked by `hasTokens` could lose its batch tokens (the shared regex kept its position).
 
+- **Decode in place, everywhere**: select any value in the Inspector (bodies, headers, the request line, WebSocket and MQTT payloads), the Replay editor and response, or a WS Replay message, and choose Decode (or press Ctrl D) to see it decoded right where it was, in heavier, tinted type. A chip next to the selection says what it found (base64 › json, jwt, url...) before you click, with Decode as to pick the chain yourself. Selection is smart: a caret on a value takes the whole value, a JSON string's content decodes the string and replaces it with the decoded JSON lined up with its line, and spaces and trailing commas are dropped. Regions nest: decode inside a decoded value to go another layer down.
+- In Replay and WS Replay, decoded regions are encoded again on send, byte for byte when untouched; a region holding tokens is encoded after the tokens are filled in (the sender sees an `{{encode:...}}...{{/encode}}` block). Click a region (or put the caret in one) for Show encoded or Encode back, Always decode, Codecs and Copy.
+- Always decode saves the JSON field (and any decoded fields around it) as a field codec. Saved field codecs now show as decoded regions in the Inspector's Pretty view and open as regions in Replay, instead of a separate Decoded fields view and the Fields box. Ctrl Shift D (and the Codecs buttons) still open the selection in Codecs.
 - **Codecs shows every nested layer**: under the outer chain, the Chain view lists each JSON field that holds more encoded JSON, indented by depth, with its own codecs. Any layer can be kept encoded, and any can be saved as a field codec.
 
 ## 1.0.0-beta.1

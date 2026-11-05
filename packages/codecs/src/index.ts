@@ -422,3 +422,4 @@ for (const c of PROTOBUF_CODEC_DEFS) register(c);
 export * from './protobuf.js';
 
 export * from './fields.js';
+export * from './regions.js';

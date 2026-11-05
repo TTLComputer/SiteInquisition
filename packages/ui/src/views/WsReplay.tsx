@@ -10,6 +10,8 @@ import { summarizeFrame } from '@siteinquisition/codecs/protocols';
 import { Messages } from './Inspector';
 import { TokenPicker } from './TokenPicker';
 import { CertHelp } from './TlsSettings';
+import { RegionEditor, decodeInto, encodeAll } from '../components/Decoded';
+import { adjustForEdit, type TextRegion } from '@siteinquisition/codecs/regionedit';
 
 /** The SignalR record separator, shown as a visible character so it survives editing. */
 const RS = '\x1e';
@@ -17,10 +19,11 @@ const RS_SHOWN = '␞';
 const show = (t: string) => t.split(RS).join(RS_SHOWN);
 const unshow = (t: string) => t.split(RS_SHOWN).join(RS);
 
-type Keyed = WsScriptStep & { key: string };
+/** A step being edited; a text message can have parts shown decoded in place (encoded again when it runs). */
+type Keyed = WsScriptStep & { key: string; regions?: TextRegion[] };
 let seq = 0;
 const keyed = (s: WsScriptStep): Keyed => ({ ...s, key: `s${++seq}` });
-const strip = ({ key: _k, ...s }: Keyed): WsScriptStep => s as WsScriptStep;
+const strip = ({ key: _k, regions: _r, ...s }: Keyed): WsScriptStep => s as WsScriptStep;
 
 interface Options {
   refreshCookies: boolean;
@@ -220,9 +223,12 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
     };
   }, [client, opts]);
 
-  const toWire = (s: Keyed): WsScriptStep => {
+  const toWire = async (s: Keyed): Promise<WsScriptStep> => {
     const st = strip(s);
-    return st.kind === 'send' && (st.encoding ?? 'text') === 'text' ? { ...st, payload: unshow(st.payload) } : st;
+    if (st.kind !== 'send' || (st.encoding ?? 'text') !== 'text') return st;
+    // Decoded parts go back encoded; ones holding tokens are encoded once the tokens are filled in.
+    const payload = s.kind === 'send' && s.regions?.length ? await encodeAll(client, { text: st.payload, regions: s.regions }) : st.payload;
+    return { ...st, payload: unshow(payload) };
   };
 
   const run = useCallback(async () => {
@@ -235,7 +241,7 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
     setError(null);
     setRunning(true);
     try {
-      const script: WsScript = { url: hs.url, headers: hs.headers, steps: steps.map(toWire) };
+      const script: WsScript = { url: hs.url, headers: hs.headers, steps: await Promise.all(steps.map(toWire)) };
       const r = await client.wsRun(script, await runOptions(), tab.exchangeId);
       if (r.state) setRunStates((cur) => ({ ...cur, [r.exchangeId]: r.state! }));
       setShownId(r.exchangeId);
@@ -306,16 +312,29 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
     sendToCodecs(unshow(payload.slice(s, e)), `WS Replay ${tab.label}`, (text, isLive) => {
       const was = end;
       end = s + show(text).length;
-      setSteps((cur) => cur.map((x) => (x.key === t.key && x.kind === 'send' ? { ...x, payload: x.payload.slice(0, s) + show(text) + x.payload.slice(was) } : x)));
+      setSteps((cur) => cur.map((x) => (x.key === t.key && x.kind === 'send' ? { ...x, payload: x.payload.slice(0, s) + show(text) + x.payload.slice(was), regions: adjustForEdit(x.regions ?? [], s, was, show(text).length) } : x)));
       if (!isLive) setView('replay');
     });
+  };
+
+  /** Show the selection (or the value under the caret) in the message being edited decoded in place. */
+  const decodeInline = async () => {
+    const t = target();
+    if (!t) return notify('Add a message to decode first.');
+    try {
+      const out = await decodeInto(client, { text: t.step.payload, regions: t.step.regions ?? [] }, t.el?.selectionStart ?? 0, t.el?.selectionEnd ?? 0);
+      setSteps((cur) => cur.map((x) => (x.key === t.key ? ({ ...x, payload: out.text, regions: out.regions } as Keyed) : x)));
+    } catch (e) {
+      notify((e as Error).message);
+    }
   };
 
   const onKey = (e: React.KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd' && e.target instanceof HTMLTextAreaElement && e.target.dataset.step) {
       e.preventDefault();
       e.stopPropagation();
-      decodeSelection();
+      if (e.shiftKey) decodeSelection();
+      else void decodeInline();
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.shiftKey) {
@@ -366,8 +385,11 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
           <input type="checkbox" checked={compare} onChange={(e) => setCompare(e.target.checked)} disabled={!shownId} /> Diff with original
         </label>
         <span style={{ flex: 1 }} />
-        <button className="btn small" onClick={decodeSelection} title="Decode the selection (or the message being edited) in Codecs, then put the result back. Ctrl D">
-          Decode selection
+        <button className="btn small" onClick={() => void decodeInline()} title="Show the selection, or the value under the caret, decoded in place in the message being edited. It is encoded again when the script runs. Ctrl D">
+          Decode
+        </button>
+        <button className="btn small" onClick={decodeSelection} title="Open the selection (or the message being edited) in Codecs, then put the result back. Ctrl Shift D">
+          Open in Codecs
         </button>
         <button
           className="btn small"
@@ -467,6 +489,7 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
                 presets={presets}
                 preview={preview?.key === s.key ? preview : null}
                 onChange={(p) => update(s.key, p)}
+                onRegions={(payload, regions) => setSteps((cur) => cur.map((x) => (x.key === s.key ? ({ ...x, payload, regions } as Keyed) : x)))}
                 onMove={(by) => move(i, by)}
                 onDuplicate={() => add({ ...strip(s) }, i + 1)}
                 onDelete={() => setSteps((cur) => cur.filter((x) => x.key !== s.key))}
@@ -563,6 +586,7 @@ function StepEditor(props: {
   onDuplicate(): void;
   onDelete(): void;
   onFocus(): void;
+  onRegions(payload: string, regions: TextRegion[]): void;
   editorRef(el: HTMLTextAreaElement | null): void;
 }) {
   const { step: s, result: r } = props;
@@ -638,15 +662,15 @@ function StepEditor(props: {
               {props.preview.error ? `Token problem: ${props.preview.error}` : `${props.preview.sends > 1 ? `${props.preview.sends} messages, first is ` : 'Sends '}${props.preview.text ?? ''}`}
             </div>
           )}
-          <textarea
-            ref={props.editorRef}
-            className="editor"
+          <RegionEditor
+            textareaRef={props.editorRef}
             data-step="1"
             spellCheck={false}
             rows={Math.min(12, Math.max(2, s.payload.split('\n').length))}
             value={s.payload}
+            regions={s.regions ?? []}
             onFocus={props.onFocus}
-            onChange={(e) => props.onChange({ payload: e.target.value })}
+            onChange={(d) => props.onRegions(d.text, d.regions)}
             aria-label={`Message ${props.index + 1}`}
             placeholder={s.opcode === 'text' ? 'Message text. Tokens such as {{var:name}} work here.' : 'Bytes'}
           />

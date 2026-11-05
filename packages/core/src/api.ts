@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { collapseNested, decodeFieldsText, decodeLayers, deepDecode, deepEncode, detectChain, expandNested, encodeChain, encodeFieldsText, listCodecs, parseFieldSpecs, replaceThroughChain, type FieldCodec } from '@siteinquisition/codecs';
+import { collapseNested, decodeFieldsText, encodeRegions, fieldRegions, planRegion, regionPath, type TextRegion, decodeLayers, deepDecode, deepEncode, detectChain, expandNested, encodeChain, encodeFieldsText, listCodecs, parseFieldSpecs, replaceThroughChain, type FieldCodec } from '@siteinquisition/codecs';
 import { coverage } from './coverage.js';
 import { parseSigV4 } from './sigv4.js';
 import { batchPlan, flowRefs, resolveTokens } from './tokens.js';
@@ -243,6 +243,15 @@ export class CoreApiServer {
           scope: p.scope === 'all' ? 'all' : 'layer',
         });
         return { base64: b64(r.output), counts: r.counts };
+      },
+      // Decoded regions: decode a selection in place, encode regions back, saved field codecs as regions.
+      'codecs.region.decode': (p) =>
+        planRegion(str(p, 'text')!, num(p, 'start') ?? 0, num(p, 'end') ?? 0, { chain: Array.isArray(p.chain) ? (p.chain as unknown[]).map(String) : undefined }),
+      'codecs.regions.encode': (p) => encodeRegions(str(p, 'text')!, arr(p, 'regions') as TextRegion[], { blocks: p.blocks === true }),
+      'codecs.region.path': (p) => regionPath(str(p, 'text')!, num(p, 'start') ?? 0, num(p, 'end') ?? 0),
+      'fields.regions': (p) => {
+        const rules = core.tools.fieldCodecs.rulesFor(str(p, 'url')!, p.side === 'response' ? 'response' : 'request');
+        return rules.length ? fieldRegions(str(p, 'text')!, rules.map((r) => ({ path: r.field, chain: r.chain, id: r.id }))) : null;
       },
       'codecs.chains.get': () => store.getMeta('codecChains') ?? [],
       'codecs.chains.set': (p) => {

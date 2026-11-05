@@ -17,6 +17,7 @@ import type { JarCookie } from './cookies.js';
  *   {{each:/api/products $.items[*].sku}}   batch: one send per value in that response
  *   {{$my-tag.PO_number}} {{tag:my-tag.PO_number}}   a field of the newest request tagged my-tag
  *   {{flow:create-po.po}}              run the flow "create-po" for this send and use its variable "po"
+ *   {{sign:admin-jwt}}                 a saved signed token (JWT or session cookie), re-minted fresh with a known key each send (evergreen)
  *
  * Any token takes pipes that encode its value: {{var:po | base64}},
  * {{$cart.id | url}}, {{uuid | upper}} (see FILTERS).
@@ -73,6 +74,8 @@ export interface TokenContext {
   tag?: (ref: string) => string;
   /** Variables of flows run for this send, by flow name. */
   flows?: Map<string, Record<string, string>>;
+  /** {{sign:name}}: re-mint a saved evergreen signed token (JWT or session cookie). */
+  sign?: (name: string) => string;
 }
 
 export class TokenError extends Error {}
@@ -217,6 +220,9 @@ function resolveOne(whole: string, rawKind: string, arg: string, ctx: TokenConte
         if (vars[key] === undefined) throw new TokenError(`flow "${name}" did not set "${key}"`);
         return vars[key]!;
       }
+      case 'sign':
+        if (!ctx.sign) throw new TokenError('{{sign}} needs a saved signed token');
+        return ctx.sign(arg.trim());
       case 'cookie':
         return cookieFor(ctx, arg);
       case 'var': {

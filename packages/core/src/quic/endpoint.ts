@@ -20,6 +20,16 @@ export interface QuicServerOptions extends Omit<ServerConnectionOptions, 'origin
  * new Connection before its first packet is processed, so handlers can be
  * attached to conn.ev.
  */
+/**
+ * UDP has no connection to fail over with, so pick the address the way TCP's
+ * happy eyeballs usually ends up: IPv4 first. Windows resolves localhost to ::1
+ * first, which misses a dev server bound to 127.0.0.1.
+ */
+async function resolveUdp(host: string): Promise<string> {
+  const all = await lookup(host, { all: true });
+  return (all.find((a) => a.family === 4) ?? all[0]!).address;
+}
+
 export class QuicServer extends EventEmitter {
   readonly socket: dgram.Socket;
   private conns = new Map<string, Connection>();
@@ -164,7 +174,7 @@ export class QuicClient {
   }
 
   static async connect(opts: QuicConnectOptions, ev: Partial<ConnectionEvents> = {}): Promise<QuicClient> {
-    const address = isIP(opts.host) ? opts.host : (await lookup(opts.host)).address;
+    const address = isIP(opts.host) ? opts.host : await resolveUdp(opts.host);
     const c = new QuicClient(opts, { address, port: opts.port }, ev);
     c.socket = await c.bind(opts.localPort ?? 0);
     const done = new Promise<void>((resolve, reject) => {

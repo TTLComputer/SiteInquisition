@@ -22,10 +22,11 @@ let tlsPort: number;
 
 function handler(stream: import('node:http2').ServerHttp2Stream, headers: import('node:http2').IncomingHttpHeaders) {
   const path = String(headers[':path']);
+  stream.on('error', () => undefined);
   const chunks: Buffer[] = [];
   stream.on('data', (c: Buffer) => chunks.push(c));
   stream.on('end', () => {
-    if (path === '/slow') return void setTimeout(() => (stream.respond({ ':status': 200 }), stream.end('late')), 150);
+    if (path === '/slow') return void setTimeout(() => void (!stream.destroyed && (stream.respond({ ':status': 200 }), stream.end('late'))), 150);
     if (path === '/refuse') return stream.close(0x7);
     stream.respond({ ':status': 200, 'content-type': 'application/json' }, { waitForTrailers: true });
     stream.on('wantTrailers', () => stream.sendTrailers({ 'grpc-status': '0' }));

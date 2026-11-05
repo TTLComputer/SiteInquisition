@@ -323,6 +323,8 @@ export class H2Connection extends EventEmitter<H2ConnectionEvents> {
   goawaySent?: { lastStream: number; code: number };
   goawayReceived?: { lastStream: number; code: number; debug: Buffer };
   closed = false;
+  /** The connection error that closed us, when we failed the connection. */
+  lastError?: Error & { code?: number; local?: boolean };
   /** Peer streams refused because they went over our MAX_CONCURRENT_STREAMS. */
   refused = 0;
 
@@ -522,7 +524,12 @@ export class H2Connection extends EventEmitter<H2ConnectionEvents> {
   private fail(err: Error & { code?: number }): void {
     const code = err instanceof HpackError ? H2Error.COMPRESSION_ERROR : (err.code ?? H2Error.PROTOCOL_ERROR);
     if (!this.goawaySent) this.goaway(code, err.message);
-    this.emit('error', Object.assign(err, { code, local: true }));
+    this.lastError = Object.assign(err, { code, local: true });
+    // A connection error is reflected in GOAWAY, the socket closing and every
+    // open stream aborting, so a caller that is not listening for 'error'
+    // still sees it. Emitting to no listener would crash the process (Node
+    // rethrows), which a tool pointed at a broken server must never do.
+    if (this.listenerCount('error') > 0) this.emit('error', this.lastError);
     this.socket.end();
     this.onClose();
   }

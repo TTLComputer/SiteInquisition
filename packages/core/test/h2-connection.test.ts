@@ -45,6 +45,8 @@ beforeAll(async () => {
   node = createH2Server();
   node.on('stream', (stream, headers) => {
     const path = String(headers[':path']);
+    // Closing a stream with an error code makes node emit 'error' on it; swallow it.
+    stream.on('error', () => undefined);
     const chunks: Buffer[] = [];
     stream.on('data', (c: Buffer) => chunks.push(c));
     stream.on('end', () => {

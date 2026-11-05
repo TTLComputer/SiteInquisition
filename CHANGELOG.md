@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Search by JSON field**: `resjson:$.order.status=open`, `reqjson:"$.payload['some_value']~abc"`, or just `$.payload.user`, with the same JSONPath as Replay and Codecs. Fields holding encoded JSON (base64 of JSON, a JSON string) are looked into. Search values can use Replay tokens such as `{{$order.number}}` and `{{var:x}}`. Build search offers JSON fields and an Insert token picker.
 - **Glossary**: each place a field was seen opens the newest request that carried it, the count opens all of them in History (new `id:a,b` filter), and "+N more" expands the list.
 - **Tech view**: a new Tech screen lists every technology across all captured traffic, grouped by provider, with the hosts, evidence and requests behind each, plus the CSRF tokens pages hand out.
 - **CSRF in meta tags**: `<meta name="csrf-token" content="...">` (and hidden CSRF form fields) are found on any site, not only known frameworks. The Inspector and Tech view offer one-click "Keep fresh on replay", tokens are matched across hosts of one site (www and api), and a rotated token is traced back to the page that hands it out.

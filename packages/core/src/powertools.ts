@@ -99,6 +99,8 @@ export class PowerTools {
       tech: this.tech,
       fieldCodecs: this.fieldCodecs,
     });
+    // Search values can use the same tokens as Replay. Flows are left out: a search never sends requests.
+    store.resolveTokens = (text) => resolveTokens(text, this.sender.tokenContext('http://localhost/'));
     this.flows = new FlowRunner({
       store,
       sender: () => this.sender,
@@ -719,7 +721,7 @@ export class PowerTools {
       {
         name: 'search_traffic',
         description:
-          'Search recorded exchanges. Query syntax: host:*.example.com method:POST status:>=400 path:/api/ url:token= body:"text" header:"x-api-key" req:/res: (one side, headers and body) reqbody: resbody: reqheader: resheader: source:browser|proxy|replay ws:true tag:x tech:django error:sql|high|any since:<ISO or ms> "free text" (text matches any part of a word, ignoring case, in the URL, headers and decoded bodies); prefix a filter with - to negate. Newest first.',
+          'Search recorded exchanges. Query syntax: host:*.example.com method:POST status:>=400 path:/api/ url:token= body:"text" header:"x-api-key" req:/res: (one side, headers and body) reqbody: resbody: reqheader: resheader: resjson:/reqjson:/json:$.path[=|!=|~|!~|>|>=|<|<=value] (JSONPath into bodies, also inside encoded JSON fields; a bare $.path works too) {{tokens}} as in Replay source:browser|proxy|replay ws:true tag:x tech:django error:sql|high|any since:<ISO or ms> "free text" (text matches any part of a word, ignoring case, in the URL, headers and decoded bodies); prefix a filter with - to negate. Newest first.',
         inputSchema: { type: 'object', properties: { query: str, limit: { type: 'number', description: 'Default 50, max 500' } } },
         write: false,
         run: (a) => store.search(String(a.query ?? ''), { limit: Math.min(Number(a.limit ?? 50), 500) }).map((e) => ({ id: e.id, method: e.method, url: e.url, status: e.status, state: e.state, source: e.source, startedAt: new Date(e.startedAt).toISOString(), durationMs: e.durationMs, tags: e.tags })),

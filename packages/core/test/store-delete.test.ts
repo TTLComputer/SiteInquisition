@@ -55,7 +55,8 @@ describe('deleting traffic', () => {
 
   it('prunes by age, then by size, oldest first', () => {
     const old = add('http://d.test/old', 'x', Date.now() - 10 * 86_400_000);
-    const recent = add('http://d.test/recent', 'y');
+    // Newer than every big body below, however long adding them takes.
+    const recent = add('http://d.test/recent', 'y', Date.now() + 60_000);
     expect(store.prune({ maxAgeDays: 7 })).toBe(1);
     expect(store.getExchange(old.id)).toBeUndefined();
     expect(store.getExchange(recent.id)).toBeDefined();

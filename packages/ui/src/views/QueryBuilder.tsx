@@ -2,15 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { usePlacement } from '../components/placement';
+import { TokenPicker } from './TokenPicker';
 
 /** Where a condition looks, and the search key it writes. */
 interface Field {
   key: string;
   label: string;
-  group: 'Text' | 'Request' | 'Response' | 'Other';
+  group: 'Text' | 'JSON' | 'Request' | 'Response' | 'Other';
   placeholder: string;
   hint?: string;
 }
+
+const JSON_HINT = 'A JSONPath, then = != ~ (contains) !~ > >= < <= and a value; just the path means the field is there. Fields holding encoded JSON are looked into.';
 
 const FIELDS: Field[] = [
   { key: '', label: 'Anywhere', group: 'Text', placeholder: 'text in the URL, headers or bodies', hint: 'Matches any part of a word, ignoring case.' },
@@ -22,6 +25,9 @@ const FIELDS: Field[] = [
   { key: 'resheader', label: 'Response headers', group: 'Text', placeholder: 'server: nginx', hint: 'Headers read as "name: value".' },
   { key: 'body', label: 'Either body', group: 'Text', placeholder: 'token' },
   { key: 'header', label: 'Either headers', group: 'Text', placeholder: 'x-request-id' },
+  { key: 'resjson', label: 'Response body field', group: 'JSON', placeholder: "$.order.status=open", hint: JSON_HINT },
+  { key: 'reqjson', label: 'Request body field', group: 'JSON', placeholder: "$.payload['some_value']=abc", hint: JSON_HINT },
+  { key: 'json', label: 'Either body field', group: 'JSON', placeholder: '$.items[*].qty>=2', hint: JSON_HINT },
   { key: 'host', label: 'Host', group: 'Request', placeholder: 'api.example.com or *.example.com' },
   { key: 'path', label: 'Path starts with', group: 'Request', placeholder: '/api/ or /api/*/orders' },
   { key: 'url', label: 'URL contains', group: 'Request', placeholder: 'token=' },
@@ -60,7 +66,7 @@ export function parseConditions(q: string): Condition[] {
       continue;
     }
     const value = quoted !== undefined ? quoted.replace(/\\(.)/g, '$1') : (bare ?? '');
-    if (value) out.push({ key, value, not: !!neg });
+    if (value) out.push({ key: !key && quoted === undefined && /^\$(\.|\[)/.test(value) ? 'json' : key, value, not: !!neg });
   }
   return out;
 }
@@ -80,6 +86,9 @@ const EXAMPLES: Array<[string, string]> = [
   ['Calls with a bearer token', 'reqheader:"authorization: bearer"'],
   ['JSON APIs that are not cached', 'resheader:"application/json" -resheader:"cache-control"'],
   ['Anything mentioning an id', 'PO-7781'],
+  ['Orders that are still open', 'resjson:$.order.status=open'],
+  ['A field inside an encoded payload', "reqjson:\"$.payload['some_value']\""],
+  ['The order a reference tag points at', 'resbody:{{$order.number}}'],
 ];
 
 /**
@@ -93,6 +102,8 @@ export function QueryBuilder({ query, onSearch }: { query: string; onSearch(q: s
   const [count, setCount] = useState<number | string | null>(null);
   const [hosts, setHosts] = useState<string[]>([]);
   const [tags, setTags] = useState<string[]>([]);
+  // The row a picked Replay token goes into.
+  const [focused, setFocused] = useState(0);
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -100,8 +111,6 @@ export function QueryBuilder({ query, onSearch }: { query: string; onSearch(q: s
 
   useEffect(() => {
     if (!open) return;
-    const start = parseConditions(query);
-    setRows(start.length ? start : [{ key: '', value: '', not: false }]);
     client.siteMap().then((h) => setHosts(h.map((x) => x.host)), () => undefined);
     client.tags().then((t) => setTags(t.map((x) => x.tag)), () => undefined);
     const close = (e: MouseEvent) => !wrap.current?.contains(e.target as Node) && setOpen(false);
@@ -112,9 +121,18 @@ export function QueryBuilder({ query, onSearch }: { query: string; onSearch(q: s
       window.removeEventListener('mousedown', close);
       window.removeEventListener('keydown', esc);
     };
-    // The builder starts from the query each time it opens.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, client]);
+
+  // The builder starts from the query each time it opens, in the same render that shows it.
+  const toggle = () => {
+    if (!open) {
+      const start = parseConditions(query);
+      setRows(start.length ? start : [{ key: '', value: '', not: false }]);
+      setFocused(0);
+      setCount(null);
+    }
+    setOpen(!open);
+  };
 
   const text = useMemo(() => formatConditions(rows), [rows]);
 
@@ -153,7 +171,7 @@ export function QueryBuilder({ query, onSearch }: { query: string; onSearch(q: s
 
   return (
     <div className="qb-wrap" ref={wrap}>
-      <button ref={button} className="btn small" aria-expanded={open} aria-haspopup="dialog" title="Build a search: pick where to look and what for" onClick={() => setOpen(!open)}>
+      <button ref={button} className="btn small" aria-expanded={open} aria-haspopup="dialog" title="Build a search: pick where to look and what for" onClick={toggle}>
         <Icon name="filter" size={12} /> Build search
       </button>
       {open && (
@@ -165,8 +183,8 @@ export function QueryBuilder({ query, onSearch }: { query: string; onSearch(q: s
               return (
                 <div className="qb-row" key={i} data-testid="qb-row">
                   <select className="input" aria-label={`Condition ${i + 1} where`} value={r.key} onChange={(e) => set(i, { key: e.target.value })}>
-                    {(['Text', 'Request', 'Response', 'Other'] as const).map((g) => (
-                      <optgroup key={g} label={g === 'Text' ? 'Text in' : g}>
+                    {(['Text', 'JSON', 'Request', 'Response', 'Other'] as const).map((g) => (
+                      <optgroup key={g} label={g === 'Text' ? 'Text in' : g === 'JSON' ? 'JSON field (JSONPath)' : g}>
                         {FIELDS.filter((f) => f.group === g).map((f) => (
                           <option key={f.key} value={f.key}>
                             {f.label}
@@ -177,8 +195,8 @@ export function QueryBuilder({ query, onSearch }: { query: string; onSearch(q: s
                     {!field && <option value={r.key}>{r.key}</option>}
                   </select>
                   <select className="input qb-not" aria-label={`Condition ${i + 1} match`} value={r.not ? 'not' : 'is'} onChange={(e) => set(i, { not: e.target.value === 'not' })}>
-                    <option value="is">{field?.group === 'Text' ? 'contains' : 'is'}</option>
-                    <option value="not">{field?.group === 'Text' ? 'does not contain' : 'is not'}</option>
+                    <option value="is">{field?.group === 'Text' ? 'contains' : field?.group === 'JSON' ? 'matches' : 'is'}</option>
+                    <option value="not">{field?.group === 'Text' ? 'does not contain' : field?.group === 'JSON' ? 'does not match' : 'is not'}</option>
                   </select>
                   <input
                     className="input mono"
@@ -189,6 +207,7 @@ export function QueryBuilder({ query, onSearch }: { query: string; onSearch(q: s
                     list={list.length ? `qb-list-${r.key}` : undefined}
                     autoFocus={i === rows.length - 1 && !r.value}
                     onChange={(e) => set(i, { value: e.target.value })}
+                    onFocus={() => setFocused(i)}
                     onKeyDown={(e) => e.key === 'Enter' && search()}
                   />
                   {list.length > 0 && (
@@ -209,7 +228,9 @@ export function QueryBuilder({ query, onSearch }: { query: string; onSearch(q: s
             <button className="btn small" onClick={() => setRows([...rows, { key: '', value: '', not: false }])}>
               Add condition
             </button>
-            <span className="faint">All conditions must match.</span>
+            <span className="faint">All conditions must match. Values can use Replay tokens.</span>
+            <span style={{ flex: 1 }} />
+            <TokenPicker onPick={(t) => rows[focused] && set(focused, { value: rows[focused]!.value + t })} />
           </div>
           <div className="qb-preview">
             <code className="mono" aria-label="Search text" data-testid="qb-text">

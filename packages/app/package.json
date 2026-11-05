@@ -1,6 +1,6 @@
 {
   "name": "@siteinquisition/app",
-  "version": "1.0.0",
+  "version": "1.0.0-beta.1",
   "private": true,
   "description": "SiteInquisition desktop app: Electron shell that hosts the core and the renderer.",
   "license": "MIT",

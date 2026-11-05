@@ -176,7 +176,7 @@ function deb(root: string, unpacked: string, version: string, mtime: number): Bu
   ];
   const control = [
     `Package: ${NAME}`,
-    `Version: ${version}`,
+    `Version: ${version.replace('-', '~')}`, // Debian sorts 1.0.0~beta.1 before 1.0.0
     'Architecture: amd64',
     'Maintainer: SiteInquisition <noreply@siteinquisition.invalid>',
     `Installed-Size: ${sizeKiB(unpacked)}`,

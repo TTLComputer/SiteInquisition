@@ -10,18 +10,18 @@ Download a release from the [Releases page](https://github.com/TTLComputer/SiteI
 
 ```sh
 # Debian, Ubuntu and derivatives
-sudo apt install ./siteinquisition_1.0.0_amd64.deb     # installs to /opt/siteinquisition, with siteinquisition and siq on PATH
+sudo apt install ./siteinquisition_1.0.0-beta.1_amd64.deb     # installs to /opt/siteinquisition, with siteinquisition and siq on PATH
 
 # Anything else: unpack anywhere and run it from there
-tar xzf siteinquisition-1.0.0-linux-x64.tar.gz
-./siteinquisition-1.0.0-linux-x64/siteinquisition
-./siteinquisition-1.0.0-linux-x64/bin/siq --help
+tar xzf siteinquisition-1.0.0-beta.1-linux-x64.tar.gz
+./siteinquisition-1.0.0-beta.1-linux-x64/siteinquisition
+./siteinquisition-1.0.0-beta.1-linux-x64/bin/siq --help
 ```
 
-On Windows, unzip `siteinquisition-1.0.0-win-x64.zip` anywhere you can write (for example `%LOCALAPPDATA%\Programs`) and run `SiteInquisition.exe`. For the CLI, add the folder's `bin` to your PATH, or run it directly:
+On Windows, unzip `siteinquisition-1.0.0-beta.1-win-x64.zip` anywhere you can write (for example `%LOCALAPPDATA%\Programs`) and run `SiteInquisition.exe`. For the CLI, add the folder's `bin` to your PATH, or run it directly:
 
 ```bat
-siteinquisition-1.0.0-win-x64\bin\siq --help
+siteinquisition-1.0.0-beta.1-win-x64\bin\siq --help
 ```
 
 The Windows build is a portable zip with no installer, and it is not code signed yet, so SmartScreen may warn the first time you run it ("More info", then "Run anyway").

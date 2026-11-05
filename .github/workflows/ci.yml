@@ -39,6 +39,9 @@ jobs:
       # uses; the renderer tests, the in-house browser driver and the smoke test need them.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: pnpm install --frozen-lockfile
+      # pnpm restores electron from its cache without the binary its install
+      # script downloads; the Linux package needs it (Windows downloads its own).
+      - run: node packages/app/node_modules/electron/install.js
       - run: pnpm build
       - run: pnpm test
       - run: pnpm package --out release

@@ -7,6 +7,7 @@ import { fmtMs, fmtSize, fmtTime, statusClass, statusText, toRawRequest, downloa
 import { bodyText, breakOn, mockFromExchange } from '../actions';
 import { Coverage } from './Coverage';
 import { Inspector } from './Inspector';
+import { QueryBuilder } from './QueryBuilder';
 import { ReplayButton } from '../components/ReplayButton';
 
 const replayName = (path: string) => {
@@ -20,8 +21,8 @@ export const DRAG_TYPE = 'application/x-siq-exchange';
 
 const CHIPS: Array<{ label: string; query: string }> = [
   { label: 'All', query: '' },
-  { label: 'HTML', query: 'header:"text/html"' },
-  { label: 'XHR', query: 'header:"application/json"' },
+  { label: 'HTML', query: 'resheader:"content-type: text/html"' },
+  { label: 'XHR', query: 'resheader:"content-type: application/json"' },
   { label: 'WebSocket', query: 'ws:true' },
   { label: 'Errors', query: 'status:>=400' },
   { label: 'Server errors', query: 'error:any' },
@@ -577,7 +578,7 @@ export function History() {
             id="filter-input"
             value={draft}
             spellCheck={false}
-            placeholder='host:*.example.com method:POST status:>=400 "free text" -path:/static'
+            placeholder='Search text in requests and responses, or host:*.example.com status:>=400 resbody:"error"'
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') setQuery(draft);
@@ -595,6 +596,13 @@ export function History() {
             </button>
           )}
         </label>
+        <QueryBuilder
+          query={draft}
+          onSearch={(q) => {
+            setDraft(q);
+            setQuery(q);
+          }}
+        />
         <div className="segmented" role="group" aria-label="Quick filters">
           {CHIPS.map((c) => (
             <button key={c.label} className="seg" aria-pressed={activeChip === c} onClick={() => setQuery(c.query)} title={c.query || 'Everything recorded'}>

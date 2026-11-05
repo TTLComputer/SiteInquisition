@@ -38,7 +38,7 @@ To uninstall: `sudo apt remove siteinquisition`, or delete the unpacked folder. 
 - **MQTT** 3.1, 3.1.1 and 5.0 relay: devices connect to SiteInquisition as their broker, every byte is passed to the real broker unchanged, and each packet (CONNECT, SUBSCRIBE, PUBLISH, acks, ...) is recorded with topic, QoS, retain flag, properties and payload. TLS is supported on both sides, with device-facing certificates signed by the project CA.
 - **Scope rules** (host glob, port, scheme, path prefix) that decide what is decrypted and what is recorded. A new project records nothing until you add a host.
 - Redirect chains linked into a single flow.
-- A capture database in SQLite (`node:sqlite`) with full-text search over URLs, headers and decoded bodies (gzip, deflate, brotli, zstd).
+- A capture database in SQLite (`node:sqlite`) with text search (any part of a word) over URLs, request and response headers, and decoded bodies (gzip, deflate, brotli, zstd).
 - An append-only change log with ULID ids on every row, ready for the planned multi-user and replication work.
 - A core API (JSON-RPC 2.0 over a token-protected local WebSocket) with live change notifications.
 - By default the proxy and MQTT listeners bind to 127.0.0.1. With `--lan` they listen on every interface, but each new device is refused until you allow it (title bar chip, Settings, `siq lan allow 192.168.1.42`, or `--lan-allow 192.168.1.0/24`).
@@ -151,14 +151,17 @@ In the app: right-click a row (or press Delete), *Delete matching* in History, a
 | `status:` | `status:404`, `status:>=400`, `status:5xx`, `status:200-299` |
 | `path:` (prefix or glob) | `path:/api/`, `path:/v*/users` |
 | `url:` (substring) | `url:token=` |
-| `body:` / `header:` (full text) | `body:"session expired"` |
+| `req:` / `res:` (one side, headers and body) | `res:"stack trace"`, `request:apikey` |
+| `reqbody:` / `resbody:` | `reqbody:password`, `resbody:"\"admin\":true"` |
+| `reqheader:` / `resheader:` (as `name: value`) | `reqheader:"authorization: bearer"`, `resheader:"server: nginx"` |
+| `body:` / `header:` (either side) | `body:"session expired"` |
 | `ws:` `source:` `state:` `scheme:` `tag:` `flow:` `replayof:` | `ws:true`, `tag:bug-123`, `source:browser` |
 | `error:` (server error kind, signature id or severity; `any`) | `error:sql`, `error:high`, `error:any` |
 | `tech:` (technology id or name, after your corrections) | `tech:django`, `tech:aws`, `-tech:cloudflare` |
 | `since:` / `until:` (epoch ms or ISO time) | `since:2026-11-04T09:30 until:2026-11-04T10:00` |
-| free text | `"invalid signature"` |
+| free text (URL, headers and bodies) | `"invalid signature"`, `PO-77` |
 
-Prefix any filter with `-` to negate it, as in `-status:304`.
+Text matches any part of a word and ignores case, so `PO-77` finds `PO-7781` and `csrf_tok` finds `csrf_token`. Bodies are searched after Content-Encoding is undone, up to the first 1 MB. Prefix any filter with `-` to negate it, as in `-status:304`. In the app, **Build search** next to the filter writes a query for you and shows how many requests match, and the Inspector highlights the matches and steps through them.
 
 ### Scope
 

@@ -232,6 +232,44 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     await expect.poll(() => tab.evaluate((el) => (el as HTMLElement).style.display)).toBe('flex');
   });
 
+  it('builds a body search, then highlights and scrolls to the match in a large request', async () => {
+    const filler = Array.from({ length: 600 }, (_, i) => `line ${i} of filler text`).join('\n');
+    await h.send('/api/search-big', 'POST', `${filler}\nthe NEEDLE-4242 is here\n${filler}`);
+    await nav('History');
+    await page.getByRole('button', { name: /Build search/ }).click();
+    const dialog = page.getByRole('dialog', { name: 'Build a search' });
+    await dialog.waitFor();
+    await dialog.getByLabel('Condition 1 where').selectOption('reqbody');
+    await dialog.getByLabel('Condition 1 value').fill('needle-42');
+    await expect.poll(() => page.getByTestId('qb-text').textContent()).toBe('reqbody:needle-42');
+    await expect.poll(() => page.getByTestId('qb-count').textContent()).toBe('1 request matches');
+    expect(await inViewport('.query-builder')).toBe(true);
+    await shot('query-builder');
+    await dialog.getByRole('button', { name: 'Search', exact: true }).click();
+    expect(await page.locator('#filter-input').inputValue()).toBe('reqbody:needle-42');
+    await expect.poll(() => page.locator('.row').count()).toBe(1);
+
+    await page.locator('.row').first().click();
+    const bar = page.getByTestId('hit-bar');
+    await expect.poll(() => bar.textContent()).toContain('Match 1 of 1');
+    // Only the request body is marked, though the response echoes the same text.
+    expect(await page.locator('.inspector mark.hit').count()).toBe(1);
+    expect(await page.locator('.inspector mark.hit.current').textContent()).toBe('NEEDLE-42');
+    await expect.poll(() => inViewport('.inspector mark.hit.current')).toBe(true);
+    await shot('search-highlight');
+
+    // Plain text looks everywhere, and Next steps through each place.
+    await page.locator('#filter-input').fill('needle-4242');
+    await page.locator('#filter-input').press('Enter');
+    await page.locator('.row').first().click();
+    await expect.poll(() => bar.textContent()).toContain('of 2');
+    await bar.getByRole('button', { name: 'Next match' }).click();
+    await expect.poll(() => bar.textContent()).toContain('Match 2 of 2');
+    await expect.poll(() => inViewport('.inspector mark.hit.current')).toBe(true);
+    await page.locator('#filter-input').fill('');
+    await page.locator('#filter-input').press('Enter');
+  });
+
   it('trusts a self-signed dev server certificate from Settings', async () => {
     await nav('Settings');
     await page.getByRole('tab', { name: 'Server certificates' }).click();

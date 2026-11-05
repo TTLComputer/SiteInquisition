@@ -325,6 +325,10 @@ export class CoreClient {
   // Typed helpers
   info = () => this.call<CoreInfo>('core.info');
   search = (query: string, opts: { limit?: number; before?: string } = {}) => this.call<ExchangeSummary[]>('traffic.search', { query, ...opts });
+  /** How many recorded requests a search matches (counting stops at max). */
+  count = (query: string, max = 100_000) => this.call<number>('traffic.count', { query, max });
+  /** The text a search looks for, and where, for highlighting. */
+  searchTerms = (query: string) => this.call<SearchTerm[]>('traffic.terms', { query });
   get = (id: string) => this.call<ExchangeDetail>('traffic.get', { id });
   body = (id: string, side: 'request' | 'response', decoded = true) =>
     this.call<{ size: number; base64: string }>('traffic.body', { id, side, decoded }).then((b) => base64ToBytes(b.base64));
@@ -506,6 +510,13 @@ export class CoreClient {
   endpointNotes = () => this.call<Record<string, { notes: string; tags: string[]; updatedAt: number; by: string }>>('notes.endpoints');
   setEndpointNote = (key: string, notes: string, tags: string[] = []) => this.call<Record<string, { notes: string; tags: string[] }>>('notes.setEndpoint', { key, notes, tags });
   noteFor = (id: string) => this.call<{ key: string; notes: string; tags: string[] } | null>('notes.forExchange', { id });
+}
+
+export type SearchColumn = 'url' | 'req_headers' | 'req_body' | 'res_headers' | 'res_body';
+export interface SearchTerm {
+  value: string;
+  in: SearchColumn[];
+  negate: boolean;
 }
 
 /** A JSON field holding more encoded JSON, as the codecs package finds it. */

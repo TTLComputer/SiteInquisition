@@ -99,7 +99,7 @@ function expiryText(c: JarCookie, now: number): { text: string; cls: string } {
 }
 
 function Jar() {
-  const { client, select, setView, setQuery, notify } = useApp();
+  const { client, select, setView, setQuery, notify, sendToCodecs } = useApp();
   const [cookies, setCookies] = useState<JarCookieInfo[]>([]);
   const [showInfra, setShowInfra] = useState(false);
   const [domain, setDomain] = useState<string | null>(null);
@@ -181,7 +181,7 @@ function Jar() {
                   const key = `${c.domain}${c.path}${c.name}`;
                   return (
                     <Fragment key={key}>
-                    <tr data-testid="cookie-row">
+                    <tr data-testid="cookie-row" data-name={c.name}>
                       <td>
                         {c.name}
                         {c.infra && (
@@ -218,8 +218,11 @@ function Jar() {
                         <button className="btn small" title={`Copy ${token} for use in replays`} onClick={() => navigator.clipboard.writeText(token).then(() => notify(`Copied ${token}`), () => notify(token))}>
                           Copy token
                         </button>{' '}
-                        <button className="btn small" aria-expanded={openSession === key} title="Decode as a framework session cookie (Flask, Django, Rails, Laravel, Express)" onClick={() => setOpenSession(openSession === key ? null : key)}>
+                        <button className="btn small" title="Open the value in Codecs, with its layers detected" onClick={() => sendToCodecs(c.value, `cookie ${c.name}`)}>
                           Decode
+                        </button>{' '}
+                        <button className="btn small" aria-expanded={openSession === key} title="Read it as a framework session cookie (Flask, Django, Rails, Laravel, Express)" onClick={() => setOpenSession(openSession === key ? null : key)}>
+                          Session
                         </button>{' '}
                         <CookieToggle name={c.name} infra={!!c.infra} onDone={() => void load()} />
                       </td>

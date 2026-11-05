@@ -10,6 +10,10 @@
 - **Server certificates** (Settings): trust a dev server's self-signed certificate (fetched with one click) or a private CA, or skip checks for listed hosts or all of them. Used by the proxy, Replay, Race, the HTTP/3 lab, WebSockets and MQTT. Failed requests show a "Look at its certificate" helper.
 - **Field codecs**: say a JSON field is, for example, base64 of JSON (`$.payload = base64>json`). The Inspector shows it decoded, Replay opens it decoded and encodes it on send, and Codecs can save one from a field it decoded.
 - **Codecs decodes all the way down**: a JSON field that holds more encoded JSON (a JSON string, base64 of JSON, url-encoded, and so on) opens up in place, at any depth. The result re-encodes as you type, through every layer, and a value sent from Replay is updated there as you edit, so there is no Encode or Put back step. An untouched value comes back byte for byte.
+- **Search inside requests and responses**: text now matches any part of a word, ignoring case (`PO-77`, `csrf_tok`), and can be narrowed to one side or part: `req:`, `res:`, `reqbody:`, `resbody:`, `reqheader:`, `resheader:`. Existing projects are re-indexed once when opened.
+- **Build search** in History: pick where to look and what for, see how many requests match as you go, and search. Starts from what is already in the filter.
+- **Search matches are highlighted** in the Inspector, which scrolls to the first one; Previous and Next step through the rest.
+- **Cookies**: Decode opens the value in Codecs with its layers detected. Reading a framework session cookie moved to its own Session button.
 - **Send to Replay** looks and reads the same everywhere, and every list of recorded requests has it.
 
 

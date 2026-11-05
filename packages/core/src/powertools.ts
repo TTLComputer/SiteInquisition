@@ -719,7 +719,7 @@ export class PowerTools {
       {
         name: 'search_traffic',
         description:
-          'Search recorded exchanges. Query syntax: host:*.example.com method:POST status:>=400 path:/api/ url:token= body:"text" header:"x-api-key" source:browser|proxy|replay ws:true tag:x tech:django error:sql|high|any since:<ISO or ms> "free text"; prefix a filter with - to negate. Newest first.',
+          'Search recorded exchanges. Query syntax: host:*.example.com method:POST status:>=400 path:/api/ url:token= body:"text" header:"x-api-key" req:/res: (one side, headers and body) reqbody: resbody: reqheader: resheader: source:browser|proxy|replay ws:true tag:x tech:django error:sql|high|any since:<ISO or ms> "free text" (text matches any part of a word, ignoring case, in the URL, headers and decoded bodies); prefix a filter with - to negate. Newest first.',
         inputSchema: { type: 'object', properties: { query: str, limit: { type: 'number', description: 'Default 50, max 500' } } },
         write: false,
         run: (a) => store.search(String(a.query ?? ''), { limit: Math.min(Number(a.limit ?? 50), 500) }).map((e) => ({ id: e.id, method: e.method, url: e.url, status: e.status, state: e.state, source: e.source, startedAt: new Date(e.startedAt).toISOString(), durationMs: e.durationMs, tags: e.tags })),

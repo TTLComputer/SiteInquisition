@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { ContractResult, ExchangeDetail, HeaderList, WireStreamMessage } from '../api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ContractResult, ExchangeDetail, HeaderList, SearchColumn, SearchTerm, WireStreamMessage } from '../api';
 import { base64ToBytes } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -9,25 +9,35 @@ import { ErrorBanner, TechPanel } from './Tech';
 import { CertHelp } from './TlsSettings';
 import { decodeSignalR, decodeSocketIO, detectProtocol, summarizeFrame } from '@siteinquisition/codecs/protocols';
 import { ReplayButton } from '../components/ReplayButton';
+import { Highlight, termPattern, useHitNavigator } from '../components/Highlight';
+
+/** What the History search looks for, per part of the exchange. */
+type Hl = { line: RegExp | null; headers: RegExp | null; body: RegExp | null };
 
 type Tab = 'exchange' | 'messages' | 'tech' | 'timings' | 'notes';
 type BodyMode = 'pretty' | 'raw' | 'hex' | 'fields';
 /** A body with its saved field codecs applied, and which fields they were. */
 type FieldView = { text: string; label: string } | null;
 
-function Headers({ headers }: { headers: HeaderList }) {
+function Headers({ headers, hl }: { headers: HeaderList; hl?: RegExp | null }) {
   return (
     <>
-      {headers.map(([k, v], i) => (
-        <div key={i}>
-          <span className="hk">{k}</span>: {v}
-        </div>
-      ))}
+      {headers.map(([k, v], i) =>
+        hl && ((hl.lastIndex = 0), hl.test(`${k}: ${v}`)) ? (
+          <div key={i}>
+            <Highlight text={`${k}: ${v}`} pattern={hl} />
+          </div>
+        ) : (
+          <div key={i}>
+            <span className="hk">{k}</span>: {v}
+          </div>
+        ),
+      )}
     </>
   );
 }
 
-function BodyView({ bytes, headers, mode, truncated, fields }: { bytes: Uint8Array | null; headers: HeaderList | null; mode: BodyMode; truncated: boolean; fields?: FieldView }) {
+function BodyView({ bytes, headers, mode, truncated, fields, hl }: { bytes: Uint8Array | null; headers: HeaderList | null; mode: BodyMode; truncated: boolean; fields?: FieldView; hl?: RegExp | null }) {
   if (!bytes) return <span className="faint">loading body...</span>;
   if (bytes.length === 0) return <span className="faint">(no body)</span>;
   const text = asText(bytes);
@@ -39,13 +49,13 @@ function BodyView({ bytes, headers, mode, truncated, fields }: { bytes: Uint8Arr
   return (
     <>
       {text === null && mode !== 'hex' && <div className="faint">Binary body ({fmtSize(bytes.length)}), shown as hex.</div>}
-      {out}
+      {mode === 'hex' || text === null ? out : <Highlight text={out} pattern={hl ?? null} />}
       {truncated && <div className="faint">Body was truncated at the capture size limit.</div>}
     </>
   );
 }
 
-function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrace, fields }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void; onTrace?(text: string): void; fields?: FieldView }) {
+function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrace, fields, hl }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void; onTrace?(text: string): void; fields?: FieldView; hl?: Hl }) {
   const [mode, setMode] = useState<BodyMode>('pretty');
   // Saved field codecs apply: show those fields decoded first.
   useEffect(() => {
@@ -96,10 +106,12 @@ function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrac
         </div>
       </div>
       <pre className="raw">
-        <div>{first}</div>
-        {headers ? <Headers headers={headers} /> : null}
+        <div>
+          <Highlight text={first} pattern={hl?.line ?? null} />
+        </div>
+        {headers ? <Headers headers={headers} hl={hl?.headers} /> : null}
         {'\n'}
-        <BodyView bytes={bytes} headers={headers} mode={mode} truncated={truncated} fields={fields} />
+        <BodyView bytes={bytes} headers={headers} mode={mode} truncated={truncated} fields={fields} hl={hl?.body} />
       </pre>
     </section>
   );
@@ -401,7 +413,7 @@ function EndpointNotes({ ex }: { ex: ExchangeDetail }) {
 }
 
 export function Inspector({ id, height, onClose }: { id: string; height: number | null; onClose(): void }) {
-  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, traceValue } = useApp();
+  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, traceValue, query } = useApp();
   const [sig, setSig] = useState<{ accessKeyId: string; region: string; service: string; date: string; signedHeaders: string[] } | null>(null);
   const [ex, setEx] = useState<ExchangeDetail | null>(null);
   const [reqBody, setReqBody] = useState<Uint8Array | null>(null);
@@ -446,6 +458,26 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
   useEffect(() => {
     if (tab === 'messages' && ex && !ex.stream) setTab('exchange');
   }, [ex, tab]);
+
+  // Highlight what the History search looked for, and jump to the first place it appears.
+  const [terms, setTerms] = useState<SearchTerm[]>([]);
+  useEffect(() => {
+    let live = true;
+    if (!query.trim()) setTerms([]);
+    else client.searchTerms(query).then((t) => live && setTerms(t.filter((x) => !x.negate)), () => live && setTerms([]));
+    return () => {
+      live = false;
+    };
+  }, [client, query]);
+  const hl = useMemo(() => {
+    const pat = (...cols: SearchColumn[]) => termPattern(terms.filter((t) => t.in.some((c) => cols.includes(c))).map((t) => t.value));
+    return {
+      req: { line: pat('url'), headers: pat('req_headers'), body: pat('req_body') },
+      res: { line: null, headers: pat('res_headers'), body: pat('res_body') },
+    };
+  }, [terms]);
+  const exchangeRef = useRef<HTMLDivElement>(null);
+  const hits = useHitNavigator(exchangeRef, `${id}|${terms.map((t) => t.value).join('\u0000')}|${reqBody?.length}|${resBody?.length}|${reqFields?.text.length}|${resFields?.text.length}|${tab}`);
 
   const style = height ? { height } : undefined;
   if (error) {
@@ -527,8 +559,21 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
         {tab === 'exchange' && <ErrorBanner ex={ex} />}
         {tab === 'exchange' && ex.error && <CertHelp url={ex.url} error={ex.error} />}
         {tab === 'exchange' && <ApiStrip ex={ex} onNotes={() => setTab('notes')} />}
+        {tab === 'exchange' && terms.length > 0 && (
+          <div className="hit-bar" data-testid="hit-bar" role="status">
+            <Icon name="search" size={12} color="var(--text-faint)" />
+            <span>{hits.count ? `Match ${hits.at + 1} of ${hits.count}${hits.count >= 2000 ? '+' : ''} for the search` : 'No match shown here: it may be past the indexed part of a large body, or in a hex view'}</span>
+            <span style={{ flex: 1 }} />
+            <button className="btn small" disabled={hits.count < 2} onClick={hits.prev} aria-label="Previous match">
+              ‹ Previous
+            </button>
+            <button className="btn small" disabled={hits.count < 2} onClick={hits.next} aria-label="Next match">
+              Next ›
+            </button>
+          </div>
+        )}
         {tab === 'exchange' && (
-          <div className="two-col">
+          <div className="two-col" ref={exchangeRef}>
             <Side
               title="Request"
               first={`${ex.method} ${ex.path} HTTP/${ex.httpVersion}`}
@@ -546,6 +591,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
                 </>
               }
               fields={reqFields}
+              hl={hl.req}
               onDecode={(t) => sendToCodecs(t, `${ex.method} ${ex.path.split('?')[0]} request`)}
               onTrace={(t) => (t ? traceValue(t, ex.id) : notify('Select a value in the request first, such as an id in the path or body.'))}
             />
@@ -556,6 +602,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
               bytes={resBody}
               truncated={ex.responseBodyTruncated}
               fields={resFields}
+              hl={hl.res}
               onDecode={(t) => sendToCodecs(t, `${ex.method} ${ex.path.split('?')[0]} response`)}
             />
           </div>

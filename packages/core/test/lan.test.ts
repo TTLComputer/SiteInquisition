@@ -98,7 +98,9 @@ describe.skipIf(!lanAddress)('proxy listeners and LAN clients', () => {
     let core = await open();
     try {
       await core.start();
-      expect(await tryProxy(core.proxy.port, lanAddress!, target)).toBe('');
+      // Refused without an answer: a clean close, or a reset on Windows, which
+      // resets a socket closed with the request still unread.
+      expect(['', 'ECONNRESET']).toContain(await tryProxy(core.proxy.port, lanAddress!, target));
       expect(core.lanState().pending.map((p) => p.address)).toEqual([lanAddress]);
       core.lan.allow(lanAddress!);
       expect(await tryProxy(core.proxy.port, lanAddress!, target)).toBe('HTTP/1.1 200 OK');

@@ -12,7 +12,9 @@ describe('release archives', () => {
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
   const long = `${'a'.repeat(60)}/${'b'.repeat(60)}/${'c'.repeat(40)}.js`;
 
-  it.skipIf(!has('tar'))('writes tar files that tar reads back: files, modes, folders, links, long paths', () => {
+  // The .tar.gz and .deb are built and unpacked on Linux; Windows has no Unix
+  // permission bits or (without developer mode) symlinks to unpack them into.
+  it.skipIf(!has('tar') || process.platform === 'win32')('writes tar files that tar reads back: files, modes, folders, links, long paths', () => {
     const file = join(dir, 'x.tar.gz');
     writeFileSync(
       file,
@@ -60,7 +62,7 @@ describe('release archives', () => {
     if (has('ar')) {
       const f = join(dir, 'x.ar');
       writeFileSync(f, a);
-      expect(execFileSync('ar', ['t', f], { encoding: 'utf8' }).trim().split('\n')).toEqual(['debian-binary', 'odd', 'next']);
+      expect(execFileSync('ar', ['t', f], { encoding: 'utf8' }).trim().split(/\r?\n/)).toEqual(['debian-binary', 'odd', 'next']);
     }
   });
 
@@ -92,7 +94,7 @@ describe('release archives', () => {
       const f = join(dir, 'x.zip');
       writeFileSync(f, z);
       const r = spawnSync('python3', ['-I', '-c', 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); print(z.testzip()); print(len(z.namelist()))', f], { encoding: 'utf8' });
-      expect(r.stdout.trim().split('\n')).toEqual(['None', '6']);
+      expect(r.stdout.trim().split(/\r?\n/)).toEqual(['None', '6']);
     }
   });
 });

@@ -1,7 +1,7 @@
 import { bytesToString, encodeChain, encodeFieldsText, getCodec, looksLikeText, type FieldCodec } from '@siteinquisition/codecs';
 import type { FieldCodecs } from './fieldcodecs.js';
 import type { FlowRunner } from './flows.js';
-import { cookieJar } from './cookies.js';
+import { cookieJar, type JarCookie } from './cookies.js';
 import { newId } from './ids.js';
 import { sendReplay } from './replay.js';
 import { applyRule, conditionsMatch, type HookMessage, type ReplaceRule } from './rules.js';
@@ -93,6 +93,10 @@ export interface SendDeps {
   countHit: (ruleId: string) => void;
   tech?: TechService;
   fieldCodecs?: FieldCodecs;
+  /** {{sign:name}}: re-mint a saved evergreen signed token. */
+  sign?: (name: string) => string;
+  /** A fresh value for an evergreen-bound jar cookie, or null. */
+  signCookie?: (host: string, name: string) => string | null;
 }
 
 /** Statuses frameworks answer with when a CSRF token is missing or stale. */
@@ -114,7 +118,7 @@ export function encodeBody(chain: string[], text: string): Uint8Array {
 
 const text = (b: Uint8Array | undefined) => (b && b.length && looksLikeText(b) ? bytesToString(b) : null);
 
-export function cookieHeaderFor(store: CaptureStore, url: string): string | null {
+export function cookieHeaderFor(store: CaptureStore, url: string, resign?: (host: string, name: string) => string | null): string | null {
   const u = new URL(url);
   const host = u.hostname.toLowerCase();
   const now = Date.now();
@@ -125,7 +129,9 @@ export function cookieHeaderFor(store: CaptureStore, url: string): string | null
     return domainOk && u.pathname.startsWith(c.path);
   });
   list.sort((a, b) => b.path.length - a.path.length);
-  return list.length ? list.map((c) => `${c.name}=${c.value}`).join('; ') : null;
+  // An evergreen-bound cookie is re-minted fresh so the jar never sends a stale one.
+  const valueOf = (c: JarCookie) => (resign ? resign(host, c.name) ?? c.value : c.value);
+  return list.length ? list.map((c) => `${c.name}=${valueOf(c)}`).join('; ') : null;
 }
 
 export class Sender {
@@ -146,7 +152,13 @@ export class Sender {
       pick: (arg) => pickValue(this.d.store, arg),
       each: (arg) => pickValues(this.d.store, arg),
       tag: (ref) => tagValue(this.d.store, ref),
+      ...(this.d.sign ? { sign: this.d.sign } : {}),
     };
+  }
+
+  /** The Cookie header the jar would send for a URL, with evergreen cookies re-minted fresh. */
+  private cookieHeader(url: string): string | null {
+    return cookieHeaderFor(this.d.store, url, this.d.signCookie);
   }
 
   /** Run the flows a request refers to (and the opts.flow one), once each, for one send. */
@@ -236,7 +248,7 @@ export class Sender {
       applied.push(`encoded:${opts.bodyChain.join('>')}`);
     }
     if (opts.refreshCookies) {
-      const cookie = cookieHeaderFor(this.d.store, r.url);
+      const cookie = this.cookieHeader(r.url);
       const headers = r.headers.filter(([k]) => k.toLowerCase() !== 'cookie');
       if (cookie) headers.push(['Cookie', cookie]);
       r = { ...r, headers };
@@ -280,7 +292,7 @@ export class Sender {
       const res = await sendReplay(this.d.store, {
         method: 'GET',
         url: target,
-        headers: [['Accept', 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8'], ...(cookieHeaderFor(this.d.store, target) ? [['Cookie', cookieHeaderFor(this.d.store, target)!] as [string, string]] : [])],
+        headers: [['Accept', 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8'], ...(this.cookieHeader(target) ? [['Cookie', this.cookieHeader(target)!] as [string, string]] : [])],
         ignoreTlsErrors: opts.ignoreTlsErrors,
         timeoutMs: opts.timeoutMs,
         protocol: opts.protocol,
@@ -336,7 +348,7 @@ export class Sender {
       const next = new URL(location, current.url).href;
       const keepBody = current.status === 307 || current.status === 308;
       const headers = r.headers.filter(([k]) => !['host', 'content-length', 'cookie', ...(keepBody ? [] : ['content-type'])].includes(k.toLowerCase()));
-      const cookie = cookieHeaderFor(this.d.store, next);
+      const cookie = this.cookieHeader(next);
       if (cookie) headers.push(['Cookie', cookie]);
       current = await sendReplay(this.d.store, {
         method: keepBody ? r.method : current.status === 303 || r.method === 'POST' ? 'GET' : r.method,

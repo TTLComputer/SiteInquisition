@@ -96,7 +96,8 @@ export type {
 export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage };
 export type { ScopeRule } from '@siteinquisition/core';
 export type { ErrorCause, ErrorFinding, ParsedJwt, JwtFlag, AwsRequestInfo, KeyInfo, SessionCookie, SessionFramework, SessionStructure } from '@siteinquisition/core';
-import type { ParsedJwt, AwsRequestInfo, KeyInfo, SessionCookie, WsScript, WsScriptStep, WsRunState } from '@siteinquisition/core';
+export type { EvergreenEntry, EvergreenStatus, SignableKind } from '@siteinquisition/core';
+import type { ParsedJwt, AwsRequestInfo, KeyInfo, SessionCookie, EvergreenEntry, EvergreenStatus, SignableKind, WsScript, WsScriptStep, WsRunState } from '@siteinquisition/core';
 export type { WsScript, WsScriptStep, WsRunState, WsStepResult } from '@siteinquisition/core';
 
 /** Send options for a WebSocket replay (the WS Replay tab). */
@@ -391,13 +392,21 @@ export class CoreClient {
   signJwt = (p: { header: Record<string, unknown>; payload: Record<string, unknown>; keyName?: string; secret?: string; alg?: string }) => this.call<string>('jwt.sign', p);
   tryJwtSecrets = (token: string, secrets: string[]) => this.call<string | null>('jwt.trySecrets', { token, secrets });
   keys = () => this.call<KeyInfo[]>('keys.list');
-  setKeySecret = (name: string, secret: string) => this.call<KeyInfo[]>('keys.setSecret', { name, secret });
-  setKeyPem = (name: string, pem: string, passphrase?: string) => this.call<KeyInfo[]>('keys.setPem', { name, pem, ...(passphrase ? { passphrase } : {}) });
+  keysStatus = () => this.call<{ keys: KeyInfo[]; canSave: boolean; where: string | null; error: string | null }>('keys.status');
+  setKeySecret = (name: string, secret: string, save = false) => this.call<KeyInfo[]>('keys.setSecret', { name, secret, save });
+  setKeyPem = (name: string, pem: string, passphrase?: string, save = false) => this.call<KeyInfo[]>('keys.setPem', { name, pem, save, ...(passphrase ? { passphrase } : {}) });
+  setKeySaved = (name: string, save: boolean) => this.call<KeyInfo[]>('keys.setSaved', { name, save });
   deleteKey = (name: string) => this.call<KeyInfo[]>('keys.delete', { name });
   awsRequestInfo = (id: string) => this.call<AwsRequestInfo>('aws.requestInfo', { id });
   decodeSessionCookie = (name: string, value: string) => this.call<SessionCookie>('cookies.decodeSession', { name, value });
   flaskTrySecrets = (value: string, secrets: string[]) => this.call<string | null>('cookies.flaskTrySecrets', { value, secrets });
   signFlaskCookie = (p: { payload: unknown; keyName?: string; secret?: string; compress?: boolean }) => this.call<string>('cookies.flaskSign', p);
+  resignOpen = (value: string) => this.call<{ kind: SignableKind | null; alg?: string; header?: Record<string, unknown>; payload?: unknown; compress?: boolean }>('resign.open', { value });
+  resignPreview = (p: { kind: SignableKind; payload: unknown; header?: Record<string, unknown>; alg?: string; ttlSeconds?: number; bumpIat?: boolean; bumpNbf?: boolean; compress?: boolean; salt?: string; keyName?: string; secret?: string }) => this.call<string>('resign.preview', p);
+  evergreenList = () => this.call<EvergreenStatus[]>('evergreen.list');
+  evergreenSave = (entry: EvergreenEntry) => this.call<EvergreenStatus[]>('evergreen.save', { entry });
+  evergreenDelete = (name: string) => this.call<EvergreenStatus[]>('evergreen.delete', { name });
+  evergreenRender = (name: string) => this.call<string>('evergreen.render', { name });
   errorCounts = () => this.call<Array<{ kind: string; severity: string; count: number }>>('errors.counts');
   csrfBindings = () => this.call<CsrfBinding[]>('csrf.bindings');
   setCsrfBindings = (bindings: Array<Partial<CsrfBinding>>) => this.call<CsrfBinding[]>('csrf.setBindings', { bindings });

@@ -26,6 +26,7 @@ export * from './sigv4.js';
 export * from './errors.js';
 export * from './jwt.js';
 export * from './keys.js';
+export * from './evergreen.js';
 export * from './awsinfo.js';
 export * from './tech.js';
 export * from './tokens.js';

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { serveWebSockets } from '@siteinquisition/core';
-import { Core } from '@siteinquisition/core';
+import { Core, type Keyring } from '@siteinquisition/core';
 
 export const DIST = join(import.meta.dirname, '..', 'dist');
 
@@ -27,6 +27,11 @@ async function startUpstream() {
         // A JSON field that is base64 of more JSON, for field codecs.
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(req.method === 'POST' ? body : JSON.stringify({ id: 7, blob: Buffer.from(JSON.stringify({ secret: 'inner-value', level: 3 })).toString('base64') }));
+      } else if (req.url === '/api/jwt-cookie') {
+        // Sets an (expired) HS256 JWT cookie signed with "secret", for the Cookies-tab re-sign flow.
+        const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJ1c2VyIiwiZXhwIjoxMDAwMDAwMDAwfQ.aEY4GxRUw9ooq-gjjPRkfKJo7s6Jgm0-_MlUIFWq2B8';
+        res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': `auth=${jwt}; Path=/` });
+        res.end('{"ok":true}');
       } else if (req.url === '/app') {
         // A page with no framework markers that hands out its CSRF token in a meta tag.
         res.writeHead(200, { 'content-type': 'text/html' });
@@ -104,10 +109,10 @@ export interface Harness {
   close(): Promise<void>;
 }
 
-export async function startHarness(opts: { traffic?: boolean } = {}): Promise<Harness> {
+export async function startHarness(opts: { traffic?: boolean; keyring?: Keyring | null } = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'siq-ui-'));
   const upstream = await startUpstream();
-  const core = await Core.open({ projectDir: join(dir, 'project'), dataDir: join(dir, 'data'), api: { token: 'ui-test-token' } });
+  const core = await Core.open({ projectDir: join(dir, 'project'), dataDir: join(dir, 'data'), api: { token: 'ui-test-token' }, ...(opts.keyring !== undefined ? { keyring: opts.keyring } : {}) });
   await core.setScope({ defaultAction: 'ignore', rules: [{ id: 'r1', action: 'include', host: '127.0.0.1', port: upstream.port }] });
   const { proxyPort, apiPort } = await core.start();
   const base = `http://127.0.0.1:${upstream.port}`;

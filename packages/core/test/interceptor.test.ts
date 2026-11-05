@@ -128,23 +128,32 @@ describe('interceptor', () => {
     expect(() => parseClientHello(Buffer.from('GET / HTTP/1.1'))).toThrow();
   });
 
-  it('speaks HTTP/2 to clients that offer it inside a decrypted tunnel', async () => {
+  it('gives a client offering h2 the protocol the server picks inside a decrypted tunnel', async () => {
+    // The target is HTTPS without HTTP/2: offered both, the client gets http/1.1, as it would directly.
     const sock = await tunnel(`http://127.0.0.1:${proxyPort}`, 'localhost', securePort);
-    const session = h2connect(`https://localhost:${securePort}`, { createConnection: () => tlsConnect({ socket: sock as Socket, servername: 'localhost', ca: core.ca.cert, ALPNProtocols: ['h2'] }) });
-    const body = await new Promise<string>((resolve, reject) => {
-      const req = session.request({ ':path': '/h2?x=1', ':method': 'GET' });
+    const tls = tlsConnect({ socket: sock as Socket, servername: 'localhost', ca: core.ca.cert, ALPNProtocols: ['h2', 'http/1.1'] });
+    const reply = await new Promise<string>((resolve, reject) => {
+      tls.once('secureConnect', () => {
+        expect(tls.alpnProtocol).toBe('http/1.1');
+        tls.write(`GET /h2?x=1 HTTP/1.1\r\nHost: localhost:${securePort}\r\nConnection: close\r\n\r\n`);
+      });
       let data = '';
-      req.on('response', (h) => expect(h[':status']).toBe(200));
-      req.on('data', (c: Buffer) => (data += c.toString()));
-      req.on('end', () => resolve(data));
-      req.on('error', reject);
-      req.end();
+      tls.on('data', (c: Buffer) => (data += c.toString()));
+      tls.on('end', () => resolve(data));
+      tls.on('error', reject);
     });
-    session.close();
-    expect(JSON.parse(body)).toMatchObject({ path: '/h2?x=1', host: `localhost:${securePort}` });
+    expect(reply).toContain('"path":"/h2?x=1"');
     const ex = await waitFor('path:/h2?x=1');
     expect(ex).toMatchObject({ scheme: 'https', status: 200 });
-    expect(core.store.getExchange(ex.id)!.httpVersion).toBe('2.0');
+    expect(core.store.getExchange(ex.id)!.httpVersion).toBe('1.1');
+    // Offered only h2, the handshake fails, as it does against the server itself.
+    const sock2 = await tunnel(`http://127.0.0.1:${proxyPort}`, 'localhost', securePort);
+    const err = await new Promise<Error>((resolve) => {
+      const t = tlsConnect({ socket: sock2 as Socket, servername: 'localhost', ca: core.ca.cert, ALPNProtocols: ['h2'] });
+      t.once('secureConnect', () => resolve(new Error('connected')));
+      t.once('error', resolve);
+    });
+    expect(err.message).toMatch(/no application protocol/i);
   });
 
   it('accepts SOCKS5 for plain HTTP and for TLS', async () => {
@@ -202,7 +211,7 @@ describe('interceptor', () => {
     // No CA given: the client rejects the leaf, like an app that pins its certificate.
     const c = tlsConnect({ socket: sock as Socket, servername: 'localhost' });
     await new Promise((r) => c.once('error', r));
-    for (let i = 0; i < 50 && !core.store.tlsFailureSummary().length; i++) await new Promise((r) => setTimeout(r, 20));
+    for (let i = 0; i < 50 && !core.store.tlsFailureSummary().some((f) => /cert-rejected|closed|reset/.test(f.cause)); i++) await new Promise((r) => setTimeout(r, 20));
     const failures = core.store.tlsFailureSummary();
     expect(failures).toEqual(expect.arrayContaining([expect.objectContaining({ host: 'localhost', cause: expect.stringMatching(/cert-rejected|closed|reset/) })]));
   });

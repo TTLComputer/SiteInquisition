@@ -378,7 +378,7 @@ export function H3Lab() {
               notify(p.hint);
             }}
           >
-            {p.label}
+            {p.id === 'gate' ? (h2 ? 'Single-packet race' : 'Single-datagram race') : p.label}
           </button>
         ))}
       </div>

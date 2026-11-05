@@ -30,7 +30,7 @@ const NAV: Array<{ id: ViewId; label: string }> = [
   { id: 'timeline', label: 'Timeline' },
   { id: 'replay', label: 'Replay' },
   { id: 'race', label: 'Race' },
-  { id: 'h3', label: 'HTTP/3' },
+  { id: 'h3', label: 'Protocol lab' },
   { id: 'rules', label: 'Rules' },
   { id: 'codecs', label: 'Codecs' },
   { id: 'cookies', label: 'Cookies' },

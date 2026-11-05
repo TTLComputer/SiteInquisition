@@ -68,7 +68,7 @@ What it does:
 What changed in behaviour:
 
 - **Responses stream.** Before, every response for a host with "modify" on was buffered whole. Now only responses that a response rule, breakpoint or script could touch are buffered, so server-sent events and large downloads flow normally.
-- **Upstream is always HTTP/1.1.** Clients can still speak HTTP/2 to the proxy.
+- **Upstream was HTTP/1.1 only** at first. Since then HTTP/2 goes upstream as HTTP/2, and the server decides whether a connection is HTTP/2 (ALPN, h2c upgrade, prior knowledge).
 - **Gone, and can be added back small if needed:** chaining to an upstream proxy (including PAC files), SOCKS4, and TLS fingerprint impersonation toward servers.
 
 Tests: 147 pass. New tests cover HTTP/2 in a tunnel, SOCKS5 with plain HTTP and with TLS, streaming, 502 on an unreachable server, clients that reject our certificate, WebSocket subprotocols and close codes, SNI parsing, and certificate chains for names and IP addresses. I also drove real Chromium through the proxy. HTTPS came through as HTTP/2, a `wss:` connection relayed both frames, and a POST body arrived intact, all recorded.

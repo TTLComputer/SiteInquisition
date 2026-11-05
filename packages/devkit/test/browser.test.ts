@@ -39,7 +39,8 @@ describe.skipIf(findChromium() === null)('in-house browser driver', () => {
     page = await browser.newPage({ viewport: { width: 800, height: 600 }, colorScheme: 'dark' });
     page.on('pageerror', (e) => errors.push(e));
     await page.goto(`data:text/html;charset=utf-8,${encodeURIComponent(HTML)}`);
-  });
+    // Chromium's first start on a busy CI runner can take longer than the default 20 s.
+  }, 60_000);
 
   afterAll(async () => {
     await browser?.close();

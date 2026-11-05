@@ -39,7 +39,7 @@ describe('script sandbox', () => {
       add: (a: number, b: number) => a + b,
       ns: { hi: () => 'hi' },
       slow: async (x: number) => {
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 500));
         return x * 2;
       },
       boom: () => {
@@ -47,10 +47,12 @@ describe('script sandbox', () => {
       },
     };
     expect((await run("siq.add(2, 3) + siq.ns.hi()", sdk)).value).toBe('5hi');
-    const t0 = Date.now();
-    const both = await run('(await Promise.all([siq.slow(1), siq.slow(2)])).join(",")', sdk);
-    expect(both.value).toBe('2,4');
-    expect(Date.now() - t0).toBeLessThan(2500);
+    // Time the calls inside the script, so a slow machine starting the script
+    // process doesn't count: run one after the other they would take 1000 ms.
+    const both = await run('await (async () => { const t0 = Date.now(); const r = await Promise.all([siq.slow(1), siq.slow(2)]); return r.join(",") + " " + (Date.now() - t0) })()', sdk);
+    const [values, ms] = String(both.value).split(' ');
+    expect(values).toBe('2,4');
+    expect(Number(ms)).toBeLessThan(900);
     const err = await run("let out\ntry { siq.boom() } catch (e) { out = 'caught ' + e.message }\nout", sdk);
     expect(err.value).toBe('caught nope');
     expect((await run('typeof siq.missing', sdk)).value).toBe('undefined');

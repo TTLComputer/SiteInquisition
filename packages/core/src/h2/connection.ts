@@ -346,14 +346,31 @@ export class H2Connection extends EventEmitter<H2ConnectionEvents> {
     if (opts.connectionWindow && opts.connectionWindow > 65_535) this.grantConnection(opts.connectionWindow - 65_535);
   }
 
-  /** The h2c upgrade's request is stream 1, half closed on the client's side (RFC 7540 section 3.2). */
-  adoptUpgradeStream(): H2Stream {
+  /**
+   * The h2c upgrade's request is stream 1, half closed on the client's side
+   * (RFC 7540 section 3.2). On the server, pass the upgraded request's fields
+   * (from the HTTP/1.1 head) and a "stream" event fires for it, as if it had
+   * arrived as HEADERS with END_STREAM.
+   */
+  adoptUpgradeStream(fields?: Field[]): H2Stream {
     const s = new H2Stream(this, 1);
     s.state = this.role === 'client' ? 'half-closed-local' : 'half-closed-remote';
     s.sentHeaders = this.role === 'client';
+    s.receivedHeaders = this.role === 'server';
+    s.receivedFinalHeaders = this.role === 'server';
+    s.receivedFinal = this.role === 'server';
     this.streams.set(1, s);
     if (this.role === 'client') this.nextId = 3;
-    else this.lastPeerStream = 1;
+    else {
+      this.lastPeerStream = 1;
+      if (fields)
+        queueMicrotask(() => {
+          this.emit('stream', s, fields, { endStream: true, informational: false, trailers: false });
+          // The upgraded request's body (if any) came over HTTP/1.1, so it is complete.
+          s.emit('data', Buffer.alloc(0), true);
+          s.emit('end');
+        });
+    }
     return s;
   }
 

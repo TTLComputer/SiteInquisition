@@ -199,6 +199,39 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     expect(JSON.parse(Buffer.from(body.blob, 'base64').toString())).toEqual({ secret: 'edited-value' });
   });
 
+  it('decodes a nested value all the way down in Codecs and writes edits back to Replay as you type', async () => {
+    // Url-encoded base64 JSON, with a JSON string field inside it.
+    const value = 'eyJkZXNjcmlwdGlvbiI6InR1cmR1Y2tlbiBwYXlsb2FkIiwiaW5uZXJfZGF0YSI6IntcIm1lYXRcIjogXCJ0dXJrZXlcIiwgXCJzdHVmZmluZ1wiOiBcImR1Y2sgYW5kIGNoaWNrZW5cIn0ifQ%3D%3D';
+    await h.send('/api/turducken', 'POST', value);
+    await nav('History');
+    await page.locator('.row', { hasText: '/api/turducken' }).first().click();
+    await page.keyboard.press('Control+r');
+    const tab = page.locator('.tab-host').last();
+    await expect.poll(() => tab.getByLabel('Raw request').inputValue()).toContain(value);
+    await tab.getByRole('button', { name: 'Decode selection' }).click();
+
+    await expect.poll(() => page.getByLabel('Codec chain').locator('.chain-step').allTextContents()).toEqual(['url›', 'base64›', 'json']);
+    await expect.poll(() => page.getByTestId('nested-field').allTextContents()).toEqual([expect.stringContaining('$.inner_data')]);
+    const editor = page.getByLabel('Decoded value');
+    await expect.poll(() => editor.inputValue()).toContain('"meat": "turkey"');
+    // Untouched, the result is the input as it was.
+    expect(await page.getByLabel('Encoded result').textContent()).toBe(value);
+    await shot('codecs-nested');
+
+    await editor.fill((await editor.inputValue()).replace('turkey', 'tofu'));
+    const decode = (t: string) => {
+      const outer = JSON.parse(Buffer.from(decodeURIComponent(t), 'base64').toString()) as { inner_data: string };
+      return JSON.parse(outer.inner_data) as { meat: string };
+    };
+    await expect.poll(async () => decode((await page.getByLabel('Encoded result').textContent())!).meat).toBe('tofu');
+    const result = (await page.getByLabel('Encoded result').textContent())!;
+    // No put back step: Replay already has it.
+    await expect.poll(() => tab.getByLabel('Raw request').inputValue()).toContain(result);
+    expect(await tab.getByLabel('Raw request').inputValue()).not.toContain(value);
+    await page.getByRole('button', { name: /^Back to Replay/ }).click();
+    await expect.poll(() => tab.evaluate((el) => (el as HTMLElement).style.display)).toBe('flex');
+  });
+
   it('trusts a self-signed dev server certificate from Settings', async () => {
     await nav('Settings');
     await page.getByRole('tab', { name: 'Server certificates' }).click();

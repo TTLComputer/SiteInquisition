@@ -9,7 +9,7 @@ import {
   parseChain,
   transformChain,
 } from '@siteinquisition/codecs';
-import { detectChain, replaceThroughChain } from '@siteinquisition/codecs';
+import { collapseNested, deepDecode, deepEncode, detectChain, expandNested, replaceThroughChain } from '@siteinquisition/codecs';
 import * as jp from '../src/jsonpath';
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 
@@ -129,5 +129,48 @@ describe('jsonpath', () => {
     expect((jp.bulk(doc, '$.items[0]', 'delete').value as typeof doc).items.map((i) => i.sku)).toEqual(['B2']);
     expect(jp.bulk(doc, '$..id', 'set', '{{var:uid}}')).toMatchObject({ count: 1, value: { user: { id: '{{var:uid}}' } } });
     expect(doc.user.admin).toBe(false);
+  });
+});
+
+describe('deep decode of nested JSON fields', () => {
+  // A url-encoded base64 JSON value with a JSON string field inside it.
+  const TURDUCKEN =
+    'eyJkZXNjcmlwdGlvbiI6InR1cmR1Y2tlbiBwYXlsb2FkIiwiaW5uZXJfZGF0YSI6IntcIm1lYXRcIjogXCJ0dXJrZXlcIiwgXCJzdHVmZmluZ1wiOiBcImR1Y2sgYW5kIGNoaWNrZW5cIn0ifQ%3D%3D';
+
+  it('decodes every layer at once and gives the input back exactly when nothing changed', () => {
+    const d = deepDecode(TURDUCKEN)!;
+    expect(d.chain).toEqual(['url', 'base64', 'json']);
+    expect(d.value).toEqual({ description: 'turducken payload', inner_data: { meat: 'turkey', stuffing: 'duck and chicken' } });
+    expect(d.fields.map((f) => [f.path, f.chain])).toEqual([['$.inner_data', ['json']]]);
+    expect(deepEncode(d, d.value).text).toBe(TURDUCKEN);
+  });
+
+  it('re-encodes an edit through the nested field and every outer layer', () => {
+    const d = deepDecode(TURDUCKEN)!;
+    const edited = structuredClone(d.value) as { inner_data: { meat: string } };
+    edited.inner_data.meat = 'tofu';
+    const r = deepEncode(d, edited);
+    expect(r.changed).toEqual(['$.inner_data']);
+    expect(r.text).toMatch(/%3D$/);
+    const outer = JSON.parse(Buffer.from(decodeURIComponent(r.text), 'base64').toString()) as { description: string; inner_data: string };
+    expect(typeof outer.inner_data).toBe('string');
+    expect(JSON.parse(outer.inner_data)).toEqual({ meat: 'tofu', stuffing: 'duck and chicken' });
+    expect(outer.description).toBe('turducken payload');
+  });
+
+  it('expands fields inside fields, and leaves text and short ids alone', () => {
+    const innermost = Buffer.from(JSON.stringify({ secret: 'x' })).toString('base64');
+    const doc = { id: 'dGVzdA==', note: 'hello world', list: [JSON.stringify({ deep: innermost })] };
+    const x = expandNested(doc);
+    expect(x.value).toEqual({ id: 'dGVzdA==', note: 'hello world', list: [{ deep: { secret: 'x' } }] });
+    expect(x.fields.map((f) => f.path)).toEqual(['$.list[0]', '$.list[0].deep']);
+    const back = collapseNested(x.value, x.fields);
+    expect(back.value).toEqual(doc);
+    // An edit at the bottom changes both layers above it.
+    (x.value as { list: Array<{ deep: { secret: string } }> }).list[0]!.deep.secret = 'y';
+    const edited = collapseNested(x.value, x.fields);
+    expect(edited.changed).toEqual(['$.list[0].deep', '$.list[0]']);
+    const inner = JSON.parse((edited.value as { list: string[] }).list[0]!) as { deep: string };
+    expect(JSON.parse(Buffer.from(inner.deep, 'base64').toString())).toEqual({ secret: 'y' });
   });
 });

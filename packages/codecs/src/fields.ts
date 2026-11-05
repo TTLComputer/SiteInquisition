@@ -8,8 +8,8 @@
  * an earlier one decoded (`$.payload` then `$.payload.token`). Encoding runs
  * them in reverse.
  */
-import { bytesToString, decodeChain, encodeChain, parseChain } from './index.js';
-import { query, update } from './jsonpath.js';
+import { bytesToString, decodeChain, detectChain, encodeChain, parseChain } from './index.js';
+import { formatPath, getAt, query, setAt, update, type PathSeg } from './jsonpath.js';
 
 export interface FieldCodec {
   /** JSONPath of the field, e.g. $.payload or $.items[*].blob. */
@@ -130,3 +130,110 @@ export function parseFieldSpecs(spec: string): FieldCodec[] {
 }
 
 export const formatFieldSpecs = (specs: FieldCodec[]): string => specs.map((s) => `${s.path} = ${s.chain.join('>')}`).join('; ');
+
+/**
+ * A field found inside a JSON value that holds more encoded JSON, such as
+ * `"inner_data": "{\"meat\": \"turkey\"}"` or a url-encoded base64 blob.
+ */
+export interface NestedField {
+  /** Where it sits in the expanded value. Parents come before their children. */
+  at: PathSeg[];
+  path: string;
+  /** How it was encoded, outermost first; always ends in json. */
+  chain: string[];
+  /** The string as it was, so an untouched field goes back byte for byte. */
+  original: string;
+  /** What it decoded to, before any field inside it was expanded. */
+  decoded: unknown;
+}
+
+export interface Expanded {
+  value: unknown;
+  fields: NestedField[];
+}
+
+const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Expand every string inside a JSON value that is itself encoded JSON
+ * (directly, or through url, base64, hex, gzip...), as deep as it goes.
+ * Only layers that end in a JSON object or array count, so ordinary text
+ * and ids that happen to look like base64 stay as they are.
+ */
+export function expandNested(root: unknown, opts: { maxDepth?: number; maxFields?: number } = {}): Expanded {
+  const maxDepth = opts.maxDepth ?? 8;
+  const maxFields = opts.maxFields ?? 200;
+  const fields: NestedField[] = [];
+  const walk = (v: unknown, at: PathSeg[], depth: number): unknown => {
+    if (fields.length >= maxFields) return v;
+    if (typeof v === 'string') {
+      if (depth >= maxDepth || v.length < 2) return v;
+      const chain = detectChain(v);
+      if (chain[chain.length - 1] !== 'json') return v;
+      let decoded: unknown;
+      try {
+        decoded = decodeChain(chain, v);
+      } catch {
+        return v;
+      }
+      if (decoded === null || typeof decoded !== 'object') return v;
+      fields.push({ at, path: formatPath(at), chain, original: v, decoded: structuredClone(decoded) });
+      return walk(decoded, at, depth + 1);
+    }
+    if (Array.isArray(v)) return v.map((x, i) => walk(x, [...at, i], depth));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, [...at, k], depth)]));
+    return v;
+  };
+  return { value: walk(structuredClone(root), [], 0), fields };
+}
+
+/**
+ * Put every expanded field back the way it was encoded, innermost first.
+ * A field that was not changed goes back as its original string, so the
+ * result matches the input exactly until something is edited. A field the
+ * user turned back into a string (or deleted) is left as they made it.
+ */
+export function collapseNested(value: unknown, fields: NestedField[]): { value: unknown; changed: string[]; errors: string[] } {
+  let out = structuredClone(value);
+  const changed: string[] = [];
+  const errors: string[] = [];
+  for (const f of [...fields].reverse()) {
+    const cur = getAt(out, f.at);
+    if (cur === undefined || typeof cur === 'string') continue;
+    if (sameJson(cur, f.decoded)) {
+      out = setAt(out, f.at, f.original);
+      continue;
+    }
+    try {
+      out = setAt(out, f.at, bytesToString(encodeChain(f.chain, cur)));
+      changed.push(f.path);
+    } catch (e) {
+      errors.push(`${f.path} (${f.chain.join(' > ')}): ${(e as Error).message}`);
+    }
+  }
+  return { value: out, changed, errors };
+}
+
+export interface DeepDecoded extends Expanded {
+  /** The outer chain, e.g. url > base64 > json. Empty when the input is not encoded JSON. */
+  chain: string[];
+  /** The outer value straight from the chain, before nested fields were expanded. */
+  outer: unknown;
+  input: string;
+}
+
+/** Decode a value all the way down: its own layers, then every nested JSON field inside. Null when it is not JSON at the bottom. */
+export function deepDecode(input: string): DeepDecoded | null {
+  const chain = detectChain(input);
+  if (chain[chain.length - 1] !== 'json') return null;
+  const outer = decodeChain(chain, input);
+  if (outer === null || typeof outer !== 'object') return null;
+  return { ...expandNested(outer), chain, outer, input };
+}
+
+/** Encode an edited deep value back through every layer, as text (deepDecode only takes text, so a binary outer layer such as gzip sits under base64 or hex). Unchanged input comes back exactly as it went in. */
+export function deepEncode(d: DeepDecoded, value: unknown): { text: string; changed: string[]; errors: string[] } {
+  const r = collapseNested(value, d.fields);
+  if (sameJson(r.value, d.outer)) return { text: d.input, changed: r.changed, errors: r.errors };
+  return { text: bytesToString(encodeChain(d.chain, r.value)), changed: r.changed, errors: r.errors };
+}

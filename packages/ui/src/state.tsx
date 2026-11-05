@@ -59,7 +59,7 @@ export interface CodecInput {
   label: string;
   nonce: number;
   /** Where "Put back" sends the result, e.g. the selection in a Replay editor. */
-  returnTo?: (text: string) => void;
+  returnTo?: (text: string, live?: boolean) => void;
 }
 
 export interface SavedView {
@@ -96,7 +96,7 @@ interface AppState {
   openDraft(draft: Draft, label?: string): void;
   codecInput: CodecInput | null;
   /** Send text (a selection, a body, a header value) to the Codecs workbench. */
-  sendToCodecs(text: string, label: string, returnTo?: (text: string) => void): void;
+  sendToCodecs(text: string, label: string, returnTo?: (text: string, live?: boolean) => void): void;
   raceItems: RaceItem[];
   setRaceItems(items: RaceItem[]): void;
   h3Items: H3Item[];
@@ -242,7 +242,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     setViewState('replay');
   }, []);
 
-  const sendToCodecs = useCallback((text: string, label: string, returnTo?: (text: string) => void) => {
+  const sendToCodecs = useCallback((text: string, label: string, returnTo?: (text: string, live?: boolean) => void) => {
     setCodecInput({ text, label, nonce: Date.now(), returnTo });
     setViewState('codecs');
   }, []);

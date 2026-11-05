@@ -49,7 +49,6 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
     expect(await page.getByLabel('JSONPath').inputValue()).toBe('$.method');
     await page.getByLabel('Bulk value').fill('"PUT"');
     await page.getByRole('button', { name: 'Apply to all' }).click();
-    await page.getByRole('button', { name: 'Encode', exact: true }).click();
     await expect.poll(() => page.getByLabel('Encoded result').textContent()).toContain('"method":"PUT"');
     await page.getByLabel('Find', { exact: true }).fill('coupon');
     await expect.poll(() => page.getByTestId('replace-count').textContent()).toBe('1 match');

@@ -273,10 +273,13 @@ export function Replay({ tab }: { tab: ReplayTab }) {
       s = raw.indexOf('\n', raw.indexOf('\n', at) + 1) + 1;
       e = raw.length;
     }
-    const before = raw;
-    sendToCodecs(raw.slice(s, e), `Replay ${tab.label}`, (text) => {
-      setRaw((cur) => (cur === before ? cur.slice(0, s) + text + cur.slice(e) : cur.slice(0, s) + text + cur.slice(e)));
-      setView('replay');
+    // Codecs writes back as it edits, so track where the value ends now.
+    let end = e;
+    sendToCodecs(raw.slice(s, e), `Replay ${tab.label}`, (text, live) => {
+      const was = end;
+      end = s + text.length;
+      setRaw((cur) => cur.slice(0, s) + text + cur.slice(was));
+      if (!live) setView('replay');
     });
   };
 

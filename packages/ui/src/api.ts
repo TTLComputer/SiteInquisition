@@ -388,6 +388,10 @@ export class CoreClient {
     this.call<Array<{ kind: 'bytes'; base64: string } | { kind: 'value'; value: unknown }>>('codecs.layers', { chain, base64: bytesToBase64(bytes) });
   encode = (chain: string[], value: unknown) =>
     this.call<{ base64: string }>('codecs.encode', value instanceof Uint8Array ? { chain, base64: bytesToBase64(value) } : { chain, value }).then((r) => base64ToBytes(r.base64));
+  /** Expand JSON fields that hold more encoded JSON, as deep as they go. */
+  expandNested = (value: unknown) => this.call<{ value: unknown; fields: NestedField[] }>('codecs.expand', { value });
+  /** Put expanded fields back, encoded the way they came; untouched ones go back exactly. */
+  collapseNested = (value: unknown, fields: NestedField[]) => this.call<{ value: unknown; changed: string[]; errors: string[] }>('codecs.collapse', { value, fields });
   replaceIn = (chain: string[], bytes: Uint8Array, o: { find: string; replace: string; regex?: boolean; matchCase?: boolean; keys?: boolean; scope?: 'layer' | 'all' }) =>
     this.call<{ base64: string; counts: number[] }>('codecs.replace', { chain, base64: bytesToBase64(bytes), ...o }).then((r) => ({ output: base64ToBytes(r.base64), counts: r.counts }));
   chains = () => this.call<SavedChain[]>('codecs.chains.get');
@@ -502,6 +506,15 @@ export class CoreClient {
   endpointNotes = () => this.call<Record<string, { notes: string; tags: string[]; updatedAt: number; by: string }>>('notes.endpoints');
   setEndpointNote = (key: string, notes: string, tags: string[] = []) => this.call<Record<string, { notes: string; tags: string[] }>>('notes.setEndpoint', { key, notes, tags });
   noteFor = (id: string) => this.call<{ key: string; notes: string; tags: string[] } | null>('notes.forExchange', { id });
+}
+
+/** A JSON field holding more encoded JSON, as the codecs package finds it. */
+export interface NestedField {
+  at: Array<string | number>;
+  path: string;
+  chain: string[];
+  original: string;
+  decoded: unknown;
 }
 
 export interface SavedChain {

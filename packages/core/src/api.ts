@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { decodeFieldsText, decodeLayers, detectChain, encodeChain, encodeFieldsText, listCodecs, parseFieldSpecs, replaceThroughChain, type FieldCodec } from '@siteinquisition/codecs';
+import { collapseNested, decodeFieldsText, decodeLayers, deepDecode, deepEncode, detectChain, expandNested, encodeChain, encodeFieldsText, listCodecs, parseFieldSpecs, replaceThroughChain, type FieldCodec } from '@siteinquisition/codecs';
 import { coverage } from './coverage.js';
 import { parseSigV4 } from './sigv4.js';
 import { batchPlan, flowRefs, resolveTokens } from './tokens.js';
@@ -218,6 +218,17 @@ export class CoreApiServer {
         const chain = (p.chain as string[]) ?? [];
         const value = p.base64 !== undefined ? Buffer.from(str(p, 'base64')!, 'base64') : p.value;
         return { base64: b64(encodeChain(chain, value)) };
+      },
+      'codecs.expand': (p) => expandNested(p.value),
+      'codecs.collapse': (p) => {
+        if (!Array.isArray(p.fields)) throw new RpcError(-32602, 'fields must be an array');
+        return collapseNested(p.value, p.fields as Parameters<typeof collapseNested>[1]);
+      },
+      'codecs.deep': (p) => {
+        const d = deepDecode(str(p, 'text')!);
+        if (!d) return null;
+        if (p.value === undefined) return { chain: d.chain, value: d.value, fields: d.fields.map((f) => ({ path: f.path, chain: f.chain })) };
+        return deepEncode(d, p.value);
       },
       'codecs.replace': (p) => {
         const r = replaceThroughChain((p.chain as string[]) ?? [], Buffer.from(str(p, 'base64')!, 'base64'), {

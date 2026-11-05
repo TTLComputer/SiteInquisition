@@ -9,6 +9,7 @@
 - **Reference tags**: the History menu item is now "Set reference tag (create or move)", and says whether a name creates a tag or moves it.
 - **Server certificates** (Settings): trust a dev server's self-signed certificate (fetched with one click) or a private CA, or skip checks for listed hosts or all of them. Used by the proxy, Replay, Race, the HTTP/3 lab, WebSockets and MQTT. Failed requests show a "Look at its certificate" helper.
 - **Field codecs**: say a JSON field is, for example, base64 of JSON (`$.payload = base64>json`). The Inspector shows it decoded, Replay opens it decoded and encodes it on send, and Codecs can save one from a field it decoded.
+- **Codecs decodes all the way down**: a JSON field that holds more encoded JSON (a JSON string, base64 of JSON, url-encoded, and so on) opens up in place, at any depth. The result re-encodes as you type, through every layer, and a value sent from Replay is updated there as you edit, so there is no Encode or Put back step. An untouched value comes back byte for byte.
 - **Send to Replay** looks and reads the same everywhere, and every list of recorded requests has it.
 
 

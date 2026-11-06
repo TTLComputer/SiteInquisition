@@ -11,6 +11,7 @@ import { decodeBody, type HeaderPairs, type InterceptorEvents, type InterceptorH
 import type { LeafIssuer } from '../x509.js';
 import { H3Server, h3Connect, requestFields, type H3Connection, type H3ServerRequest } from './index.js';
 import type { Field } from './qpack.js';
+import type { Connection } from './connection.js';
 import { skipsTlsChecks, trustedPems, upstreamTls } from '../upstreamtls.js';
 
 export interface H3CaptureOptions {
@@ -27,6 +28,13 @@ export interface H3CaptureOptions {
   loopbackOnly?: boolean;
   /** Decide per client address instead of loopbackOnly. */
   acceptClient?(address: string): boolean;
+  /**
+   * While a request or response is held at a breakpoint, send QUIC PING
+   * frames every this-many ms on the client's connection and on the pooled
+   * upstream one, so neither side's idle timeout closes them while the user
+   * composes an edit. 0 or undefined leaves it off; read each time a hook waits.
+   */
+  keepAlivePausedMs?(): number | undefined;
 }
 
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'http2-settings', 'alt-svc']);
@@ -143,9 +151,13 @@ export class H3Capture extends EventEmitter<InterceptorEvents> {
       req.stream.reset(0x10c);
     };
 
+    const upstreamKey = () => {
+      const t = outUrl.host === url.host ? { host, port } : { host: outUrl.hostname.replace(/^\[|\]$/g, ''), port: Number(outUrl.port) || 443 };
+      return `${t.host}:${t.port}`;
+    };
     if (hooks?.request) {
       try {
-        const action = await hooks.request(preq, decodeBody(body, preq.headers) ?? body);
+        const action = await this.whilePaused(hooks.request(preq, decodeBody(body, preq.headers) ?? body), req.connection, upstreamKey());
         if (action && 'close' in action) return closeByRule();
         if (action && 'respond' in action) return reply(action.respond.status, action.respond.headers, Buffer.from(action.respond.body));
         if (action && 'replace' in action) {
@@ -177,7 +189,7 @@ export class H3Capture extends EventEmitter<InterceptorEvents> {
     let { status, headers: upHeaders, body: data } = up;
     if (hooks?.response && (hooks.wantsResponse?.(preq, status) ?? true)) {
       try {
-        const action = await hooks.response(preq, { status, headers: upHeaders, decodedBody: decodeBody(data, upHeaders) ?? data });
+        const action = await this.whilePaused(hooks.response(preq, { status, headers: upHeaders, decodedBody: decodeBody(data, upHeaders) ?? data }), req.connection, upstreamKey());
         if (action && 'close' in action) return closeByRule();
         if (action && 'replace' in action) {
           status = action.replace.status;
@@ -192,6 +204,29 @@ export class H3Capture extends EventEmitter<InterceptorEvents> {
       }
     }
     reply(status, upHeaders, data);
+  }
+
+  /**
+   * Await a hook, pinging the client's QUIC connection and the pooled upstream
+   * one while it waits, so a held breakpoint does not let either idle-time out.
+   * An upstream reached over HTTPS (TCP fallback) keeps its own socket alive.
+   */
+  private async whilePaused<T>(p: Promise<T>, client: Connection, upstreamKey: string): Promise<T> {
+    const ms = this.opts.keepAlivePausedMs?.();
+    if (!ms || ms <= 0) return p;
+    const ping = (c: Connection | undefined) => {
+      if (c?.state === 'connected') c.ping();
+    };
+    const timer = setInterval(() => {
+      ping(client);
+      void this.pool.get(upstreamKey)?.then((u) => ping(u.client.conn)).catch(() => undefined);
+    }, Math.max(1000, ms));
+    timer.unref();
+    try {
+      return await p;
+    } finally {
+      clearInterval(timer);
+    }
   }
 
   /** Send upstream over HTTP/3 when the origin speaks it, otherwise HTTPS over TCP. */

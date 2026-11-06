@@ -38,7 +38,7 @@ export interface ProxyOptions {
    */
   http3?: boolean;
   /**
-   * Ping held HTTP/2 connections every this-many ms while a breakpoint is
+   * Ping held HTTP/2 and HTTP/3 connections every this-many ms while a breakpoint is
    * paused, so the server does not time out while the user composes an edit.
    * 0 (the default) leaves it off. Can be changed live with `setPausedKeepAlive`.
    */
@@ -128,7 +128,7 @@ export class ProxyEngine extends EventEmitter<{
   private hooks?: ProxyHooks;
   /** Tags from hooks, by proxy request id, waiting for the exchange to be recorded. */
   private pendingTags = new Map<string, string[]>();
-  /** PING interval (ms) for HTTP/2 connections held at a breakpoint; 0 is off. */
+  /** PING interval (ms) for HTTP/2 and HTTP/3 connections held at a breakpoint; 0 is off. */
   private pausedKeepAliveMs = 0;
 
   constructor(
@@ -148,7 +148,7 @@ export class ProxyEngine extends EventEmitter<{
   }
 
   /**
-   * Ping HTTP/2 connections held at a breakpoint every `ms` so the server
+   * Ping HTTP/2 and HTTP/3 connections held at a breakpoint every `ms` so the server
    * does not time out while the user composes an edit; 0 turns it off. Takes
    * effect live, on connections paused from now on.
    */
@@ -290,6 +290,7 @@ export class ProxyEngine extends EventEmitter<{
         ignoreUpstreamTlsErrors: (host) => (ignoreHosts ? ignoreHosts.has(host.toLowerCase()) : ignore === true) || skipsTlsChecks(host),
         hooks: this.interceptorHooks(),
         acceptClient: (address) => this.acceptAddress(address, 'http3'),
+        keepAlivePausedMs: () => this.pausedKeepAliveMs,
       });
       this.subscribe(h3);
       try {

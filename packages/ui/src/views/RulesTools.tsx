@@ -443,8 +443,8 @@ function KeepAliveSetting() {
   const on = (ms ?? 0) > 0;
   return (
     <div className="card" style={{ margin: '0 0 8px', padding: '8px 10px' }}>
-      <label className="check" title="While a request or response is paused here, ping the HTTP/2 connections so the server does not time out while you compose an edit. HTTP/1.1 keeps its own sockets alive.">
-        <input type="checkbox" checked={on} onChange={(e) => apply(e.target.checked ? 15000 : 0)} /> Keep HTTP/2 connections alive while paused
+      <label className="check" title="While a request or response is paused here, send PING frames on its HTTP/2 or HTTP/3 connections, to the client and the server, so neither times out while you compose an edit. HTTP/1.1 keeps its own sockets alive.">
+        <input type="checkbox" checked={on} onChange={(e) => apply(e.target.checked ? 15000 : 0)} /> Keep HTTP/2 and HTTP/3 connections alive while paused
       </label>
       {on && (
         <label className="check" style={{ marginLeft: 12 }} title="Seconds between PING frames on a held connection">

@@ -203,7 +203,7 @@ export class PowerTools {
     this.core.store.setMeta('breakpoints', out);
     return out;
   }
-  /** PING interval (ms) for HTTP/2 connections held at a breakpoint; 0 is off. */
+  /** PING interval (ms) for HTTP/2 and HTTP/3 connections held at a breakpoint; 0 is off. */
   pausedKeepAlive(): number {
     return this.core.proxy.pausedKeepAlive;
   }

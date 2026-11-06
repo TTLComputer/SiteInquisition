@@ -72,17 +72,25 @@ A breakpoint can hold a request or response for as long as it takes to compose
 an edit. Meanwhile the server — or the client — may time the connection out, so
 forwarding later fails for a reason that has nothing to do with the bug under
 test. With the setting on (Breakpoints panel; off by default, saved per
-project), the proxy pings the held HTTP/2 connections — both the client's and
-the paired upstream one — every N seconds while a hook waits. The timer only
-runs while a hook is actually waiting, so ordinary traffic is untouched, and the
-setting is read live, so it takes effect without restarting the proxy. HTTP/1.1
-keeps its own sockets alive.
+project), the proxy sends PING frames on the held connections every N seconds
+while a hook waits: for HTTP/2 the client's connection and the paired upstream
+one, for HTTP/3 the client's QUIC connection and the pooled upstream one. The
+timer only runs while a hook is actually waiting, so ordinary traffic is
+untouched, and the setting is read live, so it takes effect without restarting
+the proxy. HTTP/1.1 keeps its own sockets alive.
+
+## Replay and Race
+
+Replay's protocol picker offers HTTP/1.1, HTTP/2 (with a choice of how to ask
+for it: automatic, ALPN, h2c upgrade or prior knowledge) and HTTP/3, and a
+request captured over HTTP/2 or HTTP/3 replays over the same protocol by
+default. Race's single-packet mode runs on the in-house HTTP/2 plan runner, as
+the HTTP/3 race runs on the HTTP/3 one: every stream holds its last byte and the
+gate releases them in one TCP write. Both use the built-in stacks, so the
+server decides: one that does not take HTTP/2 fails the send or the race rather
+than falling back to HTTP/1.1.
 
 ## Not in this round
 
-- Replay and Race expose the protocol in the engine and the RPC, but the Replay
-  tab's protocol picker and Race on the in-house stack are follow-ups.
 - The Timeline's per-connection lanes and the server-error feed do not yet
   split HTTP/2 streams out of their connection.
-- HTTP/3 connections are not yet pinged while paused (QUIC has its own idle
-  timeout and PING frame; the same setting should drive it).

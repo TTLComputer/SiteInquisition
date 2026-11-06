@@ -9,6 +9,8 @@ import { Core } from '@siteinquisition/core';
 import { H2Connection } from '../src/h2/connection.js';
 import { runH2Plan } from '../src/h2/plan.js';
 import { protocolLadder } from '../src/h2/connect.js';
+import { runRace } from '../src/race.js';
+import { createServer as createHttp1Server } from 'node:http';
 import { generateCA } from '../src/x509.js';
 
 let tmp: string;
@@ -148,6 +150,33 @@ describe('HTTP/2 protocol lab', () => {
     const res = await runH2Plan(core.store, [{ method: 'GET', url: `https://localhost:${tlsPort}/tls`, headers: [] }], { connect: 'alpn', ignoreTlsErrors: true, ca: [core.ca.cert] });
     expect(res.runs[0]!.rows[0]!.status).toBe(200);
     expect(res.runs[0]!.connections[0]!.alpn).toBe('h2');
+  });
+
+  it('races over HTTP/2 on the in-house engine, releasing every last byte together', async () => {
+    const reqs = Array.from({ length: 6 }, (_, i) => ({ method: 'POST', url: `http://localhost:${plainPort}/race/${i}`, headers: [] as Array<[string, string]>, body: Buffer.from(`coupon=SAVE10&n=${i}`), offsetMs: 0 }));
+    const r = await runRace(core.store, reqs, { sync: 'single-packet' });
+    const run = r.runs[0]!;
+    expect(run.sends.map((x) => x.status)).toEqual([200, 200, 200, 200, 200, 200]);
+    expect(run.spreadMs).toBeLessThan(5);
+    for (const x of run.sends) {
+      const ex = core.store.getExchange(x.exchangeId)!;
+      expect(ex.httpVersion).toBe('2');
+      expect(ex.tags).toContain(`race:${r.id}`);
+    }
+    // With offsets the second send goes out about 40 ms after the first.
+    const timed = await runRace(core.store, reqs.slice(0, 2).map((x, i) => ({ ...x, offsetMs: i * 40 })), { sync: 'single-packet' });
+    expect(timed.runs[0]!.sends[1]!.actualMs - timed.runs[0]!.sends[0]!.actualMs).toBeGreaterThan(30);
+  });
+
+  it('fails an HTTP/2 race against a server that does not take HTTP/2, instead of falling back', async () => {
+    const h1 = createHttp1Server((_q, res) => res.end('h1'));
+    const port = await new Promise<number>((r) => h1.listen(0, '127.0.0.1', () => r((h1.address() as AddressInfo).port)));
+    try {
+      await expect(runRace(core.store, [{ method: 'GET', url: `http://localhost:${port}/`, headers: [], offsetMs: 0 }], { sync: 'single-packet', timeoutMs: 3000 })).rejects.toThrow();
+    } finally {
+      h1.closeAllConnections();
+      await new Promise((r) => h1.close(r));
+    }
   });
 
   it('the ladder test reports what the server accepts', async () => {

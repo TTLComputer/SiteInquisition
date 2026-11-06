@@ -18,7 +18,9 @@ interface Options {
   csrf: boolean;
   sigv4: string;
   ignoreTls: boolean;
-  protocol: 'h1' | 'h3';
+  protocol: 'h1' | 'h2' | 'h3';
+  /** HTTP/2 only: how to get it from the server; '' lets the URL decide (ALPN for https, prior knowledge for http). */
+  h2Method: '' | 'alpn' | 'upgrade' | 'prior-knowledge';
   /** Run this flow before each send; its variables fill {{var:...}}. */
   flow: string;
   /** Codec chain the body is encoded with after tokens are filled in, e.g. "base64,json". */
@@ -26,7 +28,7 @@ interface Options {
   /** JSON fields written decoded and encoded on send: "$.payload = base64>json; $.sig = hex". */
   fields: string;
 }
-const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false, protocol: 'h1', flow: '', encode: '', fields: '' };
+const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false, protocol: 'h1', h2Method: '', flow: '', encode: '', fields: '' };
 
 const binaryMarker = (n: number) => `<binary body: ${n} bytes, sent as captured>`;
 
@@ -100,13 +102,15 @@ export function Replay({ tab }: { tab: ReplayTab }) {
   }, [raw]);
   const editorUrl = useMemo(() => /^[A-Z]+\s+(\S+)/.exec(raw)?.[1] ?? null, [raw]);
   const loadedHost = useRef<string | null>(null);
+  /** The protocol the source request was captured on, when it was HTTP/2 or HTTP/3: Replay sends it the same way by default. */
+  const capturedProtocol = useRef<'h2' | 'h3' | undefined>(undefined);
   useEffect(() => {
     if (!host || loadedHost.current === host) return;
     loadedHost.current = host;
     if (tab.options) return; // opened with explicit options, e.g. "cookies from jar"
     try {
       const saved = JSON.parse(localStorage.getItem(`siq.replayOptions.${host}`) ?? 'null') as Partial<Options> | null;
-      if (saved) setOpts((o) => ({ ...o, ...saved, fields: o.fields }));
+      if (saved) setOpts((o) => ({ ...o, ...saved, fields: o.fields, protocol: capturedProtocol.current ?? saved.protocol ?? o.protocol }));
     } catch {
       // storage unavailable or a bad entry; keep the defaults
     }
@@ -149,11 +153,13 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         // leave the body as captured
       }
     }
-    setOpts((o) => ({ ...o, fields: '' }));
+    const v = ex.httpVersion ?? '';
+    capturedProtocol.current = v.startsWith('2') ? 'h2' : v.startsWith('3') ? 'h3' : undefined;
+    setOpts((o) => ({ ...o, fields: '', ...(capturedProtocol.current && !tab.options ? { protocol: capturedProtocol.current } : {}) }));
     const next = toRawRequest(ex.method, ex.url, ex.requestHeaders, body === null ? binaryMarker(reqBody.length) : body);
     setRaw(next);
     setRegions(body === null ? [] : shiftRegions(found, next.length - body.length));
-  }, [client, tab.exchangeId, tab.draft]);
+  }, [client, tab.exchangeId, tab.draft, tab.options]);
 
   /** Decode (or encode back) the body's fields with the spec in the Fields box. */
   const convertFields = async (dir: 'decode' | 'encode') => {
@@ -244,7 +250,8 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         followRedirects: opts.followRedirects ? 10 : 0,
         sigv4: opts.sigv4 || undefined,
         ignoreTlsErrors: opts.ignoreTls,
-        protocol: opts.protocol === 'h3' ? 'h3' : undefined,
+        protocol: opts.protocol === 'h1' ? undefined : opts.protocol,
+        h2Method: opts.protocol === 'h2' && opts.h2Method ? opts.h2Method : undefined,
         flow: opts.flow || undefined,
         bodyChain: opts.encode ? opts.encode.split(/[,>\s]+/).filter(Boolean) : undefined,
         fieldCodecs: opts.fields.trim() ? await client.parseFieldSpecs(opts.fields) : undefined,
@@ -420,13 +427,25 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         )}
       </div>
       <div className="replay-options" aria-label="Send options">
-        <label className="check" title="HTTP/3 sends over QUIC with the built-in stack (https URLs only)">
+        <label className="check" title="HTTP/2 and HTTP/3 send with the built-in stacks, so the server's own answer shows: a server without HTTP/2 fails the send rather than falling back. HTTP/3 needs an https URL.">
           Protocol
           <select className="input" value={opts.protocol} onChange={(e) => changeOpts({ ...opts, protocol: e.target.value as Options['protocol'] })} aria-label="Protocol">
             <option value="h1">HTTP/1.1</option>
+            <option value="h2">HTTP/2</option>
             <option value="h3">HTTP/3</option>
           </select>
         </label>
+        {opts.protocol === 'h2' && (
+          <label className="check" title="How to ask the server for HTTP/2. Automatic: ALPN over TLS for https, prior knowledge for http.">
+            via
+            <select className="input" value={opts.h2Method} onChange={(e) => changeOpts({ ...opts, h2Method: e.target.value as Options['h2Method'] })} aria-label="HTTP/2 via">
+              <option value="">Automatic</option>
+              <option value="alpn">ALPN (TLS)</option>
+              <option value="upgrade">h2c upgrade</option>
+              <option value="prior-knowledge">Prior knowledge</option>
+            </select>
+          </label>
+        )}
         {opt('refreshCookies', 'Fresh cookies', 'Replace the Cookie header with the current cookie jar')}
         {opt('applyRules', 'Apply rules', 'Run enabled request match and replace rules')}
         {opt('loginMacro', 'Log in on 401/403', 'Run the login macro for this host and send again')}

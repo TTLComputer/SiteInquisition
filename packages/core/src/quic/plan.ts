@@ -183,8 +183,8 @@ async function runOnce(store: CaptureStore, rows: H3PlanRequest[], opts: H3PlanO
   const timeout = opts.timeoutMs ?? 30_000;
   const wantsEarly = rows.some((r) => r.earlyData);
 
-  const connect = async (early: boolean): Promise<H3Connection> => {
-    const ticket = early ? tickets.get(origin) : undefined;
+  const connect = async (early: boolean, replayTicket?: SessionTicket): Promise<H3Connection> => {
+    const ticket = early ? (replayTicket ?? tickets.get(origin)) : undefined;
     const c = await h3Connect({
       host,
       port,
@@ -216,9 +216,11 @@ async function runOnce(store: CaptureStore, rows: H3PlanRequest[], opts: H3PlanO
   }
 
   const connCount = wantsEarly ? Math.max(1, Math.min(opts.zeroRttConnections ?? 1, 10)) : 1;
-  const conns: H3Connection[] = [];
-  for (let i = 0; i < connCount; i++) conns.push(await connect(wantsEarly));
-  const ports = conns.map((c) => [c.client.localPort]);
+  // Every 0-RTT connection replays the same ticket: a connection that finishes
+  // its handshake hands out a new one, which must not change what the next uses.
+  const replayTicket = wantsEarly ? tickets.get(origin) : undefined;
+  const conns: H3Connection[] = [await connect(wantsEarly, replayTicket)];
+  const ports: number[][] = [[conns[0]!.client.localPort]];
 
   const results: H3RowResult[] = [];
   const exchanges = new Map<string, number>();
@@ -251,7 +253,7 @@ async function runOnce(store: CaptureStore, rows: H3PlanRequest[], opts: H3PlanO
 
   // Hold and release. Rows released at the same moment form a group: the
   // untimed group opens once every member is held, a timed one at its time.
-  const gateMembers = rows.reduce((n, r) => n + (r.hold && r.releaseAtMs === undefined ? (r.earlyData ? conns.length : 1) : 0), 0);
+  const gateMembers = rows.reduce((n, r) => n + (r.hold && r.releaseAtMs === undefined ? (r.earlyData ? connCount : 1) : 0), 0);
   const groups = new Map<string, Array<{ conn: H3Connection; write: () => void }>>();
   let gateDatagrams: number | undefined;
   const flushGroup = (key: string) => {
@@ -413,7 +415,15 @@ async function runOnce(store: CaptureStore, rows: H3PlanRequest[], opts: H3PlanO
 
   try {
     const tasks: Array<Promise<void>> = [];
-    for (let ci = 0; ci < conns.length; ci++) {
+    for (let ci = 0; ci < connCount; ci++) {
+      // Open each further 0-RTT connection only when its rows go out: its early
+      // data has to be written in the same tick, before the handshake can finish
+      // and turn the "early" request into an ordinary 1-RTT one.
+      if (ci > 0) {
+        const c = await connect(true, replayTicket);
+        conns.push(c);
+        ports.push([c.client.localPort]);
+      }
       // With several 0-RTT connections only the early rows repeat on the extra ones.
       rows.forEach((r, i) => {
         if (ci === 0 || r.earlyData) tasks.push(runRow(r, i, ci));

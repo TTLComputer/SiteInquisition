@@ -121,3 +121,14 @@ siq ca remove    # delete the certificate and key from this computer
 Rotating does not remove the old CA from devices. Remove it from each device
 using the steps above first. A CA lasts two years from when it was made; the
 expiry date is in `siq ca` and in Settings, Proxy and TLS.
+
+## Uninstalling SiteInquisition
+
+Your projects and the CA stay behind when you remove the app. Remove the CA
+from every device that trusts it first (the steps above), then:
+
+1. Run `siq ca remove`.
+2. Remove the app: `sudo apt remove siteinquisition` for the .deb, or delete
+   the unpacked folder (the .tar.gz and the Windows zip).
+3. Delete the data folder (`~/.config/siteinquisition` on Linux,
+   `%APPDATA%\SiteInquisition` on Windows) and your project folders.

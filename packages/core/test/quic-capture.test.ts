@@ -85,6 +85,31 @@ describe('HTTP/3 capture for the built-in browser', () => {
     expect(res.status).toBe(502);
   }, 15_000);
 
+  it('pings a held HTTP/3 connection so neither side times out while a breakpoint is paused', async () => {
+    core.tools.setPausedKeepAlive(1000);
+    core.tools.setBreakpoints([{ enabled: true, phase: 'request', pathPrefix: '/held-h3' }]);
+    try {
+      const pings = () => client.client.conn.log.filter((e) => e.dir === 'in' && e.frames.some((f) => /^PING/.test(f))).length;
+      const res = client.session.request(requestFields('GET', new URL(`https://localhost:${h3Port}/held-h3`), []))!.response();
+      let paused;
+      for (let i = 0; i < 100 && !paused; i++) {
+        paused = core.tools.intercept.list().find((p) => p.message.url.includes('/held-h3'));
+        if (!paused) await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(paused).toBeTruthy();
+      const before = pings();
+      await new Promise((r) => setTimeout(r, 2300));
+      expect(pings() - before).toBeGreaterThanOrEqual(2);
+      core.tools.intercept.releaseAll();
+      const r = await res;
+      expect(r.status).toBe(200);
+      expect(r.body.toString()).toBe('h3 upstream GET /held-h3 0 ');
+    } finally {
+      core.tools.setBreakpoints([]);
+      core.tools.setPausedKeepAlive(0);
+    }
+  });
+
   it('stores the browser HTTP/3 host list for the next launch', () => {
     expect(normalizeBrowserHttp3Hosts([' https://Example.com/path ', 'api.example.com:443', 'example.com'])).toEqual(['example.com', 'api.example.com']);
     expect(() => normalizeBrowserHttp3Hosts(['*.example.com'])).toThrow(/not a host name/);

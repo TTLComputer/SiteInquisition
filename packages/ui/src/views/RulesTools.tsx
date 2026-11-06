@@ -430,6 +430,42 @@ function PausedQueue() {
   );
 }
 
+function KeepAliveSetting() {
+  const { client, notify } = useApp();
+  const [ms, setMs] = useState<number | null>(null);
+  useEffect(() => {
+    client.keepAlivePaused().then(setMs).catch(() => setMs(0));
+  }, [client]);
+  const apply = (v: number) => {
+    setMs(v);
+    client.setKeepAlivePaused(v).then(setMs).catch((e: Error) => notify(e.message));
+  };
+  const on = (ms ?? 0) > 0;
+  return (
+    <div className="card" style={{ margin: '0 0 8px', padding: '8px 10px' }}>
+      <label className="check" title="While a request or response is paused here, send PING frames on its HTTP/2 or HTTP/3 connections, to the client and the server, so neither times out while you compose an edit. HTTP/1.1 keeps its own sockets alive.">
+        <input type="checkbox" checked={on} onChange={(e) => apply(e.target.checked ? 15000 : 0)} /> Keep HTTP/2 and HTTP/3 connections alive while paused
+      </label>
+      {on && (
+        <label className="check" style={{ marginLeft: 12 }} title="Seconds between PING frames on a held connection">
+          every
+          <input
+            className="input mono"
+            type="number"
+            min={1}
+            max={120}
+            value={Math.round((ms ?? 15000) / 1000)}
+            onChange={(e) => apply(Math.max(1, Math.min(120, Number(e.target.value) || 15)) * 1000)}
+            style={{ width: 56 }}
+            aria-label="Keepalive interval seconds"
+          />
+          s
+        </label>
+      )}
+    </div>
+  );
+}
+
 export function Breakpoints() {
   const { client, notify } = useApp();
   const { data, load } = useRulesData();
@@ -455,6 +491,7 @@ export function Breakpoints() {
   return (
     <div className="rules-tool">
       <PausedQueue />
+      <KeepAliveSetting />
       <SaveBar
         dirty={dirty}
         save={() => void save()}

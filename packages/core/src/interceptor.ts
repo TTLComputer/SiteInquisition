@@ -32,6 +32,7 @@ import {
   connect as h2Connect,
   createServer as createH2Server,
   type ClientHttp2Session,
+  type Http2Session,
   type IncomingHttpHeaders as H2Headers,
   type Http2ServerRequest,
   type Http2ServerResponse,
@@ -152,6 +153,14 @@ export interface InterceptorOptions {
    * skips the hooks and streams through. Default 64 MB.
    */
   maxBufferBytes?: number;
+  /**
+   * While a request or response is held at a breakpoint, send PING frames on
+   * the HTTP/2 connections (both the client's and the paired upstream one)
+   * every this-many ms, so neither side times the connection out while the
+   * user is composing an edit. Returns 0 or undefined to leave it off. Read
+   * each time a hook is about to wait, so the setting takes effect live.
+   */
+  keepAlivePausedMs?(): number | undefined;
 }
 
 export type InterceptorEvents = {
@@ -378,7 +387,7 @@ interface ConnInfo {
    */
   upstream?: { key: string; session: Promise<ClientHttp2Session | undefined> };
   /** The client's HTTP/2 session, closed when the paired server one closes. */
-  clientSession?: { close(): void };
+  clientSession?: Http2Session;
 }
 const INFO = Symbol('siq.conn');
 type Tagged = { [INFO]?: ConnInfo };
@@ -668,6 +677,35 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
     server.on('request', (req: Http2ServerRequest, res: Http2ServerResponse) => void this.onRequest(req, res, conn));
     server.on('sessionError', () => undefined);
     server.emit('connection', stream);
+  }
+
+  /**
+   * Await a hook, pinging the HTTP/2 connections while it waits so a held
+   * breakpoint does not let either side time the connection out. The ping
+   * interval is read when the wait starts; most hooks return at once and the
+   * timer never fires. HTTP/1.1 keeps its sockets alive on its own.
+   */
+  private async whilePaused<T>(p: Promise<T>, conn: ConnInfo | undefined, h2: boolean): Promise<T> {
+    const ms = h2 && conn ? this.opts.keepAlivePausedMs?.() : undefined;
+    if (!ms || ms <= 0) return p;
+    const ping = (s: Http2Session | undefined) => {
+      if (!s || s.destroyed) return;
+      try {
+        s.ping(() => undefined);
+      } catch {
+        // A ping can be refused (backpressure, closing); the next tick tries again.
+      }
+    };
+    const timer = setInterval(() => {
+      ping(conn!.clientSession);
+      void conn!.upstream?.session.then(ping).catch(() => undefined);
+    }, Math.max(1000, ms));
+    timer.unref();
+    try {
+      return await p;
+    } finally {
+      clearInterval(timer);
+    }
   }
 
   private passthrough(stream: Duplex, host: string, port: number, remoteAddress: string | null): void {
@@ -1028,7 +1066,7 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
 
     if (hooks?.request) {
       try {
-        const action = await hooks.request(preq, decodeBody(body, preq.headers) ?? body);
+        const action = await this.whilePaused(hooks.request(preq, decodeBody(body, preq.headers) ?? body), conn, h2);
         if (action && 'close' in action) {
           finished = true;
           timings.total = rel();
@@ -1166,7 +1204,7 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
           let msg = up.statusMessage;
           let hdrs = upHeaders;
           try {
-            const action = await hooks.response(preq, { status, statusMessage: up.statusMessage, headers: upHeaders, decodedBody: decodeBody(data, upHeaders) ?? data });
+            const action = await this.whilePaused(hooks.response(preq, { status, statusMessage: up.statusMessage, headers: upHeaders, decodedBody: decodeBody(data, upHeaders) ?? data }), conn, h2);
             if (action && 'close' in action) {
               finished = true;
               timings.total = rel();

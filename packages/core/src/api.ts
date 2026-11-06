@@ -186,7 +186,7 @@ export class CoreApiServer {
         const req = sendRequest(p);
         const options = (p.options as Record<string, unknown> | undefined) ?? {};
         // Without options this is a plain send, exactly as given, as before.
-        if (!p.options) return sendReplay(store, { ...req, ignoreTlsErrors: p.ignoreTlsErrors === true, protocol: p.protocol === 'h3' ? 'h3' : undefined });
+        if (!p.options) return sendReplay(store, { ...req, ignoreTlsErrors: p.ignoreTlsErrors === true, protocol: p.protocol === 'h3' ? 'h3' : p.protocol === 'h2' ? 'h2' : undefined, h2Method: p.h2Method as never });
         return core.tools.sender.send(req, { ...options, ignoreTlsErrors: p.ignoreTlsErrors === true || options.ignoreTlsErrors === true });
       },
       'replay.batch': (p) => {
@@ -326,6 +326,8 @@ export class CoreApiServer {
       'intercept.list': () => core.tools.intercept.list(),
       'intercept.resolve': (p) => core.tools.intercept.resolve(str(p, 'id')!, { action: (p.action as never) ?? 'forward', edits: p.edits as never }),
       'intercept.releaseAll': () => core.tools.intercept.releaseAll(),
+      'intercept.keepAlive': () => core.tools.pausedKeepAlive(),
+      'intercept.setKeepAlive': (p) => core.tools.setPausedKeepAlive(Number(p.ms) || 0),
       'scripts.get': () => ({
         scripts: core.tools.scriptList(),
         stats: Object.fromEntries(core.tools.scripts.stats),
@@ -427,6 +429,22 @@ export class CoreApiServer {
         });
         return core.tools.h3Plan(rows as never, ((p.options as object) ?? {}) as never);
       },
+      'h2.run': (p) => {
+        const rows = arr(p, 'requests').map((r) => {
+          const x = r as Record<string, unknown>;
+          return { ...x, ...sendRequest(x) };
+        });
+        return core.tools.h2Plan(rows as never, ((p.options as object) ?? {}) as never);
+      },
+      'protocol.run': (p) => {
+        const rows = arr(p, 'requests').map((r) => {
+          const x = r as Record<string, unknown>;
+          return { ...x, ...sendRequest(x) };
+        });
+        const proto = p.protocol === 'h3' ? 'h3' : 'h2';
+        return proto === 'h3' ? core.tools.h3Plan(rows as never, ((p.options as object) ?? {}) as never) : core.tools.h2Plan(rows as never, ((p.options as object) ?? {}) as never);
+      },
+      'protocol.ladder': (p) => core.tools.protocolLadder(str(p, 'url')!, { ignoreTlsErrors: p.ignoreTlsErrors === true }),
       'h3.tickets': () => core.tools.h3Tickets(),
       'h3.clearTickets': () => {
         core.tools.clearH3Tickets();

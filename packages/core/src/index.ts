@@ -19,6 +19,8 @@ export * from './powertools.js';
 export * from './race.js';
 export { runH3Plan, h3Tickets, type H3PlanRequest, type H3PlanOptions, type H3PlanResult, type H3PlanRun, type H3RowResult, type H3ConnectionReport } from './quic/plan.js';
 export { H3Server, h3Connect, requestFields, type H3ServerRequest } from './quic/index.js';
+export { runH2Plan, type H2PlanRequest, type H2PlanOptions, type H2PlanResult, type H2PlanRun, type H2ConnectionReport, type H2AbuseOptions } from './h2/plan.js';
+export { protocolLadder, type LadderStep, type H2ConnectMethod } from './h2/connect.js';
 export * from './rules.js';
 export * from './scripts.js';
 export * from './send.js';

@@ -12,6 +12,7 @@ import { connect as tlsConnect } from 'node:tls';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { Core, type ExchangeSummary } from '@siteinquisition/core';
 import { generateCA } from '../src/x509.js';
+import { H2Connection, collectResponse } from '../src/h2/connection.js';
 import { tunnel } from './proxy-client.js';
 
 let tmp: string;
@@ -215,6 +216,39 @@ describe('HTTP/2 through the proxy: the server decides', () => {
     expect(json(r.body)).toMatchObject({ path: '/grpc', version: '2.0', te: 'trailers', body: 'msg' });
     expect(r.trailers).toMatchObject({ 'grpc-status': '0', 'grpc-message': 'ok' });
     expect((await waitFor('path:/grpc')).status).toBe(200);
+  });
+
+  it('pings a held HTTP/2 connection so the server does not time out while a breakpoint is paused', async () => {
+    // Pause every request; ping the held connections once a second so neither side times out.
+    core.tools.setPausedKeepAlive(1000);
+    core.tools.setBreakpoints([{ enabled: true, phase: 'request', pathPrefix: '/held-h2' }]);
+    try {
+      const sock = netConnect(proxyPort, '127.0.0.1');
+      await new Promise((r) => sock.once('connect', r));
+      const client = new H2Connection(sock, { role: 'client' });
+      await new Promise((r) => client.once('settings', r));
+      let pings = 0;
+      client.on('ping', (_data, ack) => void (ack || pings++));
+      const res = collectResponse(client.request([[':method', 'GET'], [':scheme', 'http'], [':authority', `localhost:${h2Port}`], [':path', '/held-h2']], { endStream: true }));
+      // Wait for the request to pause, then sit paused long enough for a couple of pings.
+      let paused;
+      for (let i = 0; i < 100 && !paused; i++) {
+        paused = core.tools.intercept.list().find((p) => p.message.url.includes('/held-h2'));
+        if (!paused) await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(paused).toBeTruthy();
+      await new Promise((r) => setTimeout(r, 2300));
+      expect(pings).toBeGreaterThanOrEqual(1);
+      core.tools.intercept.releaseAll();
+      const r = await res;
+      client.close();
+      sock.destroy();
+      expect(r.status).toBe(200);
+      expect(json(r.body.toString()).path).toBe('/held-h2');
+    } finally {
+      core.tools.setBreakpoints([]);
+      core.tools.setPausedKeepAlive(0);
+    }
   });
 
   it('takes TLS sent straight to the port (transparent mode) to the port in :authority', async () => {

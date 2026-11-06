@@ -59,6 +59,11 @@ export interface H3Item {
   priorityUpdateAtMs?: number;
   priorityUpdateValue?: string;
   earlyData?: boolean;
+  // HTTP/2 only
+  continuationSize?: number;
+  padding?: number;
+  /** Trailer header block, one "name: value" per line, sent after the body. */
+  trailers?: string;
 }
 
 /** Text handed to the Codecs workbench from another screen. */

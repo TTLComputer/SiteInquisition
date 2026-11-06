@@ -38,6 +38,10 @@ import type {
   H3PlanOptions,
   H3PlanRequest,
   H3PlanResult,
+  H2PlanOptions,
+  H2PlanRequest,
+  H2PlanResult,
+  LadderStep,
   ReplaceRule,
   RunResult,
   ScopeConfig,
@@ -85,6 +89,10 @@ export type {
   H3PlanOptions,
   H3PlanRequest,
   H3PlanResult,
+  H2PlanOptions,
+  H2PlanRequest,
+  H2PlanResult,
+  LadderStep,
   ReplaceRule,
   RunResult,
   Script,
@@ -452,6 +460,8 @@ export class CoreClient {
   paused = () => this.call<Paused[]>('intercept.list');
   resolvePaused = (id: string, action: 'forward' | 'drop' | 'forward-pause-response', edits?: Record<string, unknown>) => this.call<boolean>('intercept.resolve', { id, action, edits });
   releaseAll = () => this.call<number>('intercept.releaseAll');
+  keepAlivePaused = () => this.call<number>('intercept.keepAlive');
+  setKeepAlivePaused = (ms: number) => this.call<number>('intercept.setKeepAlive', { ms });
   scripts = () => this.call<{ scripts: Script[]; stats: Record<string, ScriptStats>; errors: Record<string, string>; untrusted?: string[] }>('scripts.get');
   trustScript = (id: string) => this.call<boolean>('scripts.trust', { id });
   setScripts = (scripts: Array<Partial<Script>>) => this.call<Script[]>('scripts.set', { scripts });
@@ -470,6 +480,9 @@ export class CoreClient {
     this.call<H3PlanResult>('h3.run', { requests: requests.map((r) => ({ ...r, ...wire(r), body: undefined })), options });
   h3Tickets = () => this.call<Array<{ origin: string; receivedAt: number; maxEarlyData: number; lifetimeSec: number }>>('h3.tickets');
   h3ClearTickets = () => this.call<boolean>('h3.clearTickets');
+  h2Run = (requests: Array<Omit<H2PlanRequest, 'body'> & WireRequest>, options: H2PlanOptions) =>
+    this.call<H2PlanResult>('h2.run', { requests: requests.map((r) => ({ ...r, ...wire(r), body: undefined })), options });
+  protocolLadder = (url: string, ignoreTlsErrors = false) => this.call<LadderStep[]>('protocol.ladder', { url, ignoreTlsErrors });
   browserHttp3 = () => this.call<{ hosts: string[]; port: number | null }>('browser.http3');
   setBrowserHttp3Hosts = (hosts: string[]) => this.call<{ hosts: string[]; restartNeeded: boolean }>('browser.setHttp3Hosts', { hosts });
   liveStreams = () => this.call<{ mqtt: string[]; ws: string[]; wsProxied: string[] }>('stream.live');

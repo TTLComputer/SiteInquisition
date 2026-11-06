@@ -37,6 +37,12 @@ export interface ProxyOptions {
    * browser sends QUIC here when its hosts are mapped to this port.
    */
   http3?: boolean;
+  /**
+   * Ping held HTTP/2 and HTTP/3 connections every this-many ms while a breakpoint is
+   * paused, so the server does not time out while the user composes an edit.
+   * 0 (the default) leaves it off. Can be changed live with `setPausedKeepAlive`.
+   */
+  pausedKeepAliveMs?: number;
 }
 
 /**
@@ -122,6 +128,8 @@ export class ProxyEngine extends EventEmitter<{
   private hooks?: ProxyHooks;
   /** Tags from hooks, by proxy request id, waiting for the exchange to be recorded. */
   private pendingTags = new Map<string, string[]>();
+  /** PING interval (ms) for HTTP/2 and HTTP/3 connections held at a breakpoint; 0 is off. */
+  private pausedKeepAliveMs = 0;
 
   constructor(
     private readonly store: CaptureStore,
@@ -131,11 +139,26 @@ export class ProxyEngine extends EventEmitter<{
     private readonly seen?: SeenHosts,
   ) {
     super();
+    this.pausedKeepAliveMs = opts.pausedKeepAliveMs ?? 0;
   }
 
   /** Install hooks; takes effect on the next start or restart. */
   setHooks(hooks: ProxyHooks | undefined): void {
     this.hooks = hooks;
+  }
+
+  /**
+   * Ping HTTP/2 and HTTP/3 connections held at a breakpoint every `ms` so the server
+   * does not time out while the user composes an edit; 0 turns it off. Takes
+   * effect live, on connections paused from now on.
+   */
+  setPausedKeepAlive(ms: number): void {
+    this.pausedKeepAliveMs = Math.max(0, Math.round(ms));
+  }
+
+  /** The current held-connection keepalive interval in ms, 0 when off. */
+  get pausedKeepAlive(): number {
+    return this.pausedKeepAliveMs;
   }
 
   private addTags(reqId: string, tags: string[]): void {
@@ -253,6 +276,7 @@ export class ProxyEngine extends EventEmitter<{
       hooks: this.interceptorHooks(),
       maxCaptureBytes: this.store.maxBodyBytes,
       maxBufferBytes: this.opts.maxBufferBytes,
+      keepAlivePausedMs: () => this.pausedKeepAliveMs,
     });
     this.subscribe(server);
     const port = this.listenPort ?? (this.opts.port || (await freePort()));
@@ -266,6 +290,7 @@ export class ProxyEngine extends EventEmitter<{
         ignoreUpstreamTlsErrors: (host) => (ignoreHosts ? ignoreHosts.has(host.toLowerCase()) : ignore === true) || skipsTlsChecks(host),
         hooks: this.interceptorHooks(),
         acceptClient: (address) => this.acceptAddress(address, 'http3'),
+        keepAlivePausedMs: () => this.pausedKeepAliveMs,
       });
       this.subscribe(h3);
       try {

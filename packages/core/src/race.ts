@@ -1,9 +1,9 @@
 import * as http from 'node:http';
-import * as http2 from 'node:http2';
 import * as net from 'node:net';
 import * as tls from 'node:tls';
 import { newId } from './ids.js';
 import { runH3Plan } from './quic/plan.js';
+import { runH2Plan } from './h2/plan.js';
 import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
 import { upstreamTls } from './upstreamtls.js';
 
@@ -15,9 +15,11 @@ import { upstreamTls } from './upstreamtls.js';
  *  - last-byte:     HTTP/1.1. Every connection (and TLS handshake) is opened
  *                   first and each request is written except its final byte;
  *                   at the gate the last bytes go out at their offsets.
- *  - single-packet: HTTP/2. All streams open on one connection with their
- *                   bodies held back; at the gate every stream ends in the
- *                   same tick, so the final frames share one TCP write.
+ *  - single-packet: HTTP/2, on the in-house engine. All streams open on one
+ *                   connection with their last byte held back; at the gate
+ *                   the final frames of every stream go out in one TCP write.
+ *                   The server decides HTTP/2 (ALPN, or prior knowledge for
+ *                   http); one that does not take it fails the race.
  *  - h3-single-datagram: HTTP/3. Every stream is written except its last
  *                   byte; at the gate the last bytes of all streams go out in
  *                   one UDP datagram (as few as possible when they do not fit).
@@ -166,42 +168,6 @@ async function prepareHttp1(store: CaptureStore, r: RaceRequest, index: number, 
   return { index, plannedMs: planned, exchangeId: ex.id, fire: () => fire(), done };
 }
 
-async function prepareHttp2(
-  store: CaptureStore,
-  session: http2.ClientHttp2Session,
-  r: RaceRequest,
-  index: number,
-  planned: number,
-  flowId: string,
-  tag: string,
-  opts: RaceOptions,
-): Promise<Prepared> {
-  const url = new URL(r.url);
-  const headers = cleanHeaders(r, url, true);
-  const body = r.body ?? new Uint8Array();
-  const ex = store.addRequest({ source: 'replay', startedAt: Date.now(), method: r.method.toUpperCase(), url: url.href, httpVersion: '2', headers, body, replayOf: r.replayOf ?? null, flowId, tags: [tag] });
-  const stream = session.request({ ':method': r.method.toUpperCase(), ':path': url.pathname + url.search, ':authority': url.host, ...Object.fromEntries(headers) }, { endStream: false });
-  stream.setTimeout(opts.timeoutMs ?? 30_000, () => stream.close(http2.constants.NGHTTP2_CANCEL));
-  if (body.length > 1) stream.write(body.subarray(0, body.length - 1));
-  const done = new Promise<{ status: number; message: string; headers: HeaderList; body: Buffer }>((resolve, reject) => {
-    let status = 0;
-    const list: HeaderList = [];
-    stream.on('response', (h) => {
-      status = Number(h[':status']);
-      for (const [k, v] of Object.entries(h)) if (!k.startsWith(':')) for (const x of Array.isArray(v) ? v : [v]) list.push([k, String(x)]);
-    });
-    const chunks: Buffer[] = [];
-    stream.on('data', (c: Buffer) => chunks.push(c));
-    stream.on('end', () => resolve({ status, message: '', headers: list, body: Buffer.concat(chunks) }));
-    stream.on('error', reject);
-    stream.on('close', () => {
-      if (!status) reject(new Error('stream closed without a response'));
-    });
-  });
-  done.catch(() => undefined);
-  return { index, plannedMs: planned, exchangeId: ex.id, fire: () => stream.end(body.length ? body.subarray(body.length - 1) : undefined), done };
-}
-
 async function prepareNone(store: CaptureStore, r: RaceRequest, index: number, planned: number, flowId: string, tag: string, opts: RaceOptions): Promise<Prepared> {
   // Same as last-byte but nothing is held back and connections open at fire time.
   const url = new URL(r.url);
@@ -233,7 +199,8 @@ async function prepareNone(store: CaptureStore, r: RaceRequest, index: number, p
 
 export async function runRace(store: CaptureStore, requests: RaceRequest[], opts: RaceOptions): Promise<RaceResult> {
   if (!requests.length) throw new Error('a race needs at least one request');
-  if (opts.sync === 'h3-single-datagram') return raceH3(store, requests, opts);
+  if (opts.sync === 'h3-single-datagram') return raceViaPlan(store, requests, opts, 'h3');
+  if (opts.sync === 'single-packet') return raceViaPlan(store, requests, opts, 'h2');
   if (requests.length > 100) throw new Error('a race can have at most 100 requests');
   for (const r of requests) {
     const u = new URL(r.url);
@@ -246,78 +213,63 @@ export async function runRace(store: CaptureStore, requests: RaceRequest[], opts
     const flowId = store.createFlow('race');
     const tag = `race:${id}`;
     const planned = requests.map((r) => Math.max(0, r.offsetMs) + (opts.jitterMs ? Math.random() * opts.jitterMs : 0));
-    let session: http2.ClientHttp2Session | undefined;
     const prepared: Prepared[] = [];
     const failed: RaceSendResult[] = [];
-    try {
-      if (opts.sync === 'single-packet') {
-        const origins = new Set(requests.map((r) => new URL(r.url).origin));
-        if (origins.size > 1) throw new Error('single-packet sync needs every request on the same origin (one HTTP/2 connection)');
-        const url = new URL(requests[0]!.url);
-        session = await new Promise<http2.ClientHttp2Session>((resolve, reject) => {
-          const s = http2.connect(url.origin, { ...upstreamTls(url.hostname.replace(/^\[|\]$/g, ''), opts.ignoreTlsErrors), ...(url.protocol === 'https:' ? { ALPNProtocols: ['h2'] } : {}) });
-          s.once('connect', () => resolve(s));
-          s.once('error', (e) => reject(new Error(`HTTP/2 connection failed (the server may not support HTTP/2): ${e.message}`)));
-        });
+    for (let i = 0; i < requests.length; i++) {
+      try {
+        const r = requests[i]!;
+        prepared.push(
+          opts.sync === 'last-byte' ? await prepareHttp1(store, r, i, planned[i]!, flowId, tag, opts) : await prepareNone(store, r, i, planned[i]!, flowId, tag, opts),
+        );
+      } catch (e) {
+        const ex = store.addRequest({ source: 'replay', startedAt: Date.now(), method: requests[i]!.method, url: requests[i]!.url, httpVersion: '1.1', headers: requests[i]!.headers, flowId, tags: [tag] });
+        store.failExchange(ex.id, 'error', (e as Error).message);
+        failed.push({ index: i, exchangeId: ex.id, plannedMs: round(planned[i]!), actualMs: NaN, status: null, durationMs: null, error: (e as Error).message });
       }
-      for (let i = 0; i < requests.length; i++) {
-        try {
-          const r = requests[i]!;
-          prepared.push(
-            opts.sync === 'single-packet'
-              ? await prepareHttp2(store, session!, r, i, planned[i]!, flowId, tag, opts)
-              : opts.sync === 'last-byte'
-                ? await prepareHttp1(store, r, i, planned[i]!, flowId, tag, opts)
-                : await prepareNone(store, r, i, planned[i]!, flowId, tag, opts),
-          );
-        } catch (e) {
-          const ex = store.addRequest({ source: 'replay', startedAt: Date.now(), method: requests[i]!.method, url: requests[i]!.url, httpVersion: '1.1', headers: requests[i]!.headers, flowId, tags: [tag] });
-          store.failExchange(ex.id, 'error', (e as Error).message);
-          failed.push({ index: i, exchangeId: ex.id, plannedMs: round(planned[i]!), actualMs: NaN, status: null, durationMs: null, error: (e as Error).message });
-        }
-      }
-      // The gate: fire in planned order, same-offset sends in one synchronous pass.
-      const gate = now();
-      const order = [...prepared].sort((a, b) => a.plannedMs - b.plannedMs);
-      let k = 0;
-      while (k < order.length) {
-        const at = order[k]!.plannedMs;
-        if (at > 0) await sleepUntil(gate + at);
-        while (k < order.length && order[k]!.plannedMs <= at + 0.05) {
-          const p = order[k++]!;
-          p.firedAt = now() - gate;
-          p.fire();
-        }
-      }
-      const sends: RaceSendResult[] = [...failed];
-      await Promise.all(
-        prepared.map(async (p) => {
-          const firedAbs = gate + (p.firedAt ?? 0);
-          try {
-            const res = await p.done;
-            const total = now() - firedAbs;
-            store.completeResponse(p.exchangeId, { status: res.status, statusMessage: res.message, headers: res.headers, body: res.body, timings: { total: round(total) } });
-            sends.push({ index: p.index, exchangeId: p.exchangeId, plannedMs: round(p.plannedMs), actualMs: round(p.firedAt ?? 0), status: res.status, durationMs: round(total) });
-          } catch (e) {
-            store.failExchange(p.exchangeId, 'error', (e as Error).message, { total: round(now() - firedAbs) });
-            sends.push({ index: p.index, exchangeId: p.exchangeId, plannedMs: round(p.plannedMs), actualMs: round(p.firedAt ?? 0), status: null, durationMs: null, error: (e as Error).message });
-          }
-        }),
-      );
-      sends.sort((a, b) => a.index - b.index);
-      const fired = sends.filter((s) => Number.isFinite(s.actualMs)).map((s) => s.actualMs);
-      runs.push({ run, flowId, sends, spreadMs: fired.length ? round(Math.max(...fired) - Math.min(...fired)) : 0, statuses: [...new Set(sends.map((s) => s.status))] });
-    } finally {
-      session?.close();
     }
+    // The gate: fire in planned order, same-offset sends in one synchronous pass.
+    const gate = now();
+    const order = [...prepared].sort((a, b) => a.plannedMs - b.plannedMs);
+    let k = 0;
+    while (k < order.length) {
+      const at = order[k]!.plannedMs;
+      if (at > 0) await sleepUntil(gate + at);
+      while (k < order.length && order[k]!.plannedMs <= at + 0.05) {
+        const p = order[k++]!;
+        p.firedAt = now() - gate;
+        p.fire();
+      }
+    }
+    const sends: RaceSendResult[] = [...failed];
+    await Promise.all(
+      prepared.map(async (p) => {
+        const firedAbs = gate + (p.firedAt ?? 0);
+        try {
+          const res = await p.done;
+          const total = now() - firedAbs;
+          store.completeResponse(p.exchangeId, { status: res.status, statusMessage: res.message, headers: res.headers, body: res.body, timings: { total: round(total) } });
+          sends.push({ index: p.index, exchangeId: p.exchangeId, plannedMs: round(p.plannedMs), actualMs: round(p.firedAt ?? 0), status: res.status, durationMs: round(total) });
+        } catch (e) {
+          store.failExchange(p.exchangeId, 'error', (e as Error).message, { total: round(now() - firedAbs) });
+          sends.push({ index: p.index, exchangeId: p.exchangeId, plannedMs: round(p.plannedMs), actualMs: round(p.firedAt ?? 0), status: null, durationMs: null, error: (e as Error).message });
+        }
+      }),
+    );
+    sends.sort((a, b) => a.index - b.index);
+    const fired = sends.filter((s) => Number.isFinite(s.actualMs)).map((s) => s.actualMs);
+    runs.push({ run, flowId, sends, spreadMs: fired.length ? round(Math.max(...fired) - Math.min(...fired)) : 0, statuses: [...new Set(sends.map((s) => s.status))] });
   }
   return { id, sync: opts.sync, runs };
 }
 
 export type { ExchangeSummary };
 
-/** HTTP/3 race: a stream plan where every row holds its last byte and the gate releases them together. */
-async function raceH3(store: CaptureStore, requests: RaceRequest[], opts: RaceOptions): Promise<RaceResult> {
+/**
+ * HTTP/2 and HTTP/3 races: a stream plan on one connection where every row
+ * holds its last byte and the gate releases them together (one TCP write for
+ * HTTP/2, one UDP datagram for HTTP/3).
+ */
+async function raceViaPlan(store: CaptureStore, requests: RaceRequest[], opts: RaceOptions, protocol: 'h2' | 'h3'): Promise<RaceResult> {
   if (requests.length > 100) throw new Error('a race can have at most 100 requests');
   const repeat = Math.max(1, Math.min(opts.repeat ?? 1, 50));
   const id = newId();
@@ -325,9 +277,7 @@ async function raceH3(store: CaptureStore, requests: RaceRequest[], opts: RaceOp
   for (let run = 0; run < repeat; run++) {
     const offsets = requests.map((r) => Math.max(0, r.offsetMs) + (opts.jitterMs ? Math.random() * opts.jitterMs : 0));
     const base = Math.min(...offsets);
-    const plan = await runH3Plan(
-      store,
-      requests.map((r, i) => ({
+    const rows = requests.map((r, i) => ({
         method: r.method,
         url: r.url,
         headers: r.headers,
@@ -337,9 +287,12 @@ async function raceH3(store: CaptureStore, requests: RaceRequest[], opts: RaceOp
         // Equal offsets release together through the gate. With offsets, every
         // row is held first and released 50 ms in, plus its offset.
         releaseAtMs: offsets.some((o) => o - base > 0.05) ? 50 + Math.round((offsets[i]! - base) * 1000) / 1000 : undefined,
-      })),
-      { gate: 'single-datagram', ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs },
-    );
+      }));
+    const common = { ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs };
+    const plan =
+      protocol === 'h2'
+        ? await runH2Plan(store, rows.map((r) => ({ ...r, headers: r.headers.filter(([k]) => !k.startsWith(':') && k.toLowerCase() !== 'content-length') })), { ...common, gate: 'single-packet' })
+        : await runH3Plan(store, rows, { ...common, gate: 'single-datagram' });
     const p = plan.runs[0]!;
     for (const r of p.rows) store.tagExchange(r.exchangeId, [...(store.getSummary(r.exchangeId)?.tags ?? []), `race:${id}`]);
     const fired = p.rows.map((r) => r.timings.released ?? r.timings.finSent ?? NaN);

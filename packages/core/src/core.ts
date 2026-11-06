@@ -126,10 +126,11 @@ export class Core {
       if (JSON.stringify(now) !== JSON.stringify(this.store.getMeta<string[]>('lanAllow') ?? [])) this.store.setMeta('lanAllow', now);
       this.tools?.live.emit('change', { id: newId(), actor: this.store.actor, at: Date.now(), kind: 'lan.changed', entity: 'lan', entityId: '*', data: this.lanState() });
     });
-    this.proxy = new ProxyEngine(this.store, this.scope, ca, { ...opts.proxy, lanGate: this.lan }, this.seen);
+    const pausedKeepAliveMs = this.store.getMeta<number>('pausedKeepAliveMs') ?? opts.proxy?.pausedKeepAliveMs ?? 0;
+    this.proxy = new ProxyEngine(this.store, this.scope, ca, { ...opts.proxy, pausedKeepAliveMs, lanGate: this.lan }, this.seen);
     if (opts.browserProxy) {
       const b = opts.browserProxy === true ? {} : opts.browserProxy;
-      this.browserProxy = new ProxyEngine(this.store, this.scope, ca, { ignoreUpstreamTlsErrors: opts.proxy?.ignoreUpstreamTlsErrors, source: 'browser', port: b.port, http3: b.http3 }, this.seen);
+      this.browserProxy = new ProxyEngine(this.store, this.scope, ca, { ignoreUpstreamTlsErrors: opts.proxy?.ignoreUpstreamTlsErrors, source: 'browser', port: b.port, http3: b.http3, pausedKeepAliveMs }, this.seen);
     }
     this.mqtt = (opts.mqtt ?? []).map((cfg) => new MqttRelay(this.store, this.scope, ca, cfg, this.seen, this.lan));
     this.tools = new PowerTools(this);

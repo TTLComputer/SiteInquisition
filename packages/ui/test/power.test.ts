@@ -171,7 +171,8 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
     try {
       await nav('History');
       await page.locator('.row', { hasText: '/api/apply-coupon' }).first().click();
-      await nav('HTTP/3');
+      await nav('Protocol lab');
+      await page.getByRole('group', { name: 'Protocol' }).getByRole('button', { name: 'HTTP/3' }).click();
       await page.getByRole('button', { name: 'Add selected request' }).click();
       await expect.poll(() => page.locator('.h3-item').count()).toBe(1);
       await page.getByRole('button', { name: '×10' }).click();

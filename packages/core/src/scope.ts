@@ -1,4 +1,5 @@
 import { newId } from './ids.js';
+import { pathMatches, toRegExp, type PathMatch } from './match.js';
 
 const DEFAULT_PORTS: Record<string, number> = { http: 80, ws: 80, https: 443, wss: 443, mqtt: 1883, mqtts: 8883 };
 
@@ -17,6 +18,9 @@ export interface ScopeRule {
   scheme?: 'http' | 'https';
   /** Only match paths starting with this prefix. */
   pathPrefix?: string;
+  /** Only match this path (no query string), compared as `pathMatch` says: exact (default), glob, regex or template. */
+  path?: string;
+  pathMatch?: PathMatch;
   /** Include rules only: intercept TLS for this host. Defaults to true. */
   decrypt?: boolean;
   /** Include rules only: write matching exchanges to the capture database. Defaults to true. */
@@ -66,7 +70,16 @@ export function normalizeRule(input: ScopeRuleInput): ScopeRule {
   if (input.pathPrefix !== undefined && !input.pathPrefix.startsWith('/')) {
     throw new Error(`pathPrefix must start with "/"`);
   }
-  return { ...input, host, id: input.id ?? newId() };
+  const out: ScopeRule = { ...input, host, id: input.id ?? newId() };
+  if (out.pathMatch !== undefined && !['exact', 'glob', 'regex', 'template'].includes(out.pathMatch)) throw new Error('pathMatch must be exact, glob, regex or template');
+  if (out.path) {
+    if (out.pathMatch === 'regex') toRegExp(out.path);
+    else if (!out.path.startsWith('/')) throw new Error('path must start with "/"');
+  } else {
+    delete out.path;
+    delete out.pathMatch;
+  }
+  return out;
 }
 
 export class Scope {
@@ -102,6 +115,7 @@ export class Scope {
       if (rule.port !== undefined && rule.port !== port) continue;
       if (rule.scheme !== undefined && rule.scheme !== httpScheme) continue;
       if (rule.pathPrefix !== undefined && !url.pathname.startsWith(rule.pathPrefix)) continue;
+      if (rule.path && !pathMatches(rule.path, rule.pathMatch, url.pathname)) continue;
       if (rule.action === 'exclude') return { ...IGNORE, ruleId: rule.id };
       return {
         decrypt: rule.decrypt ?? true,

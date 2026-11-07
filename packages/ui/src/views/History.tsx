@@ -1,5 +1,5 @@
 import { usePlacement } from '../components/placement';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { ExchangeSummary, HostTechSummary, SiteMapHost } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -8,6 +8,7 @@ import { bodyText, breakOn, mockFromExchange } from '../actions';
 import { Inspector } from './Inspector';
 import { QueryBuilder } from './QueryBuilder';
 import { ReplayButton } from '../components/ReplayButton';
+import { EXCHANGE_ACTIONS, availability } from '../workspace/registry';
 
 const replayName = (path: string) => {
   const last = (path.split('?')[0] ?? path).split('/').filter(Boolean).pop();
@@ -145,7 +146,8 @@ function TagForm({ known, rowId, rowTags, value, onChange, onSubmit }: { known: 
 }
 
 function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): void; setQuery(q: string): void; query: string }) {
-  const { client, openReplay, resendNow, notify, sendToCodecs, sendToRace, openStream, setView, select, flowPicks, setFlowPicks, openAt, compareMark, setCompareMark, sendToApi, selectedId } = useApp();
+  const app = useApp();
+  const { client, notify, select, flowPicks, openAt, selectedId } = app;
   const ref = useRef<HTMLDivElement>(null);
   const [tagging, setTagging] = useState(false);
   const [tagName, setTagName] = useState('');
@@ -174,77 +176,21 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
   usePlacement(ref, { x: menu.x, y: menu.y }, true, { gap: 0 });
   return (
     <div ref={ref} className="context-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
-      <button role="menuitem" onClick={run(() => openReplay(row))}>
-        Send to Replay <kbd>Ctrl R</kbd>
-      </button>
-      <button role="menuitem" onClick={run(() => openReplay(row, { refreshCookies: true }))}>
-        Send to Replay with fresh cookies
-      </button>
-      <button role="menuitem" onClick={run(() => resendNow(row.id))}>
-        {row.isWebSocket || row.scheme.startsWith('mqtt') ? 'Open in Live connections' : 'Resend now'} <kbd>Ctrl Shift Enter</kbd>
-      </button>
-      {!row.isWebSocket && !row.scheme.startsWith('mqtt') && (
-        <button
-          role="menuitem"
-          onClick={run(async () => {
-            const ex = await client.get(row.id);
-            const body = ex.reqBodySize ? await bodyText(client, row.id, 'request').catch(() => '') : '';
-            sendToRace([{ label: replayName(row.path), raw: toRawRequest(ex.method, ex.url, ex.requestHeaders, body), replayOf: row.id }]);
+      {(['replay', 'decode', 'override', 'explore'] as const).map((g, gi) => (
+        <Fragment key={g}>
+          {gi > 0 && <div className="menu-sep" role="separator" />}
+          {EXCHANGE_ACTIONS.filter((x) => x.group === g).map((x) => {
+            const ok = availability(x, row, app);
+            return (
+              <button key={x.id} role="menuitem" disabled={ok !== true} title={ok === true ? undefined : ok} onClick={run(() => x.run(row, app))}>
+                {x.label}
+                {x.id === 'flow' && flowPicks.length > 0 && <span className="faint"> ({flowPicks.length} picked)</span>}
+                {x.shortcut && <kbd>{x.shortcut}</kbd>}
+              </button>
+            );
           })}
-        >
-          Send to Race
-        </button>
-      )}
-      {(row.isWebSocket || row.scheme.startsWith('mqtt')) && (
-        <button role="menuitem" onClick={run(() => openStream(row.id))}>
-          Open in Live connections composer
-        </button>
-      )}
-      <div className="menu-sep" role="separator" />
-      <button role="menuitem" onClick={run(async () => sendToCodecs(await bodyText(client, row.id, 'response'), `${row.method} ${replayName(row.path)} response`))}>
-        Decode response body <kbd>Ctrl D</kbd>
-      </button>
-      <button role="menuitem" onClick={run(async () => sendToCodecs(await bodyText(client, row.id, 'request'), `${row.method} ${replayName(row.path)} request`))}>
-        Decode request body
-      </button>
-      <button
-        role="menuitem"
-        onClick={run(async () => {
-          const name = await mockFromExchange(client, await client.get(row.id));
-          notify(`Mock "${name}" added. Edit it in Overrides, Mocks.`);
-        })}
-      >
-        Mock this response
-      </button>
-      <button
-        role="menuitem"
-        onClick={run(async () => {
-          await breakOn(client, row);
-          notify('Breakpoint added: the next matching request will pause.');
-        })}
-      >
-        Break on this endpoint
-      </button>
-      <div className="menu-sep" role="separator" />
-      <button
-        role="menuitem"
-        onClick={run(() => {
-          select(row.id);
-          setView('timeline');
-        })}
-      >
-        Show in Timeline
-      </button>
-      <button
-        role="menuitem"
-        onClick={run(() => {
-          if (flowPicks.includes(row.id)) return notify('Already picked for the flow');
-          setFlowPicks([...flowPicks, row.id]);
-          notify(`${flowPicks.length + 1} picked. Make the flow in Replay, Flows.`);
-        })}
-      >
-        Add to flow {flowPicks.length > 0 && <span className="faint">({flowPicks.length} picked)</span>}
-      </button>
+        </Fragment>
+      ))}
       {flowPicks.length > 0 && (
         <button role="menuitem" onClick={run(() => openAt('api', 'flows'))}>
           Make a flow from the {flowPicks.length} picked
@@ -269,38 +215,12 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
           Set reference tag (create or move)...
         </button>
       )}
-      {compareMark && compareMark !== row.id ? (
-        <button role="menuitem" onClick={run(() => sendToApi('compare', [compareMark, row.id]))}>
-          Compare with the marked request
-        </button>
-      ) : (
-        <button
-          role="menuitem"
-          onClick={run(() => {
-            setCompareMark(row.id);
-            notify('Marked. Right-click another request and choose Compare with the marked request.');
-          })}
-        >
-          Mark to compare
-        </button>
-      )}
-      {!row.isWebSocket && !row.scheme.startsWith('mqtt') && (
-        <>
-          <button role="menuitem" onClick={run(() => sendToApi('auth', [row.id]))} title="Send it again as each identity (other users, no auth) and compare the answers">
-            Try as other users (auth matrix)
-          </button>
-          <button role="menuitem" onClick={run(() => sendToApi('negative', [row.id]))} title="Send broken variants: wrong types, missing fields, huge and special values">
-            Run negative tests
-          </button>
-        </>
-      )}
       <div className="menu-sep" role="separator" />
-      <button role="menuitem" onClick={run(() => navigator.clipboard.writeText(row.url).then(() => notify('URL copied')))}>
-        Copy URL
-      </button>
-      <button role="menuitem" onClick={run(async () => navigator.clipboard.writeText(await client.curl(row.id)).then(() => notify('Copied as curl')))}>
-        Copy as curl
-      </button>
+      {EXCHANGE_ACTIONS.filter((x) => x.group === 'copy').map((x) => (
+        <button key={x.id} role="menuitem" onClick={run(() => x.run(row, app))}>
+          {x.label}
+        </button>
+      ))}
       <button role="menuitem" onClick={run(() => setQuery(withFilter(query, 'host', row.host)))}>
         Only this host
       </button>

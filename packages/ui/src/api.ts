@@ -468,6 +468,9 @@ export class CoreClient {
   setVar = (name: string, value: string) => this.call<boolean>('vars.set', { name, value });
   deleteVar = (name: string) => this.call<boolean>('vars.delete', { name });
   setExtractors = (extractors: Array<Partial<Extractor>>) => this.call<Extractor[]>('vars.extractors', { extractors });
+  /** This user's saved workspace for the project (open editors and drafts), or null. */
+  workspace = () => this.call<{ version: number; savedAt: number; [k: string]: unknown } | null>('workspace.get');
+  saveWorkspace = (snapshot: { version: number; [k: string]: unknown }) => this.call<{ savedAt: number; sealed: boolean }>('workspace.set', { snapshot });
   rules = () => this.call<{ rules: ReplaceRule[]; mocks: MockRule[]; breakpoints: Breakpoint[]; hits: Record<string, number> }>('rules.get');
   setRules = (rules: Array<Partial<ReplaceRule>>) => this.call<ReplaceRule[]>('rules.set', { rules });
   testRule = (rule: Partial<ReplaceRule>, exchangeId: string) => this.call<{ matched: boolean; count: number; before: string; after: string }>('rules.test', { rule, exchangeId });

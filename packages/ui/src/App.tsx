@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from './state';
 import { Icon } from './components/icons';
 import { fmtCount, fmtSize } from './format';
@@ -19,7 +19,10 @@ import { Race } from './views/Race';
 import { H3Lab } from './views/H3Lab';
 import { Streams } from './views/Streams';
 import { Scripts } from './views/Scripts';
-import { Flows, Specs, Values } from './views/Api';
+import { FlowDocument, Flows, Specs, Values } from './views/Api';
+import { Dialog } from './components/Dialog';
+import { CommandSearch } from './components/CommandSearch';
+import type { WorkspaceDoc } from './workspace/types';
 import { AuthAndNegative, Compare, Glossary, GraphQL, Resources } from './views/ApiExtras';
 import { Coverage } from './views/Coverage';
 import { AREAS, areaDef, defaultRoute, type AreaDef, type AreaId, type Route } from './workspace/navigation';
@@ -163,7 +166,7 @@ function NavRail() {
 
 /** The pages of the current work area, as tabs. */
 function AreaTabs() {
-  const { route, navigate, paused, flowPicks, replayTabs } = useApp();
+  const { route, navigate, paused, flowPicks, replayTabs, goBack, goForward, canBack, canForward } = useApp();
   const area = areaDef(route.area);
   const extra: Record<string, string> = {
     'overrides/breakpoints': paused.length ? ` (${paused.length} paused)` : '',
@@ -171,6 +174,15 @@ function AreaTabs() {
     'replay/editors': replayTabs.length ? ` (${replayTabs.length})` : '',
   };
   return (
+    <div className="area-bar">
+      <div className="history-btns">
+        <button className="icon-btn" onClick={goBack} disabled={!canBack} aria-label="Back" title="Back (Alt Left)">
+          <Icon name="back" size={14} />
+        </button>
+        <button className="icon-btn" onClick={goForward} disabled={!canForward} aria-label="Forward" title="Forward (Alt Right)">
+          <Icon name="forward" size={14} />
+        </button>
+      </div>
     <div className="tabs area-tabs" role="tablist" aria-label={area.label}>
       {area.pages.map((p) => (
         <button key={p.id} role="tab" className="tab" aria-selected={route.page === p.id} title={p.hint} onClick={() => navigate({ area: area.id, page: p.id })}>
@@ -179,12 +191,13 @@ function AreaTabs() {
         </button>
       ))}
     </div>
+    </div>
   );
 }
 
 /** The open replay editors: one tab per request or conversation. */
 function EditorTabs() {
-  const { activeTab, setActiveTab, replayTabs, closeReplay, openReplayById, notify } = useApp();
+  const { activeTab, setActiveTab, replayTabs, closeReplay, openReplayById, notify, dirtyDocs, workspaceStatus } = useApp();
   return (
     <div
       className="tabs"
@@ -211,7 +224,12 @@ function EditorTabs() {
             if (e.key === 'Enter' || e.key === ' ') setActiveTab(t.id);
           }}
         >
-          <span className="muted">{t.kind === 'ws' ? 'Conversation:' : 'Replay:'}</span> <span className={`mono m-${t.method}`}>{t.method}</span> {t.label}
+          <span className="muted">{DOC_KIND[t.kind ?? 'http']}:</span> <span className={`mono m-${t.method}`}>{t.method}</span> {t.label}
+          {dirtyDocs.has(t.id) && (
+            <span className="dirty-dot" title="Edited since it was opened. The draft is kept across restarts; nothing is sent until you send it.">
+              <span className="sr-only">edited</span>
+            </span>
+          )}
           <button
             className="close"
             aria-label={`Close replay ${t.label}`}
@@ -225,8 +243,35 @@ function EditorTabs() {
         </div>
       ))}
       <NewRequestButton />
+      <span style={{ flex: 1 }} />
+      <WorkspaceStatus status={workspaceStatus} />
     </div>
   );
+}
+
+const DOC_KIND: Record<string, string> = { http: 'Replay', ws: 'Conversation', compare: 'Compare', flow: 'Flow' };
+
+/** Whether open editors and drafts are saved for the next start. */
+function WorkspaceStatus({ status }: { status: ReturnType<typeof useApp>['workspaceStatus'] }) {
+  if (status.state === 'error')
+    return (
+      <span className="chip chip-bad" role="status" title={status.message} data-testid="workspace-status">
+        Drafts not saved
+      </span>
+    );
+  if (status.state !== 'saved') return null;
+  return (
+    <span className="faint" style={{ fontSize: 12, alignSelf: 'center', whiteSpace: 'nowrap' }} role="status" data-testid="workspace-status" title="Open editors and their drafts come back when you restart. Restoring never sends anything.">
+      {status.restored ? `${status.restored} restored from last session · ` : ''}Drafts saved
+    </span>
+  );
+}
+
+/** One open document. */
+function DocumentView({ doc }: { doc: WorkspaceDoc }) {
+  if (doc.kind === 'compare') return <Compare a={doc.a} b={doc.b} />;
+  if (doc.kind === 'flow') return <FlowDocument name={doc.flow} />;
+  return doc.kind === 'ws' ? <WsReplay tab={doc} /> : <Replay tab={doc} />;
 }
 
 /** The page a route shows. Each capability has one owning component; routes are only ways to reach it. */
@@ -350,14 +395,23 @@ function ShortcutOverlay() {
   );
 }
 
-function useShortcuts() {
-  const { client, selectedId, openReplayById, resendNow, notify, navigate, sendToCodecs, sendToRace } = useApp();
+function useShortcuts(openCommands: () => void) {
+  const { client, selectedId, openReplayById, resendNow, notify, navigate, sendToCodecs, sendToRace, goBack, goForward } = useApp();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !typing(document.activeElement)) {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft') goBack();
+        else goForward();
+        return;
+      }
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
       const key = e.key.toLowerCase();
-      if (key === 'k') {
+      if (key === 'p' && e.shiftKey) {
+        e.preventDefault();
+        openCommands();
+      } else if (key === 'k') {
         e.preventDefault();
         navigate('traffic/requests');
         window.setTimeout(() => document.getElementById('filter-input')?.focus(), 0);
@@ -395,12 +449,14 @@ function useShortcuts() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [client, selectedId, openReplayById, resendNow, notify, navigate, sendToCodecs, sendToRace]);
+  }, [client, selectedId, openReplayById, resendNow, notify, navigate, sendToCodecs, sendToRace, goBack, goForward, openCommands]);
 }
 
 export function App() {
-  const { route, connected, toast, activeTab, replayTabs } = useApp();
-  useShortcuts();
+  const { route, connected, toast, activeTab, replayTabs, dialog } = useApp();
+  const [commandsOpen, setCommandsOpen] = useState(false);
+  const openCommands = useCallback(() => setCommandsOpen(true), []);
+  useShortcuts(openCommands);
   const onEditors = route.area === 'replay' && route.page === 'editors';
   const activeReplay = replayTabs.find((t) => t.id === activeTab) ?? replayTabs[replayTabs.length - 1];
   return (
@@ -415,7 +471,7 @@ export function App() {
           {/* Replay editors stay mounted while hidden so unsent edits survive moving around. */}
           {replayTabs.map((t) => (
             <div key={t.id} className="tab-host" style={{ display: onEditors && t.id === activeReplay?.id ? 'flex' : 'none' }}>
-              {t.kind === 'ws' ? <WsReplay tab={t} /> : <Replay tab={t} />}
+              <DocumentView doc={t} />
             </div>
           ))}
           {onEditors && !activeReplay && (
@@ -425,6 +481,8 @@ export function App() {
         </main>
       </div>
       <ShortcutOverlay />
+      {dialog && <Dialog req={dialog} onAnswer={dialog.resolve} />}
+      {commandsOpen && <CommandSearch onClose={() => setCommandsOpen(false)} />}
       {toast && (
         <div className="toast" role="status">
           {toast}

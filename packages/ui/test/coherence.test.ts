@@ -117,4 +117,110 @@ describe.skipIf(!ready)('work areas in the renderer', () => {
     await expect.poll(() => selectedTab('Traffic')).toContain('Requests');
     await expect.poll(() => page.evaluate(() => document.activeElement?.id)).toBe('filter-input');
   });
+
+  it('goes back and forward through places visited', async () => {
+    await navTo(page, 'Explore API', 'Values');
+    await page.getByRole('tablist', { name: 'Explore API' }).getByRole('tab', { name: 'Fields' }).click();
+    await page.keyboard.press('Alt+ArrowLeft');
+    await expect.poll(() => selectedTab('Explore API')).toContain('Values');
+    await page.getByRole('button', { name: 'Forward' }).click();
+    await expect.poll(() => selectedTab('Explore API')).toContain('Fields');
+  });
+
+  it('finds actions and pages in command search, and says why one cannot run', async () => {
+    await navTo(page, 'Traffic', 'Requests');
+    await page.locator('.row', { hasText: '/api/cart' }).first().click();
+    await page.keyboard.press('Control+Shift+P');
+    const box = page.getByRole('dialog', { name: 'Command search' });
+    await box.getByLabel('Search commands').fill('compare marked');
+    const opt = box.getByRole('option', { name: /Compare with the marked request/ });
+    expect(await opt.evaluate((el) => el.getAttribute('aria-disabled'))).toBe('true');
+    expect(await opt.textContent()).toContain('Mark a request to compare first');
+    await box.getByLabel('Search commands').fill('go endpoints');
+    await page.keyboard.press('Enter');
+    await expect.poll(() => selectedTab('Explore API')).toContain('Endpoints');
+    expect(await page.getByRole('dialog', { name: 'Command search' }).count()).toBe(0);
+  });
+
+  it('opens a comparison as a document beside the replay editors', async () => {
+    await navTo(page, 'Traffic', 'Requests');
+    await page.locator('.row', { hasText: '/api/cart' }).first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Mark to compare' }).click();
+    await page.locator('.row', { hasText: '/api/apply-coupon' }).first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Compare with the marked request' }).click();
+    await expect.poll(() => selectedTab('Replay')).toContain('Open editors');
+    await expect.poll(() => page.getByRole('tablist', { name: 'Open editors' }).textContent()).toContain('Compare:');
+    await expect.poll(() => page.locator('.tab-host:not([style*="none"])').getByLabel('Compare').textContent()).toContain('/api/apply-coupon');
+    await page.getByRole('button', { name: /Close replay Compare/ }).click();
+  });
+
+  it('keeps each editor dirty on its own, and brings drafts back after a restart without sending', async () => {
+    await navTo(page, 'Traffic', 'Requests');
+    await page.locator('.row', { hasText: '/api/apply-coupon' }).first().click();
+    await page.keyboard.press('Control+r');
+    const editor = () => page.locator('.tab-host:not([style*="none"])').getByLabel('Raw request');
+    await expect.poll(() => editor().inputValue()).toContain('SAVE10');
+    await editor().fill((await editor().inputValue()).replace('SAVE10', 'RECOVERME'));
+    await navTo(page, 'Traffic', 'Requests');
+    await page.locator('.row', { hasText: '/api/cart' }).first().click();
+    await page.keyboard.press('Control+r');
+    await expect.poll(() => editor().inputValue()).toContain('/api/cart');
+    await editor().fill((await editor().inputValue()).replace('/api/cart', '/api/cart?edited=1'));
+    const tabs = page.getByRole('tablist', { name: 'Open editors' });
+    await expect.poll(() => tabs.locator('.dirty-dot').count()).toBe(2);
+    // Discarding one leaves the other one's edits and mark alone.
+    await page.getByRole('button', { name: 'Close replay cart' }).click();
+    await page.getByRole('dialog', { name: /Close cart/ }).getByRole('button', { name: 'Discard and close' }).click();
+    await expect.poll(() => tabs.locator('.dirty-dot').count()).toBe(1);
+    await expect.poll(() => editor().inputValue()).toContain('RECOVERME');
+    await expect.poll(() => page.getByTestId('workspace-status').textContent()).toContain('Drafts saved');
+    await expect.poll(() => (h.core.workspace.get()?.docs as Array<{ recovered?: { raw: string } }> | undefined)?.some((d) => d.recovered?.raw.includes('RECOVERME'))).toBe(true);
+    const sent = h.core.store.search('source:replay').length;
+
+    // Restart the renderer: the draft is back, marked edited, and nothing was sent.
+    await page.goto(h.pageUrl);
+    await navTo(page, 'Replay', 'Open editors');
+    await expect.poll(() => editor().inputValue()).toContain('RECOVERME');
+    await expect.poll(() => page.getByTestId('workspace-status').textContent()).toContain('restored from last session');
+    await expect.poll(() => tabs.locator('.dirty-dot').count()).toBe(1);
+    expect(h.core.store.search('source:replay').length).toBe(sent);
+    await shot('recovered-draft');
+  });
+
+  it('keeps a draft whose recorded exchange is gone, and says so', async () => {
+    const id = h.core.store.search('path:/api/apply-coupon')[0]!.id;
+    h.core.store.deleteExchanges([id]);
+    await page.goto(h.pageUrl);
+    await navTo(page, 'Replay', 'Open editors');
+    const host = page.locator('.tab-host:not([style*="none"])');
+    await expect.poll(() => host.getByTestId('missing-source').count()).toBe(1);
+    expect(await host.getByLabel('Raw request').inputValue()).toContain('RECOVERME');
+  });
+
+  it('decodes inside the replay editor and stops writing if the request changed under it', async () => {
+    await h.send('/api/blob-echo', 'POST', JSON.stringify({ blob: Buffer.from('{"inner":"value-1"}').toString('base64') }));
+    await navTo(page, 'Traffic', 'Requests');
+    await page.locator('.row', { hasText: '/api/blob-echo' }).first().click();
+    await page.keyboard.press('Control+r');
+    const host = page.locator('.tab-host:not([style*="none"])');
+    const raw = host.getByLabel('Raw request');
+    await expect.poll(() => raw.inputValue()).toContain('blob');
+    await raw.evaluate((el) => {
+      const t = el as HTMLTextAreaElement;
+      const at = t.value.indexOf('eyJ');
+      t.setSelectionRange(at, t.value.indexOf('"', at));
+      return true;
+    });
+    await host.getByRole('button', { name: 'Open in Decode' }).click();
+    const dec = host.getByLabel('Decoder');
+    await expect.poll(() => dec.getByLabel('Decoded value').inputValue()).toContain('value-1');
+    await dec.getByLabel('Decoded value').fill('{"inner":"value-2"}');
+    await expect.poll(() => raw.inputValue()).toContain(Buffer.from('{"inner":"value-2"}').toString('base64'));
+    // Someone edits that part of the request by hand: the decoder must not write over it.
+    await raw.fill((await raw.inputValue()).replace(Buffer.from('{"inner":"value-2"}').toString('base64'), 'HANDEDITED'));
+    await dec.getByLabel('Decoded value').fill('{"inner":"value-3"}');
+    await expect.poll(() => page.locator('.toast').textContent()).toContain('stopped writing');
+    expect(await raw.inputValue()).toContain('HANDEDITED');
+    expect(await raw.inputValue()).not.toContain(Buffer.from('{"inner":"value-3"}').toString('base64'));
+  });
 });

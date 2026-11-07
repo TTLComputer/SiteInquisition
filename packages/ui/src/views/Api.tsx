@@ -514,8 +514,29 @@ function FlowEditor({ flow, onSaved, onDeleted, draft }: { flow: Partial<ApiFlow
   );
 }
 
+/** A saved flow as a document in Replay's open editors. */
+export function FlowDocument({ name }: { name: string }) {
+  const { client } = useApp();
+  const [flow, setFlow] = useState<(ApiFlow & { steps: EditStep[] }) | null | undefined>(undefined);
+  const load = useCallback(() => client.flows().then((f) => setFlow((f.find((x) => x.name === name) as ApiFlow & { steps: EditStep[] }) ?? null), () => setFlow(null)), [client, name]);
+  useEffect(() => void load(), [load]);
+  if (flow === undefined) return <div className="empty">Loading flow {name}...</div>;
+  if (flow === null)
+    return (
+      <div className="empty">
+        <div className="panel-title">No flow called {name}</div>
+        <div>It was renamed or deleted since this tab was opened. Close the tab, or pick the flow again in Replay, Flows.</div>
+      </div>
+    );
+  return (
+    <div className="api-split" aria-label={`Flow ${name}`}>
+      <FlowEditor flow={flow} onSaved={() => void load()} onDeleted={() => setFlow(null)} />
+    </div>
+  );
+}
+
 export function Flows() {
-  const { client, notify, flowPicks, setFlowPicks } = useApp();
+  const { client, notify, flowPicks, setFlowPicks, openFlow } = useApp();
   const [flows, setFlows] = useState<ApiFlow[]>([]);
   const [current, setCurrent] = useState<(Partial<ApiFlow> & { steps: EditStep[] }) | null>(null);
   const [draft, setDraft] = useState<FlowDraft | null>(null);
@@ -546,6 +567,11 @@ export function Flows() {
         {flowPicks.length > 0 && (
           <button className="btn small" onClick={() => setFlowPicks([])}>
             Clear picks
+          </button>
+        )}
+        {current?.id && current.name && (
+          <button className="btn small" onClick={() => openFlow(current.name!)} title="Keep this flow open in its own tab beside your replay editors">
+            Open in a tab
           </button>
         )}
         <div className="nav-heading">Saved flows</div>

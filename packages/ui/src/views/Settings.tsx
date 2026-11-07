@@ -11,6 +11,8 @@ export type SettingsSectionId = 'proxy' | 'servers' | 'storage' | 'tech' | 'sign
 
 export const SHORTCUTS: Array<[string, string]> = [
   ['Ctrl K', 'Filter traffic (focus the filter in Traffic, Requests)'],
+  ['Ctrl Shift P', 'Command search: every action and page by name'],
+  ['Alt Left / Alt Right', 'Back and forward through the places you visited'],
   ['Ctrl R', 'Send the selected exchange to Replay'],
   ['Ctrl Enter', 'Send the request in the current replay tab'],
   ['Ctrl Shift Enter', 'Resend the selected exchange without opening the editor'],

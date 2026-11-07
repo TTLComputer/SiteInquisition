@@ -89,7 +89,13 @@ describe.skipIf(!ready)('renderer against a real core', () => {
     await navTo(page, 'Replay');
     await page.getByRole('tab', { name: /apply-coupon/ }).click();
     expect(await page.getByLabel('Raw request').inputValue()).toContain('SAVE99');
+    // It was edited, so closing asks first; keeping it changes nothing.
     await page.getByRole('button', { name: /Close replay/ }).click();
+    const ask = page.getByRole('dialog', { name: /Close apply-coupon/ });
+    await ask.getByRole('button', { name: 'Keep editing' }).click();
+    expect(await page.getByRole('tab', { name: /apply-coupon/ }).count()).toBe(1);
+    await page.getByRole('button', { name: /Close replay/ }).click();
+    await ask.getByRole('button', { name: 'Discard and close' }).click();
     expect(await page.getByRole('tab', { name: /apply-coupon/ }).count()).toBe(0);
     await navTo(page, 'History');
   });

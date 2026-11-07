@@ -206,13 +206,15 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     const tab = page.locator('.tab-host').last();
     await expect.poll(() => tab.getByLabel('Raw request').inputValue()).toContain(value);
     await tab.getByRole('button', { name: 'Open in Decode' }).click();
+    // The decoder opens inside the replay editor, on the body.
+    const dec = tab.getByLabel('Decoder');
 
-    await expect.poll(() => page.getByLabel('Codec chain').locator('.chain-step').allTextContents()).toEqual(['url›', 'base64›', 'json']);
-    await expect.poll(() => page.getByTestId('nested-field').allTextContents()).toEqual([expect.stringContaining('$.inner_data')]);
-    const editor = page.getByLabel('Decoded value');
+    await expect.poll(() => dec.getByLabel('Codec chain').locator('.chain-step').allTextContents()).toEqual(['url›', 'base64›', 'json']);
+    await expect.poll(() => dec.getByTestId('nested-field').allTextContents()).toEqual([expect.stringContaining('$.inner_data')]);
+    const editor = dec.getByLabel('Decoded value');
     await expect.poll(() => editor.inputValue()).toContain('"meat": "turkey"');
     // Untouched, the result is the input as it was.
-    expect(await page.getByLabel('Encoded result').textContent()).toBe(value);
+    expect(await dec.getByLabel('Encoded result').textContent()).toBe(value);
     await shot('codecs-nested');
 
     await editor.fill((await editor.inputValue()).replace('turkey', 'tofu'));
@@ -220,13 +222,14 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
       const outer = JSON.parse(Buffer.from(decodeURIComponent(t), 'base64').toString()) as { inner_data: string };
       return JSON.parse(outer.inner_data) as { meat: string };
     };
-    await expect.poll(async () => decode((await page.getByLabel('Encoded result').textContent())!).meat).toBe('tofu');
-    const result = (await page.getByLabel('Encoded result').textContent())!;
+    await expect.poll(async () => decode((await dec.getByLabel('Encoded result').textContent())!).meat).toBe('tofu');
+    const result = (await dec.getByLabel('Encoded result').textContent())!;
     // No put back step: Replay already has it.
     await expect.poll(() => tab.getByLabel('Raw request').inputValue()).toContain(result);
     expect(await tab.getByLabel('Raw request').inputValue()).not.toContain(value);
-    await page.getByRole('button', { name: /^Back to Replay/ }).click();
-    await expect.poll(() => tab.evaluate((el) => (el as HTMLElement).style.display)).toBe('flex');
+    await dec.getByRole('button', { name: 'Close the decoder' }).click();
+    await expect.poll(() => tab.getByLabel('Decoder').count()).toBe(0);
+    expect(await tab.getByLabel('Raw request').inputValue()).toContain(result);
   });
 
   it('shows every nested layer in the chain, and can keep one encoded', async () => {

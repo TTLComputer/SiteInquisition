@@ -15,6 +15,10 @@ The app is organised around an investigation: watch the traffic, understand the 
 | **Project settings** (footer) | Capture scope, Session and authentication (cookie jar, variables, login macros, signed tokens, AWS SigV4), Proxy and TLS, Server certificates, Signing keys, Technologies, Storage, MCP and agents, Appearance, Keyboard |
 | **Advanced tools** (footer) | Decode (the codec workbench), Race, Protocol lab, Script console |
 
+**Open editors** in Replay are documents: HTTP requests, WebSocket conversations, comparisons (Mark to compare, then Compare with the marked request) and flows (Open in a tab). Moving around never loses a draft. A dot on a tab means it was edited; closing one asks first, and only for that one. The open editors and their drafts are saved for you (in your data folder, sealed with the keyring when there is one, never in the shared project) and come back after a restart without sending anything; a draft whose recorded exchange was deleted says so and still sends. Open in Decode on a selection opens the decoder inside the editor, writing edits back as you type, and stops if that part of the request changed under it.
+
+**Back and forward** (Alt Left, Alt Right, or the arrows beside the page tabs) go through the places you visited. **Command search** (Ctrl Shift P) finds every action and page by name; actions work on the request selected in Traffic, and ones that cannot run say why. The right-click menu in Traffic offers the same actions with the same names. Ctrl K is still the traffic filter.
+
 Coming back to an area opens the page you last used there; clicking the area you are in goes to its first page. Drop a Traffic row on Replay in the navigation to open it in an editor. Older names still resolve: anything that used to open Rules, Scope opens Capture scope, Cookies opens Session and authentication, and so on.
 
 ## Everything in detail

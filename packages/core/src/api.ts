@@ -572,6 +572,14 @@ export class CoreApiServer {
       'mcp.decide': (p) => core.tools.mcp.decide(str(p, 'id')!, p.decision as never),
       'mcp.activity': () => core.tools.mcp.activity.slice(-200),
       'replay.history': (p) => store.search(`replayof:${JSON.stringify(str(p, 'of')!)}`, { limit: num(p, 'limit') ?? 100 }),
+      'workspace.get': () => core.workspace.get(),
+      'workspace.set': (p) => {
+        try {
+          return core.workspace.set(p.snapshot as never);
+        } catch (e) {
+          throw new RpcError(-32602, (e as Error).message);
+        }
+      },
       'views.get': () => store.getMeta<SavedView[]>('savedViews') ?? DEFAULT_VIEWS,
       'views.set': (p) => {
         const views = p.views;

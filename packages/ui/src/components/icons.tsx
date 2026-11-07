@@ -17,6 +17,8 @@ const P: Record<string, string> = {
   filter: 'M4 5h16l-6 8v5l-4 2v-7z',
   search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z M20 20l-3.5-3.5',
   chevron: 'M6 9l6 6 6-6',
+  back: 'M15 6l-6 6 6 6',
+  forward: 'M9 6l6 6-6 6',
   close: 'M6 6l12 12 M18 6L6 18',
   up: 'M12 19V5 M5 12l7-7 7 7',
   down: 'M12 5v14 M5 12l7 7 7-7',

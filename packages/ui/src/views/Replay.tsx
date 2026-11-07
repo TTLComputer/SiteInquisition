@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AwsProfile, ExchangeDetail, ExchangeSummary, SendOptions } from '../api';
-import { useApp, type ReplayTab } from '../state';
+import { useApp, type CodecInput, type ReplayTab } from '../state';
+import { Codecs } from './Codecs';
 import { Icon } from '../components/icons';
 import { asText, fmtMs, fmtSize, hexDump, parseRawRequest, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { diffLines } from '../diff';
@@ -111,10 +112,18 @@ function ResponsePane({ shown, original, compare }: { shown: Shown | null; origi
 }
 
 export function Replay({ tab }: { tab: ReplayTab }) {
-  const { client, notify, select, setView, setQuery, sendToCodecs, sendToRace } = useApp();
+  const { client, notify, select, setView, setQuery, sendToCodecs, sendToRace, reportDraft, markDirty } = useApp();
   const [original, setOriginal] = useState<Shown | null>(null);
+  /** The decoder panel inside this editor, on a value taken from the request. */
+  const [decoder, setDecoder] = useState<CodecInput | null>(null);
+  /** The request as first opened, before any edit: the editor is dirty when it differs. */
+  const baseline = useRef<string | null>(null);
+  /** Set when the exchange this replays is no longer recorded (deleted, or trimmed by retention). */
+  const [missingSource, setMissingSource] = useState(false);
   const [originalReqBody, setOriginalReqBody] = useState<Uint8Array | null>(null);
   const [raw, setRaw] = useState('');
+  const rawRef = useRef(raw);
+  rawRef.current = raw;
   // Parts of the editor shown decoded in place; encoded again on send.
   const [regions, setRegions] = useState<TextRegion[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -173,8 +182,10 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     if (tab.draft) {
       setOriginal(null);
       setOriginalReqBody(null);
-      setRaw(toRawRequest(tab.draft.method, tab.draft.url, tab.draft.headers, tab.draft.body ?? ''));
+      const text = toRawRequest(tab.draft.method, tab.draft.url, tab.draft.headers, tab.draft.body ?? '');
+      setRaw(text);
       setRegions([]);
+      baseline.current = text;
       return;
     }
     setAttachments({});
@@ -210,6 +221,8 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     const next = toRawRequest(ex.method, ex.url, ex.requestHeaders, body === null ? binaryMarker(reqBody.length) : body);
     setRaw(next);
     setRegions(body === null ? [] : shiftRegions(found, next.length - body.length));
+    baseline.current = next;
+    setMissingSource(false);
   }, [client, tab.exchangeId, tab.draft, tab.options]);
 
   /** Decode (or encode back) the body's fields with the spec in the Fields box. */
@@ -252,9 +265,39 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     return () => window.clearTimeout(t);
   }, [client, raw, attachments]);
 
+  // First load: the original request, then (after a restart) the draft from last session on top of it.
+  const loaded = useRef(false);
   useEffect(() => {
-    reset().catch((e: Error) => setError(`Could not load the original request: ${e.message}`));
-  }, [reset]);
+    if (loaded.current) return;
+    loaded.current = true;
+    const rec = tab.recovered?.kind === 'http' ? tab.recovered : null;
+    const putBack = () => {
+      if (!rec) return;
+      setRaw(rec.raw);
+      setRegions(rec.regions ?? []);
+      setOpts((o) => ({ ...o, ...(rec.options as Partial<Options>) }));
+    };
+    reset().then(putBack, (e: Error) => {
+      if (rec) {
+        // The draft is ours; the evidence it came from is gone. Say so instead of showing a blank editor.
+        setMissingSource(true);
+        baseline.current = null;
+        putBack();
+      } else setError(`Could not load the original request: ${e.message}`);
+    });
+  }, [reset, tab.recovered]);
+
+  // Report the draft for recovery, and whether it differs from what was opened.
+  // Keyed by content, so re-renders that rebuild the same values do not keep pushing the save back.
+  const draftKey = JSON.stringify([raw, regions, opts]);
+  useEffect(() => {
+    if (raw) markDirty(tab.id, baseline.current === null || raw !== baseline.current);
+    const t = window.setTimeout(() => {
+      if (raw) reportDraft(tab.id, { kind: 'http', raw, regions, options: opts as unknown as Record<string, unknown> });
+    }, 300);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.id, draftKey, reportDraft, markDirty]);
 
   const loadSends = useCallback(
     () => (tab.exchangeId ? client.replayHistory(tab.exchangeId).then(setSends, () => undefined) : Promise.resolve()),
@@ -384,14 +427,28 @@ export function Replay({ tab }: { tab: ReplayTab }) {
       s = raw.indexOf('\n', raw.indexOf('\n', at) + 1) + 1;
       e = raw.length;
     }
-    // Codecs writes back as it edits, so track where the value ends now.
+    // The decoder writes back as it edits. It writes only while the request still holds what it last wrote there:
+    // if the request changed under it, it stops and says so instead of writing into the wrong place.
     let end = e;
-    sendToCodecs(raw.slice(s, e), `Replay ${tab.label}`, (text, live) => {
-      const was = end;
-      end = s + text.length;
-      setRaw((cur) => cur.slice(0, s) + text + cur.slice(was));
-      setRegions((r) => adjustForEdit(r, s, was, text.length));
-      if (!live) setView('replay');
+    let expect = raw.slice(s, e);
+    setDecoder({
+      text: expect,
+      label: `Replay ${tab.label}`,
+      nonce: Date.now(),
+      returnTo: (text) => {
+        const cur = rawRef.current;
+        if (cur.slice(s, end) !== expect) {
+          notify('The request changed where that value was, so the decoder stopped writing into it. Copy the result instead, or decode the value again.');
+          setDecoder(null);
+          return;
+        }
+        const was = end;
+        end = s + text.length;
+        expect = text;
+        rawRef.current = cur.slice(0, s) + text + cur.slice(was);
+        setRaw(rawRef.current);
+        setRegions((r) => adjustForEdit(r, s, was, text.length));
+      },
     });
   };
 
@@ -652,6 +709,11 @@ export function Replay({ tab }: { tab: ReplayTab }) {
           </button>
         </div>
       )}
+      {missingSource && (
+        <div className="banner" role="status" data-testid="missing-source" style={{ margin: 8 }}>
+          The recorded exchange this draft came from is no longer in the project (deleted, or removed by storage limits). The draft is kept as it was; Send works, but there is no original to compare with or reset to.
+        </div>
+      )}
       {error && (
         <div className="banner" role="alert" style={{ margin: 8 }}>
           {error}
@@ -742,6 +804,11 @@ export function Replay({ tab }: { tab: ReplayTab }) {
           </div>
         </section>
       </div>
+      {decoder && (
+        <div className="doc-decoder">
+          <Codecs embedded input={decoder} onClose={() => setDecoder(null)} />
+        </div>
+      )}
     </div>
   );
 }

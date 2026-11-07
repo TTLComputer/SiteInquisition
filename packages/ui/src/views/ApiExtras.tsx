@@ -784,11 +784,12 @@ function SideDiffView({ title, d }: { title: string; d: ExchangeDiff['request'] 
   );
 }
 
-export function Compare() {
-  const { client, notify, apiInput, compareMark } = useApp();
+/** Compare two exchanges. As a document it is opened with both; on Replay, Compare it takes ids or the marked request. */
+export function Compare({ a: docA, b: docB }: { a?: string; b?: string } = {}) {
+  const { client, notify, apiInput, compareMark, openComparison } = useApp();
   const inspect = useInspect();
-  const [a, setA] = useState('');
-  const [b, setB] = useState('');
+  const [a, setA] = useState(docA ?? '');
+  const [b, setB] = useState(docB ?? '');
   const [diff, setDiff] = useState<ExchangeDiff | null>(null);
   const run = useCallback((x: string, y: string) => client.diffExchanges(x, y).then(setDiff, (e: Error) => notify(e.message)), [client, notify]);
   useEffect(() => {
@@ -799,8 +800,11 @@ export function Compare() {
     }
   }, [apiInput, run]);
   useEffect(() => {
-    if (!a && compareMark) setA(compareMark);
-  }, [a, compareMark]);
+    if (docA && docB) void run(docA, docB);
+  }, [docA, docB, run]);
+  useEffect(() => {
+    if (!a && compareMark && !docA) setA(compareMark);
+  }, [a, compareMark, docA]);
   return (
     <div className="api-pane" aria-label="Compare">
       <div className="filterbar">
@@ -809,6 +813,11 @@ export function Compare() {
         <button className="btn small primary" disabled={!a || !b} onClick={() => void run(a.trim(), b.trim())}>
           Compare
         </button>
+        {!docA && (
+          <button className="btn small" disabled={!a || !b} onClick={() => openComparison(a.trim(), b.trim())} title="Keep this comparison open in its own tab beside your replay editors">
+            Open in a tab
+          </button>
+        )}
       </div>
       <div className="api-scroll">
         {!diff && <div className="empty">In Traffic, right-click a request and choose Mark to compare, then right-click another and choose Compare with the marked request.</div>}

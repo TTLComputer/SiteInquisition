@@ -1,3 +1,4 @@
+import { WorkspaceStore } from './workspace.js';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { CoreApiServer } from './api.js';
@@ -107,6 +108,8 @@ export class Core {
   readonly tools: PowerTools;
   /** How upstream server certificates are checked (trusted self-signed certs, hosts that skip checks). */
   readonly upstreamTls: UpstreamTlsSettings;
+  /** This user's open editors and drafts for this project, kept outside the shared project. */
+  readonly workspace: WorkspaceStore;
 
   private constructor(
     private readonly opts: CoreOptions,
@@ -118,6 +121,7 @@ export class Core {
     this.store = CaptureStore.openProject(this.projectDir, { ...opts.store, actor: opts.actor });
     // The --insecure-upstream flag stays the proxy's own; this is the saved setting every sender uses.
     this.upstreamTls = new UpstreamTlsSettings(this.store);
+    this.workspace = new WorkspaceStore(this.dataDir, this.projectDir, this.store.actor, this.secrets);
     this.scope = new Scope(this.store.getMeta<ScopeConfig>('scope') ?? DEFAULT_SCOPE);
     const saved = this.store.getMeta<string[]>('lanAllow') ?? [];
     this.lan = new LanGate(!!opts.proxy?.allowLan || !!opts.mqtt?.some((m) => m.allowLan), [...saved, ...(opts.proxy?.lanAllow ?? [])]);

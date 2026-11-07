@@ -423,8 +423,24 @@ export class CoreClient {
     this.call<ExchangeSummary>('replay.send', { ...wire(req), options });
   replayBatch = (req: WireRequest, options: SendOptions & { concurrency?: number }) =>
     this.call<{ batchId: string; sends: ExchangeSummary[]; errors: string[] }>('replay.batch', { ...wire(req), options, concurrency: options.concurrency });
-  previewTokens = (texts: string[], url: string) =>
-    this.call<{ sends: number; resolved: Array<{ ok: boolean; text?: string; error?: string }> }>('tokens.preview', { texts, url });
+  previewTokens = (texts: string[], url: string, attachments?: string[]) =>
+    this.call<{ sends: number; resolved: Array<{ ok: boolean; text?: string; error?: string }> }>('tokens.preview', { texts, url, ...(attachments?.length ? { attachments: Object.fromEntries(attachments.map((a) => [a, ''])) } : {}) });
+  /** Decode values (query params, headers, cookies) as far as they go; null where nothing is encoded. */
+  decodeValues = (texts: string[]) => this.call<Array<DecodedValue | null>>('structure.decode', { texts });
+  /** Encode an edited decoded value back through its layers. */
+  encodeValue = (decoded: DecodedValue, shown: string) => this.call<string>('structure.encode', { decoded, shown });
+  oauthProfiles = () => this.call<OAuthProfileView[]>('oauth.list');
+  saveOAuth = (profile: OAuthProfile, previous?: string) => this.call<OAuthProfileView>('oauth.save', { profile, ...(previous ? { previous } : {}) });
+  deleteOAuth = (name: string) => this.call<boolean>('oauth.delete', { name });
+  clearOAuth = (name: string) => this.call<boolean>('oauth.clear', { name });
+  fetchOAuth = (name: string, refresh = false, ignoreTlsErrors = false) => this.call<{ expiresAt: number | null; scope: string | null }>('oauth.fetch', { name, refresh, ignoreTlsErrors });
+  beginOAuth = (name: string) => this.call<{ url: string; redirectUri: string; state: string }>('oauth.begin', { name });
+  cancelOAuth = (name: string) => this.call<boolean>('oauth.cancel', { name });
+  completeOAuth = (name: string, url: string, ignoreTlsErrors = false) => this.call<{ expiresAt: number | null; scope: string | null }>('oauth.complete', { name, url, ignoreTlsErrors });
+  oauthToken = (ref: string) => this.call<string>('oauth.token', { ref });
+  discoverOAuth = (issuer: string, ignoreTlsErrors = false) =>
+    this.call<{ issuer: string; authUrl?: string; tokenUrl?: string; scopes?: string[]; pkceMethods?: string[]; grants?: string[] }>('oauth.discover', { issuer, ignoreTlsErrors });
+  pkce = (method: 'S256' | 'plain' = 'S256', verifier?: string) => this.call<{ verifier: string; challenge: string; method: 'S256' | 'plain' }>('oauth.pkce', { method, ...(verifier ? { verifier } : {}) });
   codecList = () => this.call<Array<{ id: string; label: string; terminal: boolean }>>('codecs.list');
   detect = (bytes: Uint8Array) => this.call<string[]>('codecs.detect', { base64: bytesToBase64(bytes) });
   layers = (chain: string[], bytes: Uint8Array) =>
@@ -595,9 +611,55 @@ export interface WireRequest {
   headers: HeaderList;
   body?: Uint8Array;
   replayOf?: string | null;
+  /** Files the body refers to with {{file:name}}. */
+  attachments?: Record<string, Uint8Array>;
 }
 
-const wire = (r: WireRequest) => ({ method: r.method, url: r.url, headers: r.headers, bodyBase64: r.body ? bytesToBase64(r.body) : undefined, replayOf: r.replayOf ?? undefined });
+const wire = (r: WireRequest) => ({
+  method: r.method,
+  url: r.url,
+  headers: r.headers,
+  bodyBase64: r.body ? bytesToBase64(r.body) : undefined,
+  replayOf: r.replayOf ?? undefined,
+  ...(r.attachments && Object.keys(r.attachments).length ? { attachments: Object.fromEntries(Object.entries(r.attachments).map(([k, v]) => [k, bytesToBase64(v)])) } : {}),
+});
+
+/** One value decoded for the structured editors (see codecs/structure.ts). */
+export interface DecodedValue {
+  chain: string[];
+  kind: 'json' | 'form' | 'text';
+  display: string;
+  original: string;
+  fields: NestedField[];
+  outer?: unknown;
+}
+
+export type OAuthGrant = 'authorization_code' | 'client_credentials' | 'password' | 'refresh_token';
+
+export interface OAuthProfile {
+  name: string;
+  grant: OAuthGrant;
+  authUrl?: string;
+  tokenUrl: string;
+  clientId: string;
+  clientSecret?: string;
+  scope?: string;
+  audience?: string;
+  redirectUri?: string;
+  pkce?: boolean;
+  pkceMethod?: 'S256' | 'plain';
+  clientAuth?: 'basic' | 'body';
+  username?: string;
+  password?: string;
+  extraAuthParams?: string;
+  extraTokenParams?: string;
+  issuer?: string;
+}
+
+export interface OAuthProfileView extends OAuthProfile {
+  token: null | { tokenType?: string; scope?: string; expiresAt?: number; obtainedAt: number; hasRefresh: boolean; hasIdToken: boolean; preview: string; expired: boolean };
+  waiting: boolean;
+}
 
 export function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);

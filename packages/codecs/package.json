@@ -26,6 +26,10 @@
     "./regionedit": {
       "types": "./dist/regionedit.d.ts",
       "default": "./dist/regionedit.js"
+    },
+    "./httpmsg": {
+      "types": "./dist/httpmsg.d.ts",
+      "default": "./dist/httpmsg.js"
     }
   },
   "files": [

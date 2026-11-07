@@ -18,6 +18,8 @@ import type { JarCookie } from './cookies.js';
  *   {{$my-tag.PO_number}} {{tag:my-tag.PO_number}}   a field of the newest request tagged my-tag
  *   {{flow:create-po.po}}              run the flow "create-po" for this send and use its variable "po"
  *   {{sign:admin-jwt}}                 a saved signed token (JWT or session cookie), re-minted fresh with a known key each send (evergreen)
+ *   {{oauth:api}} {{oauth:api.id_token}}   the access token (or another field) of the OAuth profile "api", refreshed when it expires
+ *   {{file:logo.png}}                  body only: the bytes of an attached file, or a file in the project folder
  *
  * Any token takes pipes that encode its value: {{var:po | base64}},
  * {{$cart.id | url}}, {{uuid | upper}} (see FILTERS).
@@ -81,6 +83,10 @@ export interface TokenContext {
   flows?: Map<string, Record<string, string>>;
   /** {{sign:name}}: re-mint a saved evergreen signed token (JWT or session cookie). */
   sign?: (name: string) => string;
+  /** {{oauth:profile.field}}: a token held for an OAuth profile. */
+  oauth?: (ref: string) => string;
+  /** {{file:name}} outside a body that splices files in (a preview, say): what to show instead. */
+  file?: (name: string) => string;
 }
 
 export class TokenError extends Error {}
@@ -227,6 +233,12 @@ function resolveOne(whole: string, rawKind: string, arg: string, ctx: TokenConte
         if (vars[key] === undefined) throw new TokenError(`flow "${name}" did not set "${key}"`);
         return vars[key]!;
       }
+      case 'oauth':
+        if (!ctx.oauth) throw new TokenError('{{oauth}} needs an OAuth profile');
+        return ctx.oauth(arg.trim());
+      case 'file':
+        if (!ctx.file) throw new TokenError('{{file}} only works in a request body');
+        return ctx.file(arg.trim());
       case 'sign':
         if (!ctx.sign) throw new TokenError('{{sign}} needs a saved signed token');
         return ctx.sign(arg.trim());
@@ -255,4 +267,11 @@ function resolveOne(whole: string, rawKind: string, arg: string, ctx: TokenConte
         throw new TokenError(`unknown token {{${rawKind}}}`);
     }
   }
+}
+
+/** The OAuth profiles a set of texts refer to with {{oauth:name}}. */
+export function oauthRefs(texts: string[]): string[] {
+  const out = new Set<string>();
+  for (const t of texts) for (const m of t.matchAll(TOKEN_RE)) if (m[1]!.toLowerCase() === 'oauth') out.add(splitPipes(m[2] ?? '').arg.split('.')[0]!.trim());
+  return [...out].filter(Boolean);
 }

@@ -16,6 +16,8 @@ import { exchangeCookies } from './tech.js';
 import { fetchPeerCertificate } from './upstreamtls.js';
 import { readBrowserHttp3Hosts, writeBrowserHttp3Hosts, type Core } from './core.js';
 import { sendReplay } from './replay.js';
+import { decodeValue, encodeValue, type DecodedValue } from '@siteinquisition/codecs';
+import { makePkce } from './oauth.js';
 import type { HeaderList } from './store.js';
 import type { Change } from './store.js';
 
@@ -91,7 +93,16 @@ function sendRequest(p: Record<string, unknown>) {
     headers: headers as HeaderList,
     body: typeof p.bodyBase64 === 'string' ? new Uint8Array(Buffer.from(p.bodyBase64, 'base64')) : undefined,
     replayOf: typeof p.replayOf === 'string' ? p.replayOf : null,
+    ...(attachments(p) ? { attachments: attachments(p) } : {}),
   };
+}
+
+/** Files for {{file:name}}, sent as { name: base64 }. */
+function attachments(p: Record<string, unknown>): Record<string, Uint8Array> | undefined {
+  const a = p.attachments;
+  if (a === undefined || a === null) return undefined;
+  if (typeof a !== 'object' || Array.isArray(a) || !Object.values(a).every((v) => typeof v === 'string')) throw new RpcError(-32602, 'attachments must be { name: base64 }');
+  return Object.fromEntries(Object.entries(a as Record<string, string>).map(([k, v]) => [k, new Uint8Array(Buffer.from(v, 'base64'))]));
 }
 
 const num = (p: Record<string, unknown>, k: string): number | undefined => {
@@ -199,7 +210,8 @@ export class CoreApiServer {
         const plan = batchPlan(texts, core.projectDir, 10_000, (arg) => pickValues(store, arg));
         // A preview sends nothing, so flows show as placeholders instead of running.
         const flows = new Map(flowRefs(texts).map((n) => [n, new Proxy({} as Record<string, string>, { get: (_t, k) => (typeof k === 'string' ? `‹flow ${n}.${k}›` : undefined) })]));
-        const ctx = core.tools.sender.tokenContext(url, { batch: plan[0], flows });
+        const files = new Set(Object.keys((p.attachments as Record<string, unknown> | undefined) ?? {}));
+        const ctx = { ...core.tools.sender.tokenContext(url, { batch: plan[0], flows }), file: (n: string) => `‹file ${n}${files.has(n) ? '' : ', not attached'}›` };
         return {
           sends: plan.length,
           resolved: texts.map((t) => {
@@ -211,6 +223,35 @@ export class CoreApiServer {
           }),
         };
       },
+      'structure.decode': (p) => arr(p, 'texts').map((t) => {
+        try {
+          return decodeValue(String(t));
+        } catch {
+          return null;
+        }
+      }),
+      'structure.encode': (p) => encodeValue(p.decoded as DecodedValue, str(p, 'shown')!),
+      'oauth.list': () => core.tools.oauth.views(),
+      'oauth.save': (p) => core.tools.oauth.save(p.profile as Record<string, never>, str(p, 'previous', false)),
+      'oauth.delete': (p) => core.tools.oauth.remove(str(p, 'name')!),
+      'oauth.clear': (p) => (core.tools.oauth.clearTokens(str(p, 'name')!), true),
+      'oauth.fetch': async (p) => {
+        const name = str(p, 'name')!;
+        const t = p.refresh === true ? await core.tools.oauth.refresh(name, { ignoreTlsErrors: p.ignoreTlsErrors === true }) : await core.tools.oauth.fetch(name, { ignoreTlsErrors: p.ignoreTlsErrors === true });
+        return { expiresAt: t.expiresAt ?? null, scope: t.scope ?? null };
+      },
+      'oauth.begin': (p) => {
+        const r = core.tools.oauth.begin(str(p, 'name')!);
+        return { url: r.url, redirectUri: r.redirectUri, state: r.state };
+      },
+      'oauth.cancel': (p) => (core.tools.oauth.cancel(str(p, 'name')!), true),
+      'oauth.complete': async (p) => {
+        const t = await core.tools.oauth.complete(str(p, 'name')!, str(p, 'url')!, { ignoreTlsErrors: p.ignoreTlsErrors === true });
+        return { expiresAt: t.expiresAt ?? null, scope: t.scope ?? null };
+      },
+      'oauth.token': (p) => core.tools.oauth.value(str(p, 'ref')!),
+      'oauth.discover': (p) => core.tools.oauth.discover(str(p, 'issuer')!, { ignoreTlsErrors: p.ignoreTlsErrors === true }),
+      'oauth.pkce': (p) => makePkce(p.method === 'plain' ? 'plain' : 'S256', str(p, 'verifier', false) || undefined),
       'codecs.list': () => listCodecs().map((c) => ({ id: c.id, label: c.label, terminal: !!c.terminal })),
       'codecs.detect': (p) => detectChain(Buffer.from(str(p, 'base64')!, 'base64')),
       'codecs.layers': (p) =>

@@ -10,6 +10,10 @@ export interface Draft {
   url: string;
   headers: HeaderList;
   body?: string;
+  /** Opened from a curl command: what it could not carry over, and the files it reads. */
+  imported?: { warnings: string[]; files: string[] };
+  /** Send options to start with. */
+  options?: ReplayTab['options'];
 }
 
 export interface ReplayTab {
@@ -22,7 +26,7 @@ export interface ReplayTab {
   method: string;
   draft?: Draft;
   /** Send options to start with, e.g. fresh cookies from the jar. */
-  options?: { refreshCookies?: boolean; flow?: string };
+  options?: { refreshCookies?: boolean; flow?: string; ignoreTls?: boolean; followRedirects?: boolean; protocol?: 'h1' | 'h2' | 'h3'; h2Method?: '' | 'alpn' | 'upgrade' | 'prior-knowledge' };
 }
 
 /** One request lined up in the Race view. */
@@ -255,7 +259,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
         name = 'draft';
       }
     }
-    setReplayTabs((tabs) => [...tabs, { id, exchangeId: '', label: name!, method: draft.method, draft }]);
+    setReplayTabs((tabs) => [...tabs, { id, exchangeId: '', label: name!, method: draft.method, draft, ...(draft.options ? { options: draft.options } : {}) }]);
     setActiveTab(id);
     setViewState('replay');
   }, []);

@@ -8,7 +8,9 @@ import { applyRule, conditionsMatch, type HookMessage, type ReplaceRule } from '
 import { globToRegExp } from './scope.js';
 import { loadAwsProfile, parseSigV4, signSigV4, type AwsCredentials } from './sigv4.js';
 import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
-import { batchPlan, flowRefs, hasTokens, resolveTokens, TOKEN_RE, type TokenContext } from './tokens.js';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { batchPlan, flowRefs, hasTokens, oauthRefs, resolveTokens, TOKEN_RE, TokenError, type TokenContext } from './tokens.js';
 import { pickValue, pickValues, tagValue } from './values.js';
 import type { CsrfBinding, TechService } from './tech.js';
 import type { Vars } from './vars.js';
@@ -61,6 +63,53 @@ export interface SendRequest {
   headers: HeaderList;
   body?: Uint8Array;
   replayOf?: string | null;
+  /** Files the body refers to with {{file:name}}, by name (picked in Replay, or read by a curl import). */
+  attachments?: Record<string, Uint8Array>;
+}
+
+/** {{file:name}} with no pipes: spliced into the body as bytes. */
+const FILE_RE = /(?<!\\)\{\{\s*file:([^}|]+?)\s*\}\}/gi;
+
+export const hasFileTokens = (body: string): boolean => {
+  FILE_RE.lastIndex = 0;
+  const r = FILE_RE.test(body);
+  FILE_RE.lastIndex = 0;
+  return r;
+};
+
+/** The bytes of {{file:name}}: an attachment by that name, else a file inside the project folder. */
+export function fileBytes(name: string, attachments: Record<string, Uint8Array> | undefined, projectDir: string): Uint8Array {
+  const a = attachments?.[name];
+  if (a) return a;
+  const base = resolve(projectDir);
+  const file = isAbsolute(name) ? name : join(base, name);
+  if (relative(base, file).startsWith('..') || isAbsolute(relative(base, file))) throw new TokenError(`file "${name}" is not attached; attach it in Replay (Body), or put it in the project folder`);
+  try {
+    return new Uint8Array(readFileSync(file));
+  } catch {
+    throw new TokenError(`file "${name}" is not attached and is not in the project folder`);
+  }
+}
+
+/** Fill in a body's tokens, splicing {{file:name}} tokens in as bytes. */
+export function resolveBodyWithFiles(body: string, resolveText: (s: string) => string, file: (name: string) => Uint8Array): Uint8Array {
+  const enc = new TextEncoder();
+  const out: Uint8Array[] = [];
+  let last = 0;
+  for (const m of body.matchAll(FILE_RE)) {
+    out.push(enc.encode(resolveText(body.slice(last, m.index))));
+    out.push(file(m[1]!.trim()));
+    last = m.index! + m[0].length;
+  }
+  out.push(enc.encode(resolveText(body.slice(last))));
+  const total = out.reduce((n, b) => n + b.length, 0);
+  const joined = new Uint8Array(total);
+  let at = 0;
+  for (const b of out) {
+    joined.set(b, at);
+    at += b.length;
+  }
+  return joined;
 }
 
 export interface Macro {
@@ -99,6 +148,8 @@ export interface SendDeps {
   sign?: (name: string) => string;
   /** A fresh value for an evergreen-bound jar cookie, or null. */
   signCookie?: (host: string, name: string) => string | null;
+  /** OAuth profiles: {{oauth:name}} values, and getting fresh tokens before a send. */
+  oauth?: { value(ref: string): string; ensure(names: string[], opts: { ignoreTlsErrors?: boolean; timeoutMs?: number }): Promise<void> };
 }
 
 /** Statuses frameworks answer with when a CSRF token is missing or stale. */
@@ -155,6 +206,7 @@ export class Sender {
       each: (arg) => pickValues(this.d.store, arg),
       tag: (ref) => tagValue(this.d.store, ref),
       ...(this.d.sign ? { sign: this.d.sign } : {}),
+      ...(this.d.oauth ? { oauth: (ref: string) => this.d.oauth!.value(ref) } : {}),
     };
   }
 
@@ -193,11 +245,14 @@ export class Sender {
     const url = resolveTokens(req.url, ctx);
     const c2 = { ...ctx, url };
     const body = text(req.body);
+    const withFiles = body !== null && hasFileTokens(body);
     return {
       ...req,
       url,
       headers: req.headers.map(([k, v]) => [resolveTokens(k, c2), resolveTokens(v, c2)]),
-      body: body !== null && hasTokens(body) ? new TextEncoder().encode(resolveTokens(body, c2)) : req.body,
+      body: withFiles
+        ? resolveBodyWithFiles(body, (s) => resolveTokens(s, { ...c2, file: () => { throw new TokenError('a {{file}} token cannot take pipes'); } }), (n) => fileBytes(n, req.attachments, this.d.projectDir))
+        : body !== null && hasTokens(body) ? new TextEncoder().encode(resolveTokens(body, c2)) : req.body,
     };
   }
 
@@ -246,6 +301,7 @@ export class Sender {
       }
     }
     if (opts.bodyChain?.length) {
+      if (text(req.body) !== null && hasFileTokens(text(req.body)!)) throw new Error('Encode body cannot be used with attached files: the body is bytes once they are in');
       r = { ...r, body: encodeBody(opts.bodyChain, text(r.body) ?? '') };
       applied.push(`encoded:${opts.bodyChain.join('>')}`);
     }
@@ -305,6 +361,11 @@ export class Sender {
 
   async send(req: SendRequest, opts: SendOptions = {}, batch?: Map<string, string>): Promise<ExchangeSummary> {
     const fl = await this.runFlows(req, opts);
+    const oauth = oauthRefs([req.url, ...req.headers.flat(), text(req.body) ?? '']);
+    if (oauth.length) {
+      if (!this.d.oauth) throw new Error('OAuth profiles are not available');
+      await this.d.oauth.ensure(oauth, { ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs });
+    }
     const o = { ...opts, vars: fl.vars };
     let prepared = this.prepare(req, o, batch, fl.flows);
     if (prepared.csrfMissing.length) {

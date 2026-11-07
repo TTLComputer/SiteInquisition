@@ -22,6 +22,7 @@ export { H3Server, h3Connect, requestFields, type H3ServerRequest } from './quic
 export { runH2Plan, type H2PlanRequest, type H2PlanOptions, type H2PlanResult, type H2PlanRun, type H2ConnectionReport, type H2AbuseOptions } from './h2/plan.js';
 export { protocolLadder, type LadderStep, type H2ConnectMethod } from './h2/connect.js';
 export * from './rules.js';
+export * from './match.js';
 export * from './scripts.js';
 export * from './send.js';
 export * from './sigv4.js';

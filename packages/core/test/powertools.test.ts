@@ -181,6 +181,37 @@ describe('proxy hooks', () => {
     core.tools.setMocks([]);
   });
 
+  it('applies rules, mocks and breakpoints only where precise conditions hold', async () => {
+    core.tools.setMocks([
+      { name: 'gql-save', path: '/echo', where: [{ in: 'graphql', value: 'SaveUser' }], status: 200, headers: [['content-type', 'application/json']], body: '{"mocked":true}' },
+    ]);
+    core.tools.setReplaceRules([
+      { name: 'tenant-only', phase: 'request', target: 'header', header: 'X-Seen', action: 'set', replace: 'yes', path: '/headers', where: [{ in: 'header', name: 'x-tenant', value: 'acme' }, { in: 'query', name: 'v', value: '2' }] },
+      { name: 'admin-response', phase: 'response', target: 'body', chain: 'json', jsonPath: '$.user.role', replace: 'root', path: '/profile', where: [{ in: 'cookie', name: 'session', side: 'request', value: 'ok' }, { in: 'json', name: '$.user.name', value: 'ada' }] },
+    ]);
+    const gql = (operationName: string) => agent.fetch(`${base}/echo`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'query GetUser { u } mutation SaveUser { s }', operationName }) });
+    expect(await (await gql('SaveUser')).json()).toEqual({ mocked: true });
+    expect(await (await gql('GetUser')).text()).toContain('GetUser');
+
+    const seen = async (path: string, headers: Record<string, string>) => ((await (await agent.fetch(`${base}${path}`, { headers })).json()) as Record<string, string>)['x-seen'];
+    expect(await seen('/headers?v=2', { 'x-tenant': 'acme' })).toBe('yes');
+    expect(await seen('/headers?v=3', { 'x-tenant': 'acme' })).toBeUndefined();
+    expect(await seen('/headers?v=2', { 'x-tenant': 'other' })).toBeUndefined();
+
+    expect(await (await agent.fetch(`${base}/profile`, { headers: { cookie: 'session=ok' } })).json()).toEqual({ user: { name: 'ada', role: 'root' } });
+    expect(await (await agent.fetch(`${base}/profile`)).json()).toEqual({ user: { name: 'ada', role: 'user' } });
+
+    core.tools.setBreakpoints([{ phase: 'request', path: '/echo', where: [{ in: 'json', name: '$.hold', value: 'true' }] }]);
+    expect(await (await agent.fetch(`${base}/echo`, { method: 'POST', body: '{"hold":false}' })).text()).toBe('{"hold":false}');
+    const pending = agent.fetch(`${base}/echo`, { method: 'POST', body: '{"hold":true}' });
+    const paused = await until(() => core.tools.intercept.list()[0], 'a paused request');
+    core.tools.intercept.resolve(paused.id, { action: 'forward' });
+    expect(await (await pending).text()).toBe('{"hold":true}');
+    core.tools.setBreakpoints([]);
+    core.tools.setReplaceRules([]);
+    core.tools.setMocks([]);
+  });
+
   it('pauses on a breakpoint and forwards the edited request', async () => {
     core.tools.setBreakpoints([{ phase: 'request', pathPrefix: '/echo' }]);
     const pending = agent.fetch(`${base}/echo`, { method: 'POST', body: 'original' });

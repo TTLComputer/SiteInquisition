@@ -116,7 +116,7 @@ describe.skipIf(!ready)('WebSocket replay in the renderer', () => {
 
   it('sets a WebSocket message breakpoint from the Replay tab', async () => {
     await page.getByRole('button', { name: 'Break on messages' }).click();
-    await expect.poll(async () => (await h.core.tools.breakpoints()).some((b) => b.phase === 'messages' && b.pathPrefix === '/chat')).toBe(true);
+    await expect.poll(async () => (await h.core.tools.breakpoints()).some((b) => b.phase === 'messages' && b.path === '/chat')).toBe(true);
     await nav('Rules');
     await page.getByRole('tab', { name: 'Breakpoints' }).click();
     await expect.poll(() => page.getByLabel('Pause on').first().inputValue()).toBe('messages');

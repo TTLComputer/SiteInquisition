@@ -4,7 +4,7 @@ import type { FlowRunner } from './flows.js';
 import { cookieJar, type JarCookie } from './cookies.js';
 import { newId } from './ids.js';
 import { sendReplay } from './replay.js';
-import { applyRule, conditionsMatch, type HookMessage, type ReplaceRule } from './rules.js';
+import { applyRule, conditionsMatch, requestSubject, type HookMessage, type ReplaceRule } from './rules.js';
 import { globToRegExp } from './scope.js';
 import { loadAwsProfile, parseSigV4, signSigV4, type AwsCredentials } from './sigv4.js';
 import type { CaptureStore, ExchangeSummary, HeaderList } from './store.js';
@@ -322,7 +322,7 @@ export class Sender {
     if (opts.applyRules) {
       const msg: HookMessage = { method: r.method, url: r.url, headers: [...r.headers], body: r.body ?? new Uint8Array() };
       for (const rule of this.d.rules()) {
-        if (rule.enabled === false || rule.phase !== 'request' || !conditionsMatch(rule, msg)) continue;
+        if (rule.enabled === false || rule.phase !== 'request' || !conditionsMatch(rule, requestSubject(msg))) continue;
         const n = applyRule(rule, msg, (s) => resolveTokens(s, this.tokenContext(msg.url, { vars: opts.vars, flows })));
         if (n) {
           applied.push(`rule:${rule.name}`);

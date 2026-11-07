@@ -22,7 +22,7 @@ import { runRace, type RaceOptions, type RaceRequest } from './race.js';
 import { h3Tickets, runH3Plan, type H3PlanOptions, type H3PlanRequest } from './quic/plan.js';
 import { runH2Plan, type H2PlanOptions, type H2PlanRequest } from './h2/plan.js';
 import { protocolLadder as runProtocolLadder } from './h2/connect.js';
-import { applyRule, conditionsMatch, normalizeMock, normalizeReplaceRule, type HookMessage, type MockRule, type ReplaceRule, type RuleInput } from './rules.js';
+import { applyRule, conditionsMatch, requestSubject, responseSubject, normalizeMock, normalizeReplaceRule, type HookMessage, type MockRule, type ReplaceRule, type RuleInput } from './rules.js';
 import { normalizeScript, ScriptEngine, type Script, type Sdk } from './scripts.js';
 import { TrustedScripts } from './trust.js';
 import { cookieHeaderFor, Sender, type AwsProfile, type Macro, type SendOptions, type SendRequest } from './send.js';
@@ -503,11 +503,14 @@ export class PowerTools {
     };
   }
 
-  private applyRules(phase: 'request' | 'response', msg: HookMessage, reqUrl: string, method: string): string[] {
+  /** `req` is the request a response answers; omit it for the request phase. */
+  private applyRules(phase: 'request' | 'response', msg: HookMessage, req?: HookMessage): string[] {
     const applied: string[] = [];
+    const reqUrl = req?.url ?? msg.url;
     for (const rule of this.replaceRules()) {
       if (rule.enabled === false || rule.phase !== phase) continue;
-      if (!conditionsMatch(rule, { method, url: reqUrl, status: msg.status })) continue;
+      // Re-read each time: an earlier rule may have changed what later ones match on.
+      if (!conditionsMatch(rule, phase === 'request' ? requestSubject(msg) : responseSubject(req, msg))) continue;
       if (applyRule(rule, msg, this.resolver(reqUrl))) {
         this.countHit(rule.id);
         applied.push(`rule:${rule.name}`);
@@ -535,7 +538,11 @@ export class PowerTools {
       return [first, ...m.headers.map(([k, v]) => `${k}: ${v}`), '', bytesToString(m.body.subarray(0, 64 * 1024))].join('\n');
     };
     const before = render(msg);
-    const matched = conditionsMatch(rule, { method: ex.method, url: ex.url, status: ex.status ?? undefined });
+    const reqSide = { headers: [...(ex.requestHeaders ?? [])], body: store.getBody(exchangeId, 'request', true) ?? new Uint8Array() };
+    const subject = req
+      ? requestSubject({ method: ex.method, url: ex.url, ...reqSide })
+      : responseSubject({ method: ex.method, url: ex.url, ...reqSide }, { ...msg, headers: [...msg.headers] });
+    const matched = conditionsMatch(rule, subject);
     const count = matched ? applyRule(rule, msg, this.resolver(ex.url)) : 0;
     return { matched, count, before, after: render(msg) };
   }
@@ -552,14 +559,14 @@ export class PowerTools {
         applyEdits(msg, paused);
         if (paused.edits) applied.push('breakpoint:edited');
       }
-      const mock = this.mocks().find((m) => m.enabled !== false && conditionsMatch({ host: m.host, method: m.method, pathPrefix: m.pathPrefix }, msg));
+      const mock = this.mocks().find((m) => m.enabled !== false && conditionsMatch({ ...m, status: undefined }, requestSubject(msg)));
       if (mock) {
         this.countHit(mock.id);
         if (mock.delayMs) await new Promise((r) => setTimeout(r, Math.min(mock.delayMs!, 60_000)));
         const body = new TextEncoder().encode(this.resolver(msg.url)(mock.body));
         return { applied: [...applied, `mock:${mock.name}`], respond: { status: mock.status, headers: mock.headers, body } };
       }
-      applied.push(...this.applyRules('request', msg, msg.url, msg.method));
+      applied.push(...this.applyRules('request', msg));
       applied.push(...this.evergreenCookies(msg));
       if (this.scripts.active) applied.push(...(await this.scripts.run('request', msg)).map((n) => `script:${n}`));
       return { applied };
@@ -567,11 +574,11 @@ export class PowerTools {
     wantsResponse: (req, ctx) =>
       this.scripts.active ||
       this.intercept.wouldPauseResponse(req, ctx.key) ||
-      this.replaceRules().some((r) => r.enabled !== false && r.phase === 'response' && conditionsMatch(r, req)),
+      this.replaceRules().some((r) => r.enabled !== false && r.phase === 'response' && conditionsMatch(r, { ...req, phase: 'response' }, { lenient: true })),
     response: async (req, res, ctx) => {
-      const applied = this.applyRules('response', res, req.url, req.method);
+      const applied = this.applyRules('response', res, req);
       if (this.scripts.active) applied.push(...(await this.scripts.run('response', req, res)).map((n) => `script:${n}`));
-      const paused = await this.intercept.check('response', res, ctx.source, ctx.key);
+      const paused = await this.intercept.check('response', res, ctx.source, ctx.key, req);
       if (paused?.action === 'drop') return { applied: [...applied, 'breakpoint:dropped'], drop: true };
       if (paused) {
         applyEdits(res, paused);

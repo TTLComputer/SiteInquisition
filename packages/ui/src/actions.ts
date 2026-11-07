@@ -15,19 +15,19 @@ export async function mockFromExchange(client: CoreClient, ex: ExchangeDetail): 
   const { mocks } = await client.rules();
   const name = `${ex.method} ${ex.path.split('?')[0]}`.slice(0, 60);
   const headers = (ex.responseHeaders ?? []).filter(([k]) => !['content-length', 'content-encoding', 'transfer-encoding', 'connection', 'date'].includes(k.toLowerCase()));
-  await client.setMocks([...mocks, { name, enabled: true, host: ex.host, method: ex.method, pathPrefix: ex.path.split('?')[0], status: ex.status ?? 200, headers, body }]);
+  await client.setMocks([...mocks, { name, enabled: true, host: ex.host, method: ex.method, path: ex.path.split('?')[0], status: ex.status ?? 200, headers, body }]);
   return name;
 }
 
 export async function breakOn(client: CoreClient, ex: Pick<ExchangeSummary, 'host' | 'method' | 'path'>, phase: 'request' | 'response' | 'both' = 'request'): Promise<void> {
   const { breakpoints } = await client.rules();
-  await client.setBreakpoints([...breakpoints, { enabled: true, phase, host: ex.host, method: ex.method, pathPrefix: ex.path.split('?')[0] }]);
+  await client.setBreakpoints([...breakpoints, { enabled: true, phase, host: ex.host, method: ex.method, path: ex.path.split('?')[0] }]);
 }
 
 /** Pause WebSocket messages on connections like this one (Rules, Breakpoints). */
 export async function breakOnMessages(client: CoreClient, ex: Pick<ExchangeSummary, 'host' | 'path'>, direction: 'client' | 'server' | 'both' = 'both', match = ''): Promise<void> {
   const { breakpoints } = await client.rules();
-  await client.setBreakpoints([...breakpoints, { enabled: true, phase: 'messages', host: ex.host, pathPrefix: ex.path.split('?')[0], direction, ...(match ? { match } : {}) }]);
+  await client.setBreakpoints([...breakpoints, { enabled: true, phase: 'messages', host: ex.host, path: ex.path.split('?')[0], direction, ...(match ? { match } : {}) }]);
 }
 
 /** The literal part of a path template before its first placeholder, for a path: filter. */

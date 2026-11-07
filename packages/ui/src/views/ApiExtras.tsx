@@ -447,7 +447,7 @@ export function Glossary() {
                   </td>
                   <td className="faint">
                     {allIds.length > 0 ? (
-                      <button className="link-btn" onClick={() => showAll(allIds)} title="Show the requests that carried this field in History">
+                      <button className="link-btn" onClick={() => showAll(allIds)} title="Show the requests that carried this field in Traffic">
                         {r.count}× · {r.distinct} distinct
                       </button>
                     ) : (
@@ -469,7 +469,7 @@ export function Glossary() {
                         {s.exchangeIds.length > 1 && (
                           <>
                             {' '}
-                            <button className="pill" onClick={() => showAll(s.exchangeIds)} title="Show all of them in History">
+                            <button className="pill" onClick={() => showAll(s.exchangeIds)} title="Show all of them in Traffic">
                               {s.count} requests
                             </button>
                           </>
@@ -614,7 +614,7 @@ export function AuthAndNegative() {
             <span>Each request is sent again as every identity. "Same data" for another user or no auth is a likely access control bug.</span>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input className="input mono" style={{ flex: '1 1 260px' }} placeholder="Add requests matching a History filter, e.g. path:/api/orders/ method:GET" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Auth matrix filter" />
+            <input className="input mono" style={{ flex: '1 1 260px' }} placeholder="Add requests matching a Traffic filter, e.g. path:/api/orders/ method:GET" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Auth matrix filter" />
             <button className="btn small" disabled={!filter.trim()} onClick={() => void addFiltered()}>
               Add matching
             </button>
@@ -633,7 +633,7 @@ export function AuthAndNegative() {
               {ids.map(label).join(' · ')}
             </div>
           )}
-          {!ids.length && <div className="faint" style={{ fontSize: 12, marginTop: 6 }}>Right-click a request in History and choose Try as other users, or add requests by filter.</div>}
+          {!ids.length && <div className="faint" style={{ fontSize: 12, marginTop: 6 }}>Right-click a request in Traffic and choose Try as other users, or add requests by filter.</div>}
           {matrix && (
             <table className="data-table matrix" style={{ marginTop: 8 }}>
               <thead>
@@ -671,7 +671,7 @@ export function AuthAndNegative() {
             <span>Broken variants of one request: wrong types, missing and extra fields, huge and special values, other ids. Uses the API file's schema when there is one.</span>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <span className="mono">{negFor ? label(negFor) : <span className="faint">Select a request in History, or right-click it and choose Run negative tests.</span>}</span>
+            <span className="mono">{negFor ? label(negFor) : <span className="faint">Select a request in Traffic, or right-click it and choose Run negative tests.</span>}</span>
             <span style={{ flex: 1 }} />
             <button className="btn small primary" disabled={!negFor || busy !== null} onClick={() => void runNeg()}>
               {busy === 'neg' ? 'Sending...' : 'Run negative tests'}
@@ -778,17 +778,18 @@ function SideDiffView({ title, d }: { title: string; d: ExchangeDiff['request'] 
           ))}
         </pre>
       ) : (
-        <div className="faint">{d.textA === null || d.textB === null ? 'Binary bodies; compare in Codecs.' : 'Same.'}</div>
+        <div className="faint">{d.textA === null || d.textB === null ? 'Binary bodies; compare in Decode.' : 'Same.'}</div>
       )}
     </section>
   );
 }
 
-export function Compare() {
-  const { client, notify, apiInput, compareMark } = useApp();
+/** Compare two exchanges. As a document it is opened with both; on Replay, Compare it takes ids or the marked request. */
+export function Compare({ a: docA, b: docB }: { a?: string; b?: string } = {}) {
+  const { client, notify, apiInput, compareMark, openComparison } = useApp();
   const inspect = useInspect();
-  const [a, setA] = useState('');
-  const [b, setB] = useState('');
+  const [a, setA] = useState(docA ?? '');
+  const [b, setB] = useState(docB ?? '');
   const [diff, setDiff] = useState<ExchangeDiff | null>(null);
   const run = useCallback((x: string, y: string) => client.diffExchanges(x, y).then(setDiff, (e: Error) => notify(e.message)), [client, notify]);
   useEffect(() => {
@@ -799,8 +800,11 @@ export function Compare() {
     }
   }, [apiInput, run]);
   useEffect(() => {
-    if (!a && compareMark) setA(compareMark);
-  }, [a, compareMark]);
+    if (docA && docB) void run(docA, docB);
+  }, [docA, docB, run]);
+  useEffect(() => {
+    if (!a && compareMark && !docA) setA(compareMark);
+  }, [a, compareMark, docA]);
   return (
     <div className="api-pane" aria-label="Compare">
       <div className="filterbar">
@@ -809,9 +813,14 @@ export function Compare() {
         <button className="btn small primary" disabled={!a || !b} onClick={() => void run(a.trim(), b.trim())}>
           Compare
         </button>
+        {!docA && (
+          <button className="btn small" disabled={!a || !b} onClick={() => openComparison(a.trim(), b.trim())} title="Keep this comparison open in its own tab beside your replay editors">
+            Open in a tab
+          </button>
+        )}
       </div>
       <div className="api-scroll">
-        {!diff && <div className="empty">In History, right-click a request and choose Mark to compare, then right-click another and choose Compare with the marked request.</div>}
+        {!diff && <div className="empty">In Traffic, right-click a request and choose Mark to compare, then right-click another and choose Compare with the marked request.</div>}
         {diff && (
           <>
             <div className="card" style={{ margin: 12 }}>

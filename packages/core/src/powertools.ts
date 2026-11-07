@@ -27,7 +27,7 @@ import { normalizeScript, ScriptEngine, type Script, type Sdk } from './scripts.
 import { TrustedScripts } from './trust.js';
 import { cookieHeaderFor, Sender, type AwsProfile, type Macro, type SendOptions, type SendRequest } from './send.js';
 import { parseSigV4, type AwsCredentials } from './sigv4.js';
-import type { Change, HeaderList } from './store.js';
+import type { Change, HeaderList, Transform } from './store.js';
 import { resolveTokens } from './tokens.js';
 import { ErrorService } from './errors.js';
 import { awsRequestInfo, parsePresignedUrl } from './awsinfo.js';
@@ -38,6 +38,9 @@ import { decodeSessionCookie, signFlaskCookie, tryFlaskSecrets, verifyFlaskCooki
 import { TechService } from './tech.js';
 import { OAuthService } from './oauth.js';
 import { Vars } from './vars.js';
+import { endpointDetail, setEndpointAlias } from './endpoints.js';
+import { Reproductions } from './reproductions.js';
+import { OverrideControl, replaceTransform, revisionOf, targetText } from './overrides.js';
 import { WsReplays } from './wsreplay.js';
 import type { WsScript } from './wsscript.js';
 
@@ -70,9 +73,17 @@ export class PowerTools {
   readonly evergreen: Evergreen;
   /** OAuth 2.0 profiles and their tokens, for {{oauth:name}}. */
   readonly oauth: OAuthService;
+  /** The master switch, groups and explanations for everything that changes live traffic. */
+  readonly overrides: OverrideControl;
+  /** Saved reproductions, their runs and session profiles. */
+  readonly repros: Reproductions;
 
   constructor(private readonly core: Core) {
     const store = core.store;
+    this.overrides = new OverrideControl(store, (kinds) => {
+      // Hooks are compiled, so a group that turns one on or off reloads them.
+      if (kinds.includes('hook')) void this.scripts.load(this.scriptList());
+    });
     // Saved signing keys are encrypted with the keyring master key, like saved identities.
     const vault: KeyVault = {
       get canEncrypt() {
@@ -157,6 +168,16 @@ export class PowerTools {
     this.trust = new TrustedScripts(core.dataDir, core.projectDir);
     this.scripts = new ScriptEngine({ values: () => this.vars.values(), set: (name, value) => this.vars.set(name, value, 'script') }, (s) => this.trust.has(s.code));
     void this.scripts.load(this.scriptList());
+    this.repros = new Reproductions({
+      store,
+      sender: () => this.sender,
+      flows: () => this.flows,
+      ws: () => this.ws,
+      flowList: () => this.flowList(),
+      macros: () => this.macros(),
+      saveFlow: (f) => this.saveFlow(f),
+      projectVars: () => this.vars.values(),
+    });
     this.mcp = new McpServer(this.mcpTools(), () => this.mcpSettings());
 
     // Extraction rules watch every completed response, including replays.
@@ -459,6 +480,16 @@ export class PowerTools {
     this.core.store.setMeta('endpointNotes', all);
     return all;
   }
+  /** Everything known about one endpoint reference, "host METHOD /template". */
+  endpoint(key: string) {
+    return endpointDetail(
+      { store: this.core.store, specs: this.specs(), notes: this.endpointNotes(), mocks: this.mocks(), rules: this.replaceRules(), breakpoints: this.breakpoints(), flows: this.flowList() },
+      key,
+    );
+  }
+  setEndpointAlias(from: string, to: string | null) {
+    return setEndpointAlias(this.core.store, from, to);
+  }
   noteFor(exchangeId: string) {
     const ex = this.core.store.getSummary(exchangeId);
     if (!ex) return null;
@@ -504,19 +535,38 @@ export class PowerTools {
   }
 
   /** `req` is the request a response answers; omit it for the request phase. */
-  private applyRules(phase: 'request' | 'response', msg: HookMessage, req?: HookMessage): string[] {
+  private applyRules(phase: 'request' | 'response', msg: HookMessage, req?: HookMessage, transforms?: Transform[]): string[] {
     const applied: string[] = [];
     const reqUrl = req?.url ?? msg.url;
     for (const rule of this.replaceRules()) {
       if (rule.enabled === false || rule.phase !== phase) continue;
       // Re-read each time: an earlier rule may have changed what later ones match on.
       if (!conditionsMatch(rule, phase === 'request' ? requestSubject(msg) : responseSubject(req, msg))) continue;
+      const before = transforms ? targetText(msg, rule) : '';
       if (applyRule(rule, msg, this.resolver(reqUrl))) {
         this.countHit(rule.id);
         applied.push(`rule:${rule.name}`);
+        transforms?.push(replaceTransform(phase, rule, before, targetText(msg, rule)));
       }
     }
     return applied;
+  }
+
+  /** What a breakpoint did, for the exchange's explanation. */
+  private pauseTransform(phase: 'request' | 'response', paused: { breakpointId?: string; action?: string; edits?: unknown } | null | undefined): Transform | null {
+    if (!paused) return null;
+    const bp = this.breakpoints().find((b) => b.id === paused.breakpointId);
+    const outcome = paused.action === 'drop' ? 'dropped' : paused.edits ? 'edited' : 'forwarded';
+    const name = bp ? [bp.method, `${bp.host ?? ''}${bp.path ?? bp.pathPrefix ?? ''}`].filter(Boolean).join(' ') || 'every request' : 'paused by hand';
+    return { phase, kind: 'breakpoint', ...(bp ? { ruleId: bp.id, revision: revisionOf(bp) } : {}), name, outcome, at: Date.now() };
+  }
+
+  private hookTransforms(phase: 'request' | 'response', names: string[]): Transform[] {
+    const list = this.scriptList();
+    return names.map((n) => {
+      const s = list.find((x) => x.name === n);
+      return { phase, kind: 'hook', ...(s ? { ruleId: s.id, revision: revisionOf(s) } : {}), name: n, outcome: 'changed', at: Date.now() } satisfies Transform;
+    });
   }
 
   /** Try a rule (saved or not) against a recorded exchange without changing anything. */
@@ -553,41 +603,62 @@ export class PowerTools {
       const signedIn = this.oauth.capture(msg.url);
       if (signedIn) return { applied: ['oauth:callback'], respond: signedIn };
       const applied: string[] = [];
-      const paused = await this.intercept.check('request', msg, ctx.source, ctx.key);
-      if (paused?.action === 'drop') return { applied: ['breakpoint:dropped'], drop: true };
+      const transforms: Transform[] = [];
+      // Suspended: nothing new pauses or changes. Traffic already paused stays paused until someone answers it.
+      const off = this.overrides.suspended;
+      if (off) applied.push('overrides:suspended');
+      const paused = off ? null : await this.intercept.check('request', msg, ctx.source, ctx.key);
+      const bp = this.pauseTransform('request', paused);
+      if (bp) transforms.push(bp);
+      if (paused?.action === 'drop') return { applied: [...applied, 'breakpoint:dropped'], transforms, drop: true };
       if (paused) {
         applyEdits(msg, paused);
         if (paused.edits) applied.push('breakpoint:edited');
       }
-      const mock = this.mocks().find((m) => m.enabled !== false && conditionsMatch({ ...m, status: undefined }, requestSubject(msg)));
+      const mock = off ? undefined : this.mocks().find((m) => m.enabled !== false && conditionsMatch({ ...m, status: undefined }, requestSubject(msg)));
       if (mock) {
         this.countHit(mock.id);
         if (mock.delayMs) await new Promise((r) => setTimeout(r, Math.min(mock.delayMs!, 60_000)));
         const body = new TextEncoder().encode(this.resolver(msg.url)(mock.body));
-        return { applied: [...applied, `mock:${mock.name}`], respond: { status: mock.status, headers: mock.headers, body } };
+        transforms.push({ phase: 'request', kind: 'mock', ruleId: mock.id, name: mock.name, revision: revisionOf(mock), outcome: 'answered', target: `status ${mock.status}`, at: Date.now() });
+        return { applied: [...applied, `mock:${mock.name}`], transforms, respond: { status: mock.status, headers: mock.headers, body } };
       }
-      applied.push(...this.applyRules('request', msg));
+      if (!off) applied.push(...this.applyRules('request', msg, undefined, transforms));
       applied.push(...this.evergreenCookies(msg));
-      if (this.scripts.active) applied.push(...(await this.scripts.run('request', msg)).map((n) => `script:${n}`));
-      return { applied };
+      if (!off && this.scripts.active) {
+        const names = await this.scripts.run('request', msg);
+        applied.push(...names.map((n) => `script:${n}`));
+        transforms.push(...this.hookTransforms('request', names));
+      }
+      return { applied, transforms };
     },
     wantsResponse: (req, ctx) =>
-      this.scripts.active ||
-      this.intercept.wouldPauseResponse(req, ctx.key) ||
-      this.replaceRules().some((r) => r.enabled !== false && r.phase === 'response' && conditionsMatch(r, { ...req, phase: 'response' }, { lenient: true })),
+      !this.overrides.suspended &&
+      (this.scripts.active ||
+        this.intercept.wouldPauseResponse(req, ctx.key) ||
+        this.replaceRules().some((r) => r.enabled !== false && r.phase === 'response' && conditionsMatch(r, { ...req, phase: 'response' }, { lenient: true }))),
     response: async (req, res, ctx) => {
-      const applied = this.applyRules('response', res, req);
-      if (this.scripts.active) applied.push(...(await this.scripts.run('response', req, res)).map((n) => `script:${n}`));
+      if (this.overrides.suspended) return { applied: [] };
+      const transforms: Transform[] = [];
+      const applied = this.applyRules('response', res, req, transforms);
+      if (this.scripts.active) {
+        const names = await this.scripts.run('response', req, res);
+        applied.push(...names.map((n) => `script:${n}`));
+        transforms.push(...this.hookTransforms('response', names));
+      }
       const paused = await this.intercept.check('response', res, ctx.source, ctx.key, req);
-      if (paused?.action === 'drop') return { applied: [...applied, 'breakpoint:dropped'], drop: true };
+      const bp = this.pauseTransform('response', paused);
+      if (bp) transforms.push(bp);
+      if (paused?.action === 'drop') return { applied: [...applied, 'breakpoint:dropped'], transforms, drop: true };
       if (paused) {
         applyEdits(res, paused);
         if (paused.edits) applied.push('breakpoint:edited');
       }
-      return { applied };
+      return { applied, transforms };
     },
-    wantsWsMessages: (url) => this.intercept.wantsWsMessages(url),
+    wantsWsMessages: (url) => !this.overrides.suspended && this.intercept.wantsWsMessages(url),
     wsMessage: async (m, ctx) => {
+      if (this.overrides.suspended) return;
       const r = await this.intercept.checkWs(m.url, { exchangeId: m.exchangeId, direction: m.from, opcode: m.opcode, fragments: m.fragments, payload: m.payload }, ctx.source);
       if (!r || r.action !== 'drop' && !r.edits) return;
       if (r.action === 'drop') return { drop: true };
@@ -955,6 +1026,24 @@ export class PowerTools {
         write: true,
         summary: (a) => `Run flow ${String(a.name)}`,
         run: (a) => this.flows.run(String(a.name), (a.inputs as Record<string, string>) ?? {}),
+      },
+      {
+        name: 'list_reproductions',
+        description: 'Saved reproductions (a request, flow or WebSocket conversation kept by name with inputs, assertions and a session profile), with their latest runs. Pass name for one, with its effective input values and where each comes from.',
+        inputSchema: { type: 'object', properties: { name: str, profile: str } },
+        write: false,
+        run: (a) =>
+          a.name
+            ? { ...this.repros.get(String(a.name)), history: undefined, effective: this.repros.effective(String(a.name), { profile: a.profile ? String(a.profile) : undefined }), runs: this.repros.runs(this.repros.get(String(a.name)).id).slice(-10) }
+            : this.repros.list().map((r) => ({ id: r.id, name: r.name, kind: r.definition.kind, revision: r.revision, assertions: r.assertions.length, profile: r.profile, lastRun: this.repros.runs(r.id).at(-1) ?? null })),
+      },
+      {
+        name: 'run_reproduction',
+        description: 'Run a saved reproduction with explicit inputs and an optional session profile. Returns the run: state (passed, failed, canceled), the definition revision it ran, exchange ids and assertion results.',
+        inputSchema: { type: 'object', properties: { name: str, inputs: { type: 'object' }, profile: str }, required: ['name'] },
+        write: true,
+        summary: (a) => `Run reproduction ${String(a.name)}${a.profile ? ` as ${String(a.profile)}` : ''}`,
+        run: (a) => this.repros.run(String(a.name), { inputs: (a.inputs as Record<string, string>) ?? {}, profile: a.profile ? String(a.profile) : undefined }),
       },
       {
         name: 'contract_check',

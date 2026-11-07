@@ -7,18 +7,20 @@ import { StorageSettings } from './Storage';
 import { KeySettings, TechSettings } from './Tech';
 import { TlsSettings } from './TlsSettings';
 
-type Section = 'proxy' | 'servers' | 'storage' | 'tech' | 'signing' | 'mcp' | 'appearance' | 'keys' | 'together';
+export type SettingsSectionId = 'proxy' | 'servers' | 'storage' | 'tech' | 'signing' | 'mcp' | 'appearance' | 'keys' | 'together';
 
 export const SHORTCUTS: Array<[string, string]> = [
-  ['Ctrl K', 'Filter traffic (focus the History filter)'],
+  ['Ctrl K', 'Filter traffic (focus the filter in Traffic, Requests)'],
+  ['Ctrl Shift P', 'Command search: every action and page by name'],
+  ['Alt Left / Alt Right', 'Back and forward through the places you visited'],
   ['Ctrl R', 'Send the selected exchange to Replay'],
   ['Ctrl Enter', 'Send the request in the current replay tab'],
   ['Ctrl Shift Enter', 'Resend the selected exchange without opening the editor'],
-  ['Up / Down', 'Move the selection in History'],
+  ['Up / Down', 'Move the selection in Traffic, Requests'],
   ['Shift F10', 'Open the row menu for the selected exchange'],
   ['Delete', 'Delete the selected exchange (asks first)'],
   ['Double click', 'Open a row in replay'],
-  ['Ctrl D', 'Decode the selected text (or the selected exchange\'s response body) in Codecs'],
+  ['Ctrl D', 'Decode the selected text in place, or open it (or the selected exchange\'s response body) in Advanced tools, Decode'],
   ['Ctrl Shift R', 'Send the selected exchange to Race'],
   ['Esc', 'Close a menu or dialog; in the filter, undo typing'],
 ];
@@ -81,24 +83,12 @@ function BrowserHttp3() {
   );
 }
 
-export function Settings() {
-  const { info, subTab } = useApp();
-  const [section, setSection] = useState<Section>((subTab.settings as Section) ?? 'proxy');
-  useEffect(() => {
-    if (subTab.settings) setSection(subTab.settings as Section);
-  }, [subTab]);
+/** One section of Project settings (proxy, certificates, storage...). Capture scope and sessions live beside these. */
+export function SettingsSection({ section }: { section: SettingsSectionId }) {
+  const { info } = useApp();
   const [theme, setTheme] = useState<ThemeChoice>(storedTheme());
-  const labels: Record<Section, string> = { proxy: 'Proxy and TLS', servers: 'Server certificates', storage: 'Storage', tech: 'Technologies', signing: 'Signing keys', mcp: 'MCP and agents', appearance: 'Appearance', keys: 'Keyboard', together: 'Work together' };
   return (
-    <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
-      <div className="tabs" role="tablist" aria-label="Settings">
-        {(Object.keys(labels) as Section[]).map((s) => (
-          <button key={s} role="tab" className="tab" aria-selected={section === s} onClick={() => setSection(s)}>
-            {labels[s]}
-          </button>
-        ))}
-      </div>
-      <div className="page-inner">
+    <div className="page-inner">
         <div className="card" style={{ flex: '1 1 640px', maxWidth: 900 }}>
           {section === 'tech' && <TechSettings />}
           {section === 'servers' && <TlsSettings />}
@@ -137,7 +127,7 @@ export function Settings() {
                       Replace it with <code>siq ca rotate</code>, or delete it with <code>siq ca remove</code>; see docs/ca-trust.md for removing it from devices.
                     </div>
                   </Row>
-                  <Row label="Decrypting">{info.decryptHosts.length ? <span className="mono">{info.decryptHosts.join(', ')}</span> : 'No hosts (add include rules in Rules › Scope)'}</Row>
+                  <Row label="Decrypting">{info.decryptHosts.length ? <span className="mono">{info.decryptHosts.join(', ')}</span> : 'No hosts (add include rules in Project settings › Capture scope)'}</Row>
                   <Row label="Browser over HTTP/3">
                     <BrowserHttp3 />
                   </Row>
@@ -212,7 +202,6 @@ export function Settings() {
             </>
           )}
         </div>
-      </div>
     </div>
   );
 }

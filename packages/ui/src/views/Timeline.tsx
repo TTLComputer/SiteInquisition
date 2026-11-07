@@ -175,14 +175,14 @@ export function Timeline() {
         <span style={{ flex: 1 }} />
         {query && (
           <span className="muted" style={{ fontSize: 12 }}>
-            History filter: <span className="mono">{query}</span>{' '}
+            Traffic filter: <span className="mono">{query}</span>{' '}
             <button className="btn small" onClick={() => setQuery('')}>
               Clear
             </button>
           </span>
         )}
         <span className="faint" style={{ fontSize: 12 }}>
-          {rows.length === MAX_ROWS ? `newest ${MAX_ROWS} shown` : `${rows.length} exchanges`} · drag across the lanes to filter History
+          {rows.length === MAX_ROWS ? `newest ${MAX_ROWS} shown` : `${rows.length} exchanges`} · drag across the lanes to filter Traffic
         </span>
       </div>
       {error && <div className="banner" style={{ margin: 8 }}>{error}</div>}
@@ -251,7 +251,7 @@ export function Timeline() {
           <span className="mono">{statusText(selected)}</span>
           <span className="mono muted">{fmtMs(selected.durationMs)}</span>
           <button className="btn small" onClick={() => setView('history')}>
-            Open in History
+            Open in Traffic
           </button>
           <ReplayButton exchange={selected} primary />
         </div>

@@ -53,3 +53,7 @@ export * from './probes.js';
 export { LanGate, parseRange, type LanPending } from './lan.js';
 export { SecretBox, SecretToolKeyring, DpapiKeyring, MemoryKeyring, bitlockerState, defaultKeyring, diskEncryption, type Keyring, type DiskEncryption } from './secrets.js';
 export * from './oauth.js';
+export * from './workspace.js';
+export * from './overrides.js';
+export * from './endpoints.js';
+export * from './reproductions.js';

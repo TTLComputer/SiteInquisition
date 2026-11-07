@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ExchangeSummary, FramePreset, WireStreamMessage, WsRunOptions, WsRunState, WsScript, WsScriptStep, WsStepResult } from '../api';
 import { base64ToBytes } from '../api';
-import { useApp, type ReplayTab } from '../state';
+import { useApp, type CodecInput, type ReplayTab } from '../state';
+import { Codecs } from './Codecs';
 import { Icon } from '../components/icons';
 import { asText, hexDump } from '../format';
 import { diffLines } from '../diff';
 import { breakOnMessages } from '../actions';
+import { saveReproduction } from '../workspace/save';
 import { summarizeFrame } from '@siteinquisition/codecs/protocols';
 import { Messages } from './Inspector';
 import { TokenPicker } from './TokenPicker';
@@ -92,10 +94,16 @@ function stepTitle(s: WsScriptStep): string {
  * body, and every run is kept as a send you can step through and compare.
  */
 export function WsReplay({ tab }: { tab: ReplayTab }) {
-  const { client, notify, select, setView, setQuery, sendToCodecs, openStream } = useApp();
+  const { client, notify, select, setView, setQuery, sendToCodecs, openStream, reportDraft, markDirty } = useApp();
+  /** The conversation as first opened; the editor is dirty when it differs. */
+  const baseline = useRef<string | null>(null);
+  const [missingSource, setMissingSource] = useState(false);
   const [original, setOriginal] = useState<ExchangeSummary | null>(null);
   const [handshake, setHandshake] = useState('');
   const [steps, setSteps] = useState<Keyed[]>([]);
+  const stepsRef = useRef(steps);
+  stepsRef.current = steps;
+  const [decoder, setDecoder] = useState<CodecInput | null>(null);
   const [opts, setOpts] = useState<Options>({ ...DEFAULTS, refreshCookies: !!tab.options?.refreshCookies, flow: tab.options?.flow ?? '' });
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -152,17 +160,48 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
         // keep the messages as captured
       }
       setOpts((cur) => ({ ...cur, fields }));
-      setHandshake(handshakeText(script.url, script.headers));
-      setSteps(list.map((st) => keyed(st.kind === 'send' && (st.encoding ?? 'text') === 'text' ? { ...st, payload: show(st.payload) } : st)));
+      const hs = handshakeText(script.url, script.headers);
+      const ks = list.map((st) => keyed(st.kind === 'send' && (st.encoding ?? 'text') === 'text' ? { ...st, payload: show(st.payload) } : st));
+      setHandshake(hs);
+      setSteps(ks);
+      baseline.current = JSON.stringify([hs, ks.map(strip)]);
+      setMissingSource(false);
     },
     [client, tab.exchangeId, opts],
   );
 
   useEffect(() => {
-    reset().catch((e: Error) => setError(`Could not load the connection: ${e.message}`));
+    // After a restart the editor comes back with last session's draft, disconnected: nothing runs until Run.
+    const rec = tab.recovered?.kind === 'ws' ? tab.recovered : null;
+    const putBack = () => {
+      if (!rec) return;
+      setHandshake(rec.handshake);
+      setSteps((rec.steps as Array<WsScriptStep & { regions?: TextRegion[] }>).map((st) => keyed(st)));
+      setOpts((o) => ({ ...o, ...(rec.options as Partial<Options>) }));
+    };
+    reset().then(putBack, (e: Error) => {
+      if (rec) {
+        setMissingSource(true);
+        baseline.current = null;
+        putBack();
+      } else setError(`Could not load the connection: ${e.message}`);
+    });
     // Load once; the rebuild buttons call reset again with new options.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, tab.exchangeId]);
+
+  // Report the draft for recovery, and whether it differs from what was opened.
+  const draftKey = JSON.stringify([handshake, steps.map(({ key: _k, ...st }) => st), opts]);
+  useEffect(() => {
+    if (!handshake) return;
+    markDirty(tab.id, baseline.current === null || JSON.stringify([handshake, steps.map(strip)]) !== baseline.current);
+    const t = window.setTimeout(() => {
+      // Keep decoded regions with each step: they are what gets encoded again on send.
+      reportDraft(tab.id, { kind: 'ws', handshake, steps: steps.map(({ key: _k, ...st }) => st), options: opts as unknown as Record<string, unknown> });
+    }, 300);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.id, draftKey, reportDraft, markDirty]);
 
   useEffect(() => {
     client.framePresets().then(setPresets, () => undefined);
@@ -254,6 +293,19 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
     }
   }, [client, handshake, steps, runOptions, tab.exchangeId, loadSends, loadLive]);
 
+  const [saved, setSaved] = useState(tab.saved);
+  const saveToLibrary = async () => {
+    try {
+      const hs = parseHandshake(handshake);
+      const script: WsScript = { url: hs.url, headers: hs.headers, steps: await Promise.all(steps.map(toWire)) };
+      const r = await saveReproduction(client, { label: `WS ${tab.label}`, definition: { kind: 'ws', script }, exchangeId: tab.exchangeId || undefined, saved });
+      setSaved({ id: r.id, revision: r.revision });
+      notify(`Saved as "${r.name}", revision ${r.revision}. Rerun it from Replay, Saved.`);
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
   const sendQuick = async () => {
     if (!shownId || !quick) return;
     try {
@@ -308,12 +360,26 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
       e = t.step.payload.length;
     }
     let end = e;
-    const payload = t.step.payload;
-    sendToCodecs(unshow(payload.slice(s, e)), `WS Replay ${tab.label}`, (text, isLive) => {
-      const was = end;
-      end = s + show(text).length;
-      setSteps((cur) => cur.map((x) => (x.key === t.key && x.kind === 'send' ? { ...x, payload: x.payload.slice(0, s) + show(text) + x.payload.slice(was), regions: adjustForEdit(x.regions ?? [], s, was, show(text).length) } : x)));
-      if (!isLive) setView('replay');
+    let expect = t.step.payload.slice(s, e);
+    // Decoded in a panel inside this editor; writes stop if the message changed under it.
+    setDecoder({
+      text: unshow(expect),
+      label: `WS Replay ${tab.label}`,
+      nonce: Date.now(),
+      returnTo: (text) => {
+        const step = stepsRef.current.find((x) => x.key === t.key);
+        if (!step || step.kind !== 'send' || step.payload.slice(s, end) !== expect) {
+          notify('That message changed where the value was, so the decoder stopped writing into it. Copy the result instead, or decode it again.');
+          setDecoder(null);
+          return;
+        }
+        const was = end;
+        const shown = show(text);
+        end = s + shown.length;
+        expect = shown;
+        setSteps((cur) => cur.map((x) => (x.key === t.key && x.kind === 'send' ? { ...x, payload: x.payload.slice(0, s) + shown + x.payload.slice(was), regions: adjustForEdit(x.regions ?? [], s, was, shown.length) } : x)));
+        stepsRef.current = stepsRef.current.map((x) => (x.key === t.key && x.kind === 'send' ? { ...x, payload: x.payload.slice(0, s) + shown + x.payload.slice(was) } : x));
+      },
     });
   };
 
@@ -367,6 +433,9 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
         <button className="btn primary" onClick={() => void run()} disabled={running || !handshake} title="Open a new connection and run the steps (Ctrl Enter)">
           <Icon name="replay" size={13} /> {running ? 'Connecting...' : 'Run'}
         </button>
+        <button className="btn small" onClick={() => void saveToLibrary()} disabled={!handshake} title="Keep this conversation by name in Replay, Saved, to rerun later with checks">
+          {saved ? `Save (rev ${saved.revision + 1})` : 'Save'}
+        </button>
         <div className="segmented" role="group" aria-label="Sends">
           <button className="seg" aria-pressed={!shownId} onClick={() => setShownId(null)}>
             Original
@@ -388,16 +457,16 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
         <button className="btn small" onClick={() => void decodeInline()} title="Show the selection, or the value under the caret, decoded in place in the message being edited. It is encoded again when the script runs. Ctrl D">
           Decode
         </button>
-        <button className="btn small" onClick={decodeSelection} title="Open the selection (or the message being edited) in Codecs, then put the result back. Ctrl Shift D">
-          Open in Codecs
+        <button className="btn small" onClick={decodeSelection} title="Open the selection (or the message being edited) in Decode, then put the result back. Ctrl Shift D">
+          Open in Decode
         </button>
         <button
           className="btn small"
-          title="Pause messages on connections to this URL so you can edit or drop them (Rules, Breakpoints)"
+          title="Pause messages on connections to this URL so you can edit or drop them (Overrides, Breakpoints)"
           onClick={() =>
             original &&
             breakOnMessages(client, original).then(
-              () => notify('Messages on this URL will pause in Rules, Breakpoints. Traffic through the proxy waits there for you.'),
+              () => notify('Messages on this URL will pause in Overrides, Breakpoints. Traffic through the proxy waits there for you.'),
               (e: Error) => notify(e.message),
             )
           }
@@ -414,7 +483,7 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
             setView('history');
           }}
         >
-          All runs in History
+          All runs in Traffic
         </button>
       </div>
       <div className="replay-options" aria-label="Run options">
@@ -454,6 +523,11 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
         <span style={{ flex: 1 }} />
         <TokenPicker onPick={insertToken} />
       </div>
+      {missingSource && (
+        <div className="banner" role="status" data-testid="missing-source" style={{ margin: 8 }}>
+          The recorded connection this draft came from is no longer in the project. The draft is kept as it was; Run opens a new connection with it.
+        </div>
+      )}
       {error && (
         <div className="banner" role="alert" style={{ margin: 8 }}>
           {error}
@@ -530,8 +604,8 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
             )}
             {shownSummary && (
               <>
-                <button className="btn small" onClick={() => openStream(shownSummary.id)} title="Open this connection in Streams for exact frames and presets">
-                  Open in Streams
+                <button className="btn small" onClick={() => openStream(shownSummary.id)} title="Open this connection in Live connections for exact frames and presets">
+                  Open in Live connections
                 </button>
                 <button
                   className="btn small"
@@ -540,7 +614,7 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
                     setView('history');
                   }}
                 >
-                  Show in History
+                  Show in Traffic
                 </button>
               </>
             )}
@@ -570,6 +644,11 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
         </section>
       </div>
       {steps.length === 0 && !original && <div className="faint" style={{ padding: 12 }}>Loading...</div>}
+      {decoder && (
+        <div className="doc-decoder">
+          <Codecs embedded input={decoder} onClose={() => setDecoder(null)} />
+        </div>
+      )}
     </div>
   );
 }

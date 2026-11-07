@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 // Building requests: curl import, structured params and headers with nested decoding, multipart with files, OAuth.
 const SHOTS = process.env.SIQ_SCREENSHOTS;
@@ -80,6 +80,7 @@ describe.skipIf(!ready)('Request building in Replay', () => {
   -F 'title=hello there' \\
   -F 'pic=@/home/me/pic.png' \\
   --compressed -k`;
+    await navTo(page, 'Replay');
     await page.getByRole('button', { name: 'New request', exact: true }).click();
     await page.getByLabel('curl command for the new request', { exact: true }).fill(cmd);
     await page.getByRole('dialog', { name: 'New request' }).getByRole('button', { name: 'Open in Replay' }).click();
@@ -138,6 +139,7 @@ describe.skipIf(!ready)('Request building in Replay', () => {
   });
 
   it('pasting curl into the raw editor imports it, with undo', async () => {
+    await navTo(page, 'Replay');
     await page.getByRole('button', { name: 'New request', exact: true }).click();
     await page.getByRole('dialog', { name: 'New request' }).getByRole('button', { name: 'Blank request' }).click();
     const editor = tab().getByLabel('Raw request', { exact: true });
@@ -159,6 +161,7 @@ describe.skipIf(!ready)('Request building in Replay', () => {
   });
 
   it('sets up an OAuth profile in Auth, gets a token, and sends it as {{oauth:name}}', async () => {
+    await navTo(page, 'Replay');
     await page.getByRole('button', { name: 'New request', exact: true }).click();
     await page.getByLabel('curl command for the new request', { exact: true }).fill(`curl http://127.0.0.1:${h.upstreamPort}/api/secure`);
     await page.getByRole('dialog', { name: 'New request' }).getByRole('button', { name: 'Open in Replay' }).click();

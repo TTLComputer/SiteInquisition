@@ -103,6 +103,28 @@ export interface StreamMessage {
   meta?: Record<string, unknown> | null;
 }
 
+/**
+ * One thing an override did to an exchange: which rule, at which point, and
+ * what changed. Before and after are excerpts, never whole bodies.
+ */
+export interface Transform {
+  phase: 'request' | 'response' | 'message';
+  kind: 'mock' | 'replace' | 'breakpoint' | 'hook' | 'token';
+  /** The rule, mock, breakpoint or script id, when there is one. */
+  ruleId?: string;
+  name: string;
+  /** The rule's definition hash when it ran, so a later edit to the rule does not rewrite history. */
+  revision?: string;
+  outcome: 'changed' | 'answered' | 'paused' | 'edited' | 'dropped' | 'forwarded';
+  /** What it acted on: "url", "header x-y", "body", "status". */
+  target?: string;
+  before?: string;
+  after?: string;
+  /** True when before/after were cut to fit. */
+  truncated?: boolean;
+  at: number;
+}
+
 export interface Change {
   id: string;
   actor: string;
@@ -251,6 +273,13 @@ CREATE TABLE IF NOT EXISTS exchange_error (
   PRIMARY KEY (exchange_id, sig)
 );
 CREATE INDEX IF NOT EXISTS exchange_error_kind ON exchange_error(kind);
+-- What overrides did to an exchange, in the order they ran. Added without a schema bump: older builds ignore it.
+CREATE TABLE IF NOT EXISTS exchange_transform (
+  exchange_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (exchange_id, seq)
+);
 -- Searchable text, per side. Trigrams match any part of a word (ids, tokens, "csrf_tok"), case-insensitively.
 CREATE VIRTUAL TABLE IF NOT EXISTS exchange_text USING fts5(
   exchange_id UNINDEXED, url, req_headers, req_body, res_headers, res_body, tokenize = 'trigram'
@@ -822,6 +851,22 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
    * rows and their change-log entries. Redirect children are kept and
    * unlinked. Returns how many were deleted.
    */
+  /** Record what overrides did to an exchange, after what is already recorded. */
+  addTransforms(exchangeId: string, list: Transform[]): void {
+    if (!list.length) return;
+    this.tx(() => {
+      const row = this.q('SELECT MAX(seq) AS n FROM exchange_transform WHERE exchange_id = ?').get(exchangeId) as { n: number | null } | undefined;
+      let seq = (row?.n ?? -1) + 1;
+      const ins = this.q('INSERT INTO exchange_transform (exchange_id, seq, data) VALUES (?, ?, ?)');
+      for (const t of list) ins.run(exchangeId, seq++, JSON.stringify(t));
+    });
+  }
+
+  /** What overrides did to an exchange, in order. */
+  transforms(exchangeId: string): Transform[] {
+    return (this.q('SELECT data FROM exchange_transform WHERE exchange_id = ? ORDER BY seq').all(exchangeId) as Array<{ data: string }>).map((r) => JSON.parse(r.data) as Transform);
+  }
+
   deleteExchanges(ids: string[]): number {
     const unique = [...new Set(ids)];
     if (!unique.length) return 0;
@@ -834,6 +879,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
         this.db.prepare(`DELETE FROM stream_message WHERE stream_id IN (SELECT id FROM stream WHERE exchange_id IN (${marks}))`).run(...part);
         this.db.prepare(`DELETE FROM stream WHERE exchange_id IN (${marks})`).run(...part);
         this.db.prepare(`DELETE FROM exchange_error WHERE exchange_id IN (${marks})`).run(...part);
+        this.db.prepare(`DELETE FROM exchange_transform WHERE exchange_id IN (${marks})`).run(...part);
         this.db.prepare(`DELETE FROM exchange_text WHERE exchange_id IN (${marks})`).run(...part);
         this.db.prepare(`DELETE FROM change WHERE entity = 'exchange' AND entity_id IN (${marks})`).run(...part);
         deleted += Number(this.db.prepare(`DELETE FROM exchange WHERE id IN (${marks})`).run(...part).changes);

@@ -190,7 +190,7 @@ function DecodedEditor({ d, onChange, label }: { d: DecodedValue; onChange(v: st
       )}
       <div className="faint rb-note">
         {chainLabel(d)}
-        {d.chain.includes('jwt') ? '. The signature is kept as it was; re-sign it in Codecs if the server checks it.' : ''}
+        {d.chain.includes('jwt') ? '. The signature is kept as it was; re-sign it in Decode if the server checks it.' : ''}
         {nested ? `. ${nested}` : ''}
       </div>
       {error && <div className="error-text rb-note">{error}</div>}

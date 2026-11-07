@@ -51,7 +51,7 @@ export function Macros() {
     }
   };
   const addSelected = async (m: MacroDraft) => {
-    if (!selectedId) return notify('Select the login request in History first.');
+    if (!selectedId) return notify('Select the login request in Traffic first.');
     const ex = await client.get(selectedId);
     const body = ex.reqBodySize ? await bodyText(client, ex.id, 'request').catch(() => '') : '';
     const headers = ex.requestHeaders.filter(([h]) => h.toLowerCase() !== 'cookie');
@@ -78,7 +78,7 @@ export function Macros() {
         </button>
       </div>
       <div className="faint" style={{ padding: '6px 12px', fontSize: 12 }}>
-        A macro is the requests that log you in. Replays with &quot;Log in on 401/403&quot; run it when the host answers with one of its statuses, then send again with the new cookies and variables. Steps get fresh cookies from the jar; use {'{{var:...}}'} for CSRF tokens.
+        Setup is what runs before the request you care about. A <b>setup flow</b> (Replay, Flows) runs first every time when a session profile names it. A <b>login macro</b> below is the requests that log you in again: replays with &quot;Log in on 401/403&quot; run it when the host answers with one of its statuses, then send once more with the new cookies and variables. Steps get fresh cookies from the jar; use {'{{var:...}}'} for CSRF tokens.
       </div>
       {list.length === 0 && <div className="empty">No login macros. Add one, then add the login request from History as its first step.</div>}
       {list.map((m) => (
@@ -91,7 +91,7 @@ export function Macros() {
               on
               <input className="input mono" value={m.statusesText} onChange={(e) => set(m.key, { statusesText: e.target.value })} style={{ width: 90 }} aria-label="Statuses" />
             </label>
-            <button className="btn small" onClick={() => void addSelected(m)} title="Add the request selected in History as a step">
+            <button className="btn small" onClick={() => void addSelected(m)} title="Add the request selected in Traffic as a step">
               Add selected request
             </button>
             <button

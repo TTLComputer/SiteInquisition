@@ -76,7 +76,7 @@ export async function saveAsRule(client: Client, d: Decoded, r: TextRegion, ctx:
   const last = add[add.length - 1]!;
   return {
     regions: d.regions.map((x) => (ids.get(x.id) ? { ...x, rule: ids.get(x.id) } : x)),
-    message: `${last.field} (${regionLabel(r)}) is decoded on ${host} from now on. Edit it in Codecs, Field codecs.`,
+    message: `${last.field} (${regionLabel(r)}) is decoded on ${host} from now on. Edit it in Advanced tools, Decode, Field codecs.`,
   };
 }
 
@@ -172,7 +172,7 @@ function RegionActions({ r, d, save, onChange, editable, done }: { r: TextRegion
       <button
         role="menuitem"
         className="btn small"
-        title="Open the encoded value in Codecs, with every layer"
+        title="Open the encoded value in Decode, with every layer"
         onClick={run(async () => sendToCodecs(r.original.startsWith('"') && r.wrap === 'jsonstr' ? (JSON.parse(r.original) as string) : r.original, `decoded ${regionLabel(r)}`))}
       >
         Codecs
@@ -232,7 +232,7 @@ function DecodeChip({ rect, preview, onDecode, onCodecs, onClose }: { rect: DOMR
           <button className="btn small" onClick={() => setAsText(preview ?? '')} title="Pick the codec chain yourself, e.g. url>base64>json">
             Decode as…
           </button>
-          <button className="btn small" onClick={onCodecs} title="Open the selection in Codecs (Ctrl Shift D)">
+          <button className="btn small" onClick={onCodecs} title="Open the selection in Decode (Ctrl Shift D)">
             Codecs
           </button>
         </>

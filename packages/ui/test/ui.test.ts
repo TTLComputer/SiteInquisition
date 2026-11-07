@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 // Drives the built renderer in Chromium against a real core. Needs `pnpm build`
 // first and a Chromium or Chrome (see findChromium); skipped when either is missing.
@@ -85,11 +85,19 @@ describe.skipIf(!ready)('renderer against a real core', () => {
   });
 
   it('keeps replay edits when switching tabs and closes tabs', async () => {
-    await page.getByRole('tab', { name: 'History' }).click();
+    await navTo(page, 'History');
+    await navTo(page, 'Replay');
     await page.getByRole('tab', { name: /apply-coupon/ }).click();
     expect(await page.getByLabel('Raw request').inputValue()).toContain('SAVE99');
+    // It was edited, so closing asks first; keeping it changes nothing.
     await page.getByRole('button', { name: /Close replay/ }).click();
+    const ask = page.getByRole('dialog', { name: /Close apply-coupon/ });
+    await ask.getByRole('button', { name: 'Keep editing' }).click();
+    expect(await page.getByRole('tab', { name: /apply-coupon/ }).count()).toBe(1);
+    await page.getByRole('button', { name: /Close replay/ }).click();
+    await ask.getByRole('button', { name: 'Discard and close' }).click();
     expect(await page.getByRole('tab', { name: /apply-coupon/ }).count()).toBe(0);
+    await navTo(page, 'History');
   });
 
   it('resends from the row menu without opening the editor', async () => {
@@ -101,7 +109,7 @@ describe.skipIf(!ready)('renderer against a real core', () => {
   });
 
   it('adds a seen host to the scope', async () => {
-    await page.getByRole('button', { name: 'Rules' }).click();
+    await navTo(page, 'Project settings', 'Capture scope');
     await expect.poll(() => page.getByTestId('scope-rule').count()).toBe(1);
     await expect.poll(() => page.getByTestId('seen-host').count()).toBeGreaterThan(0);
     await shot('rules');
@@ -112,7 +120,7 @@ describe.skipIf(!ready)('renderer against a real core', () => {
   });
 
   it('draws the timeline and turns a dragged range into a History filter', async () => {
-    await page.getByRole('button', { name: 'Timeline' }).click();
+    await navTo(page, 'Timeline');
     await expect.poll(() => page.getByTestId('tl-lane').count()).toBeGreaterThan(0);
     expect(await page.locator('.tl-bar').count()).toBeGreaterThanOrEqual(5);
     await page.getByRole('group', { name: 'Group by' }).getByRole('button', { name: 'Flow' }).click();
@@ -128,7 +136,7 @@ describe.skipIf(!ready)('renderer against a real core', () => {
   });
 
   it('shows the cookie jar with decoded hints and links to the response that set it', async () => {
-    await page.getByRole('button', { name: 'Cookies' }).click();
+    await navTo(page, 'Cookies');
     await expect.poll(() => page.getByTestId('cookie-row').count()).toBe(2);
     const session = page.locator('[data-testid=cookie-row][data-name=session]');
     expect(await session.textContent()).toContain('base64 › json');
@@ -143,30 +151,30 @@ describe.skipIf(!ready)('renderer against a real core', () => {
     await session.locator('.pill').first().click();
     await expect.poll(() => page.getByLabel('Inspector', { exact: true }).textContent()).toContain('/api/cart');
     // Decode opens the value in Codecs with its layers already detected.
-    await page.getByRole('button', { name: 'Cookies' }).click();
+    await navTo(page, 'Cookies');
     await page.locator('[data-testid=cookie-row][data-name=session]').getByRole('button', { name: 'Decode', exact: true }).click();
     await expect.poll(() => page.getByLabel('Codec chain').locator('.chain-step').allTextContents()).toEqual(['base64›', 'json']);
     expect(await page.getByLabel('Codec input').inputValue()).not.toBe('');
     await expect.poll(() => page.getByLabel('Decoded value').inputValue()).toContain('nick');
-    await page.getByRole('button', { name: 'History' }).first().click();
+    await navTo(page, 'History');
     await page.locator('.row', { hasText: '/api/cart' }).first().click();
     await expect.poll(() => page.getByLabel('Inspector', { exact: true }).textContent()).toContain('/api/cart');
   });
 
   it('explains the built-in browser outside the desktop app', async () => {
-    await page.getByRole('button', { name: 'Browser' }).click();
+    await navTo(page, 'Browser');
     expect(await page.getByText('The built-in browser runs in the desktop app').count()).toBe(1);
   });
 
   it('shows settings and switches theme', async () => {
-    await page.getByRole('button', { name: 'Settings' }).click();
+    await navTo(page, 'Settings');
     await expect.poll(() => page.getByText(`127.0.0.1:${h.proxyPort}`).count()).toBeGreaterThan(0);
     await page.getByRole('tab', { name: 'Appearance' }).click();
     await page.getByRole('radio', { name: 'Light' }).click();
     expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe('light');
-    await page.getByRole('button', { name: 'History' }).click();
+    await navTo(page, 'History');
     await shot('history-light');
-    await page.getByRole('button', { name: 'Settings' }).click();
+    await navTo(page, 'Settings');
     await page.getByRole('tab', { name: 'Appearance' }).click();
     await page.getByRole('radio', { name: 'Follow system' }).click();
   });

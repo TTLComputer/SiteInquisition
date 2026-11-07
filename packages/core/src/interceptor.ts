@@ -1165,7 +1165,7 @@ export class Interceptor extends EventEmitter<InterceptorEvents> {
       if (finished) return;
       if (!res.headersSent) {
         res.statusCode = 502;
-        res.end(`SiteInquisition could not reach ${target.host}:${target.port}: ${err.message}${CERT_REFUSED.test(`${(err as NodeJS.ErrnoException).code ?? ''} ${err.message}`) ? '\n\nThe server\'s certificate is not trusted (dev servers often use self-signed ones). Trust it or skip checks for this host in SiteInquisition, Settings, Server certificates, or from this request in History.' : ''}`);
+        res.end(`SiteInquisition could not reach ${target.host}:${target.port}: ${err.message}${CERT_REFUSED.test(`${(err as NodeJS.ErrnoException).code ?? ''} ${err.message}`) ? '\n\nThe server\'s certificate is not trusted (dev servers often use self-signed ones). Trust it or skip checks for this host in SiteInquisition, Project settings, Server certificates, or from this request in Traffic.' : ''}`);
       } else res.destroy();
       abort('error', err.message);
     });

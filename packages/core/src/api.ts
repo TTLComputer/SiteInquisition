@@ -75,6 +75,14 @@ const str = (p: Record<string, unknown>, k: string, required = true): string | u
   if (typeof v !== 'string') throw new RpcError(-32602, `param "${k}" must be a string`);
   return v;
 };
+/** Run fn; a validation error becomes an invalid-params reply with its message. */
+const bad = <T>(fn: () => T): T => {
+  try {
+    return fn();
+  } catch (e) {
+    throw new RpcError(-32602, (e as Error).message);
+  }
+};
 const arr = (p: Record<string, unknown>, k: string): unknown[] => {
   const v = p[k];
   if (!Array.isArray(v)) throw new RpcError(-32602, `param "${k}" must be an array`);
@@ -364,6 +372,23 @@ export class CoreApiServer {
       'rules.test': (p) => core.tools.testRule(p.rule as never, str(p, 'exchangeId')!),
       'mocks.set': (p) => core.tools.setMocks(arr(p, 'mocks') as never),
       'breakpoints.set': (p) => core.tools.setBreakpoints(arr(p, 'breakpoints') as never),
+      'overrides.state': () => core.tools.overrides.state(),
+      'overrides.suspend': (p) => core.tools.overrides.setSuspended(p.suspended === true),
+      'overrides.setGroups': (p) => {
+        try {
+          return core.tools.overrides.setGroups(arr(p, 'groups') as never);
+        } catch (e) {
+          throw new RpcError(-32602, (e as Error).message);
+        }
+      },
+      'overrides.applyGroup': (p) => {
+        try {
+          return core.tools.overrides.applyGroup(str(p, 'id')!, p.on === true, { dryRun: p.dryRun === true });
+        } catch (e) {
+          throw new RpcError(-32602, (e as Error).message);
+        }
+      },
+      'traffic.transforms': (p) => store.transforms(str(p, 'id')!),
       'intercept.list': () => core.tools.intercept.list(),
       'intercept.resolve': (p) => core.tools.intercept.resolve(str(p, 'id')!, { action: (p.action as never) ?? 'forward', edits: p.edits as never }),
       'intercept.releaseAll': () => core.tools.intercept.releaseAll(),
@@ -442,6 +467,31 @@ export class CoreApiServer {
       'flows.toTest': (p) => core.tools.flowToTest(str(p, 'name')!),
       'notes.endpoints': () => core.tools.endpointNotes(),
       'notes.setEndpoint': (p) => core.tools.setEndpointNote(str(p, 'key')!, str(p, 'notes', false) ?? '', (p.tags as string[]) ?? []),
+      'repro.list': () => core.tools.repros.list(),
+      'repro.save': (p) => bad(() => core.tools.repros.save(p.reproduction as never, num(p, 'baseRevision'))),
+      'repro.remove': (p) => (core.tools.repros.remove(str(p, 'id')!), true),
+      'repro.revision': (p) => core.tools.repros.revisionOf(str(p, 'id')!, num(p, 'revision')!),
+      'repro.promote': (p) => bad(() => core.tools.repros.promoteToFlow(str(p, 'id')!)),
+      'repro.effective': (p) => bad(() => core.tools.repros.effective(str(p, 'id')!, { profile: str(p, 'profile', false), inputs: p.inputs as never })),
+      'repro.run': (p) => core.tools.repros.run(str(p, 'id')!, { inputs: (p.inputs as never) ?? {}, profile: str(p, 'profile', false), ignoreTlsErrors: p.ignoreTlsErrors === true }),
+      'repro.runs': (p) => core.tools.repros.runs(str(p, 'id', false)),
+      'repro.cancel': (p) => core.tools.repros.cancel(str(p, 'runId')!),
+      'profiles.get': () => core.tools.repros.profiles(),
+      'profiles.set': (p) => bad(() => core.tools.repros.setProfiles(arr(p, 'profiles') as never)),
+      'endpoint.get': (p) => {
+        try {
+          return core.tools.endpoint(str(p, 'key')!);
+        } catch (e) {
+          throw new RpcError(-32602, (e as Error).message);
+        }
+      },
+      'endpoint.alias': (p) => {
+        try {
+          return core.tools.setEndpointAlias(str(p, 'from')!, p.to === null ? null : str(p, 'to')!);
+        } catch (e) {
+          throw new RpcError(-32602, (e as Error).message);
+        }
+      },
       'notes.forExchange': (p) => core.tools.noteFor(str(p, 'id')!),
       'macros.get': () => core.tools.macros(),
       'macros.set': (p) => core.tools.setMacros(arr(p, 'macros') as never),
@@ -572,6 +622,14 @@ export class CoreApiServer {
       'mcp.decide': (p) => core.tools.mcp.decide(str(p, 'id')!, p.decision as never),
       'mcp.activity': () => core.tools.mcp.activity.slice(-200),
       'replay.history': (p) => store.search(`replayof:${JSON.stringify(str(p, 'of')!)}`, { limit: num(p, 'limit') ?? 100 }),
+      'workspace.get': () => core.workspace.get(),
+      'workspace.set': (p) => {
+        try {
+          return core.workspace.set(p.snapshot as never);
+        } catch (e) {
+          throw new RpcError(-32602, (e as Error).message);
+        }
+      },
       'views.get': () => store.getMeta<SavedView[]>('savedViews') ?? DEFAULT_VIEWS,
       'views.set': (p) => {
         const views = p.views;

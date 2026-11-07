@@ -32,7 +32,7 @@ errors.map((e) => e.method + ' ' + e.path);
 };
 
 const SDK_HELP = [
-  ['siq.search(query, limit)', 'exchanges matching a History filter'],
+  ['siq.search(query, limit)', 'exchanges matching a Traffic filter'],
   ['siq.get(id)', 'one exchange with headers'],
   ['siq.body(id, side)', 'decoded body as text'],
   ['siq.json(id, side)', 'decoded body parsed as JSON'],
@@ -153,7 +153,8 @@ function Console() {
   );
 }
 
-export function Scripts() {
+/** The script editor. Overrides > Live hooks shows it with only hooks; Advanced tools > Script console shows everything. */
+export function Scripts({ only }: { only?: Script['kind'] } = {}) {
   const { client, notify } = useApp();
   const [scripts, setScripts] = useState<Script[]>([]);
   const [stats, setStats] = useState<Record<string, ScriptStats>>({});
@@ -183,7 +184,8 @@ export function Scripts() {
     return () => window.clearInterval(t);
   }, [load]);
 
-  const cur = scripts.find((s) => s.id === sel);
+  const shown = only ? scripts.filter((s) => s.kind === only) : scripts;
+  const cur = shown.find((s) => s.id === sel);
   useEffect(() => {
     if (cur && !dirty) setCode(cur.code);
   }, [cur, dirty]);
@@ -234,15 +236,23 @@ export function Scripts() {
             <button className="btn small" onClick={() => void add('hook')} title="Runs on live traffic">
               <Icon name="plus" size={11} /> Hook
             </button>
-            <button className="btn small" onClick={() => void add('test')}>
-              <Icon name="plus" size={11} /> Tests
-            </button>
-            <button className="btn small" onClick={() => void add('script')}>
-              <Icon name="plus" size={11} /> Script
-            </button>
+            {!only && (
+              <>
+                <button className="btn small" onClick={() => void add('test')}>
+                  <Icon name="plus" size={11} /> Tests
+                </button>
+                <button className="btn small" onClick={() => void add('script')}>
+                  <Icon name="plus" size={11} /> Script
+                </button>
+              </>
+            )}
           </div>
-          {scripts.length === 0 && <div className="faint" style={{ fontSize: 12 }}>No scripts yet. A hook changes live traffic; tests and scripts run when you press Run.</div>}
-          {scripts.map((s) => {
+          {shown.length === 0 && (
+            <div className="faint" style={{ fontSize: 12 }}>
+              {only === 'hook' ? 'No live hooks yet. A hook runs on every request and response in scope and can change them.' : 'No scripts yet. A hook changes live traffic; tests and scripts run when you press Run.'}
+            </div>
+          )}
+          {shown.map((s) => {
             const st = stats[s.id];
             return (
               <button

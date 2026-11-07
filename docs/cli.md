@@ -15,6 +15,16 @@ siq search host:api.example.com status:>=400
 siq show <exchange-id>
 ```
 
+## Saved reproductions
+
+```sh
+siq repro                                        # saved reproductions and how each last run went
+siq repro run "apply coupon"                     # run one; exit code 1 unless it passes
+siq repro run "apply coupon" --profile staging --input code=SAVE99
+```
+
+`run` uses the running app or `siq proxy` when there is one (so the run shows in the app), and otherwise opens the project itself. It prints the run's state, the revision it ran, each check, and the exchanges it sent. Agents get the same through the `list_reproductions` and `run_reproduction` MCP tools.
+
 ## Desktop app options
 
 ```sh
@@ -59,7 +69,7 @@ siq clear --yes                          # delete all recorded traffic (scope, r
 siq prune --older-than 30 --max-size 2000 --keep   # delete now, and keep doing it every hour
 ```
 
-In the app: right-click a row (or press Delete), *Delete matching* in History, and Settings, Storage.
+In the app: right-click a row (or press Delete), *Delete matching* in Traffic, Requests, and Project settings, Storage.
 
 ## Search syntax
 

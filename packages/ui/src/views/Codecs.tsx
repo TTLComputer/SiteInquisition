@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { bulk, formatPath, query, setAt, type BulkOp, type PathSeg } from '@siteinquisition/codecs/jsonpath';
 import { base64ToBytes, type NestedField, type SavedChain } from '../api';
-import { useApp } from '../state';
+import { type CodecInput, useApp } from '../state';
 import { Icon } from '../components/icons';
 import { FieldCodecRules } from './FieldCodecs';
 import { asText, hexDump } from '../format';
@@ -70,8 +70,11 @@ function JsonTree({ value, path, onPick, onDecode, depth = 0 }: TreeProps) {
  * and re-encode. Input can come from any screen (Ctrl D, "Decode" buttons)
  * and the result can go back where it came from or out to a replay.
  */
-export function Codecs() {
-  const { client, codecInput, notify, openDraft } = useApp();
+export function Codecs({ input: given, embedded, onClose }: { input?: CodecInput | null; embedded?: boolean; onClose?(): void } = {}) {
+  const app = useApp();
+  const { client, notify, openDraft } = app;
+  // Embedded in an editor, the workbench works on what that editor handed it; on its own page, on what was sent to Decode.
+  const codecInput = embedded ? (given ?? null) : app.codecInput;
   const [input, setInput] = useState('');
   const [label, setLabel] = useState('');
   const [returnTo, setReturnTo] = useState<((text: string, live?: boolean) => void) | null>(null);
@@ -374,7 +377,17 @@ export function Codecs() {
   const sourceSynced = !!returnTo && sync;
 
   return (
-    <div className="page codecs">
+    <div className={embedded ? 'codecs embedded' : 'page codecs'} aria-label={embedded ? 'Decoder' : undefined}>
+      {embedded && (
+        <div className="sec-head doc-decoder-head">
+          <b style={{ color: 'var(--text)' }}>Decoding {label}</b>
+          <span className="faint">Edits are encoded through every layer and written back into this editor.</span>
+          <span style={{ flex: 1 }} />
+          <button className="btn small" onClick={onClose} aria-label="Close the decoder">
+            Close
+          </button>
+        </div>
+      )}
       <div className="codecs-grid">
         <section className="card codec-input">
           <div className="sec-head">
@@ -628,7 +641,7 @@ export function Codecs() {
                 <input type="checkbox" checked={sync} onChange={(e) => setSync(e.target.checked)} /> Keep {label} updated
               </label>
             )}
-            {returnTo && (
+            {returnTo && !embedded && (
               <button
                 className="btn small"
                 disabled={result === null}
@@ -649,7 +662,7 @@ export function Codecs() {
           </pre>
         </section>
       </div>
-      <FieldCodecRules draft={ruleDraft} onDraftDone={() => setRuleDraft(null)} />
+      {!embedded && <FieldCodecRules draft={ruleDraft} onDraftDone={() => setRuleDraft(null)} />}
     </div>
   );
 }

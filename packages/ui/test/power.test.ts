@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
 import { H3Server, leafIssuer, readRuntimeInfo } from '@siteinquisition/core';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 // The power tools, driven through the built renderer against a real core.
 const SHOTS = process.env.SIQ_SCREENSHOTS;
@@ -19,7 +19,7 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
     mkdirSync(SHOTS, { recursive: true });
     await page.screenshot({ path: join(SHOTS, `${name}.png`) });
   };
-  const nav = (name: string) => page.getByRole('navigation', { name: 'Views' }).getByRole('button', { name, exact: false }).first().click();
+  const nav = (name: string, sub?: string) => navTo(page, name, sub);
 
   beforeAll(async () => {
     h = await startHarness();
@@ -74,8 +74,7 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
   });
 
   it('shows endpoint coverage with parameters, and links back to the calls', async () => {
-    await page.getByRole('tab', { name: 'History' }).click();
-    await page.getByRole('group', { name: 'History mode' }).getByRole('button', { name: 'Coverage' }).click();
+    await nav('Explore API', 'Endpoints');
     const table = page.locator('.coverage-table');
     await expect.poll(() => table.textContent()).toContain('/api/apply-coupon');
     const post = table.locator('tr', { hasText: '/api/apply-coupon' });

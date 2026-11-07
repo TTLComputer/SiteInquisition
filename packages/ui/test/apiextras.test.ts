@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 // The approved API extras in the renderer: contract strip, compare, auth matrix,
 // negative tests, resources, glossary, endpoint notes, GraphQL, exports.
@@ -74,10 +74,10 @@ describe.skipIf(!ready)('API extras in the renderer', () => {
     mkdirSync(SHOTS, { recursive: true });
     await page.screenshot({ path: join(SHOTS, `${name}.png`) });
   };
-  const nav = (name: string) => page.getByRole('navigation', { name: 'Views' }).getByRole('button', { name, exact: false }).first().click();
-  const apiTab = async (name: string | RegExp) => {
-    await nav('API');
-    await page.getByRole('tablist', { name: 'API' }).getByRole('tab', { name }).click();
+  const nav = (name: string, sub?: string) => navTo(page, name, sub);
+  const apiTab = async (name: string) => {
+    const [area, tab] = name === 'Flows' || name === 'Compare' || name === 'Auth and negative tests' ? ['Replay', name] : ['Explore API', name === 'Glossary' ? 'Fields' : name];
+    await nav(area!, tab);
   };
   /** The row for "METHOD path" (a method cell and the path). */
   const row = (method: string, path: string) => page.locator('.row', { hasText: path }).filter({ hasText: `${method}127.0.0.1` }).first();
@@ -233,7 +233,7 @@ describe.skipIf(!ready)('API extras in the renderer', () => {
     await page.getByRole('button', { name: 'Export HAR' }).click();
     await expect.poll(() => page.getByRole('status').textContent()).toMatch(/Exported \d+ requests as HAR/);
     h.core.tools.saveFlow({ name: 'list-orders', steps: [{ kind: 'request', method: 'GET', url: `${base}/api/orders`, headers: [], expect: '2xx', extract: [{ name: 'order_id', from: '$.path' }] }] } as never);
-    await apiTab(/Flows/);
+    await apiTab('Flows');
     await page.locator('.saved-view', { hasText: 'list-orders' }).click();
     await page.getByRole('button', { name: 'Make test' }).click();
     await expect.poll(() => h.core.tools.scriptList().some((s) => s.name === 'test list-orders')).toBe(true);

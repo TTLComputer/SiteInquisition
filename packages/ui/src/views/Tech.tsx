@@ -103,7 +103,7 @@ export function TechPanel({ ex }: { ex: ExchangeDetail }) {
   const runCheck = async (t: EffectiveTech, index: number) => {
     try {
       const res = await client.techCheck(ex.host + (ex.port && ![80, 443].includes(ex.port) ? `:${ex.port}` : ''), t.id, index, ex.scheme === 'http' ? 'http' : 'https');
-      notify(`Check sent: ${res.status ?? res.state}. It is in History, tagged "check".`);
+      notify(`Check sent: ${res.status ?? res.state}. It is in Traffic, tagged "check".`);
       select(res.id);
     } catch (e) {
       notify((e as Error).message);
@@ -122,7 +122,7 @@ export function TechPanel({ ex }: { ex: ExchangeDetail }) {
           <b style={{ color: 'var(--text)' }}>{host.host} runs on</b>
           <span className="faint">Read from captured traffic only. Correct anything that is wrong.</span>
         </div>
-        {host.tech.length === 0 && <div className="faint tech-note">Nothing recognized yet. Pin what you know below, or add a signature in Settings › Technologies.</div>}
+        {host.tech.length === 0 && <div className="faint tech-note">Nothing recognized yet. Pin what you know below, or add a signature in Project settings › Technologies.</div>}
         <ul className="tech-list">
           {host.tech.map((t) => (
             <li key={t.id} data-testid="tech-row">
@@ -395,7 +395,7 @@ const SIG_EXAMPLE = `[
   }
 ]`;
 
-/** Settings › Technologies: overrides, signatures on and off, custom signatures, rescans. */
+/** Project settings › Technologies: overrides, signatures on and off, custom signatures, rescans. */
 export function TechSettings() {
   const { client, notify } = useApp();
   const [overrides, setOverrides] = useState<TechOverride[]>([]);

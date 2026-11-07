@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devk
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
 import { placeMenu } from '../src/components/placement';
 import { generateSelfSigned } from '../../core/src/x509';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 describe('placeMenu', () => {
   const vp = { width: 800, height: 600 };
@@ -72,7 +72,7 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     mkdirSync(SHOTS, { recursive: true });
     await page.screenshot({ path: join(SHOTS, `${name}.png`) });
   };
-  const nav = (name: string) => page.getByRole('navigation', { name: 'Views' }).getByRole('button', { name, exact: false }).first().click();
+  const nav = (name: string, sub?: string) => navTo(page, name, sub);
   const inViewport = async (selector: string) => {
     const box = (await page.locator(selector).boundingBox())!;
     const vp = await page.evaluate(() => ({ width: (globalThis as any).innerWidth as number, height: (globalThis as any).innerHeight as number }));
@@ -103,8 +103,7 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
   });
 
   it('glossary entries expand and lead to the requests behind them', async () => {
-    await nav('API');
-    await page.getByRole('tab', { name: 'Glossary' }).click();
+    await nav('Explore API', 'Fields');
     const row = page.locator('[data-testid=glossary-row][data-field=path]');
     await row.waitFor();
     const more = row.getByRole('button', { name: /^\+\d+ more$/ });
@@ -117,8 +116,7 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     await row.getByRole('button', { name: /GET \/api\/stock \$\.path/ }).click();
     await expect.poll(() => page.locator('.inspector').textContent()).toContain('/api/stock');
     // The count opens every request that carried the field, as a History search.
-    await nav('API');
-    await page.getByRole('tab', { name: 'Glossary' }).click();
+    await nav('Explore API', 'Fields');
     await page.locator('[data-testid=glossary-row][data-field=path]').getByRole('button', { name: /distinct/ }).click();
     await expect.poll(() => page.locator('#filter-input').inputValue()).toMatch(/^id:/);
     await expect.poll(() => page.locator('.row').count()).toBeGreaterThanOrEqual(5);
@@ -207,14 +205,16 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     await page.keyboard.press('Control+r');
     const tab = page.locator('.tab-host').last();
     await expect.poll(() => tab.getByLabel('Raw request').inputValue()).toContain(value);
-    await tab.getByRole('button', { name: 'Open in Codecs' }).click();
+    await tab.getByRole('button', { name: 'Open in Decode' }).click();
+    // The decoder opens inside the replay editor, on the body.
+    const dec = tab.getByLabel('Decoder');
 
-    await expect.poll(() => page.getByLabel('Codec chain').locator('.chain-step').allTextContents()).toEqual(['url›', 'base64›', 'json']);
-    await expect.poll(() => page.getByTestId('nested-field').allTextContents()).toEqual([expect.stringContaining('$.inner_data')]);
-    const editor = page.getByLabel('Decoded value');
+    await expect.poll(() => dec.getByLabel('Codec chain').locator('.chain-step').allTextContents()).toEqual(['url›', 'base64›', 'json']);
+    await expect.poll(() => dec.getByTestId('nested-field').allTextContents()).toEqual([expect.stringContaining('$.inner_data')]);
+    const editor = dec.getByLabel('Decoded value');
     await expect.poll(() => editor.inputValue()).toContain('"meat": "turkey"');
     // Untouched, the result is the input as it was.
-    expect(await page.getByLabel('Encoded result').textContent()).toBe(value);
+    expect(await dec.getByLabel('Encoded result').textContent()).toBe(value);
     await shot('codecs-nested');
 
     await editor.fill((await editor.inputValue()).replace('turkey', 'tofu'));
@@ -222,13 +222,14 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
       const outer = JSON.parse(Buffer.from(decodeURIComponent(t), 'base64').toString()) as { inner_data: string };
       return JSON.parse(outer.inner_data) as { meat: string };
     };
-    await expect.poll(async () => decode((await page.getByLabel('Encoded result').textContent())!).meat).toBe('tofu');
-    const result = (await page.getByLabel('Encoded result').textContent())!;
+    await expect.poll(async () => decode((await dec.getByLabel('Encoded result').textContent())!).meat).toBe('tofu');
+    const result = (await dec.getByLabel('Encoded result').textContent())!;
     // No put back step: Replay already has it.
     await expect.poll(() => tab.getByLabel('Raw request').inputValue()).toContain(result);
     expect(await tab.getByLabel('Raw request').inputValue()).not.toContain(value);
-    await page.getByRole('button', { name: /^Back to Replay/ }).click();
-    await expect.poll(() => tab.evaluate((el) => (el as HTMLElement).style.display)).toBe('flex');
+    await dec.getByRole('button', { name: 'Close the decoder' }).click();
+    await expect.poll(() => tab.getByLabel('Decoder').count()).toBe(0);
+    expect(await tab.getByLabel('Raw request').inputValue()).toContain(result);
   });
 
   it('shows every nested layer in the chain, and can keep one encoded', async () => {

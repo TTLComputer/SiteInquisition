@@ -164,7 +164,7 @@ export function Streams() {
       </aside>
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {!sel ? (
-          <div className="empty">Pick a connection on the left, or use Open in Streams on a WebSocket or MQTT row in History.</div>
+          <div className="empty">Pick a connection on the left, or use Open in Live connections on a WebSocket or MQTT row in Traffic.</div>
         ) : (
           <>
             <div className="replay-bar">
@@ -178,7 +178,7 @@ export function Streams() {
                   setView('history');
                 }}
               >
-                Show in History
+                Show in Traffic
               </button>
               {!isMqtt && <ReplayButton exchange={sel} title="Open in Replay to edit the handshake and messages and run the connection again" />}
               {!isMqtt && isLive && !isProxied && (

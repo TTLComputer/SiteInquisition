@@ -109,7 +109,7 @@ the profile in VPN & Device Management.
 Devices that let you add a root CA usually take a PEM file, often in a web
 admin page or a provisioning config. Many devices pin certificates or ship a
 fixed CA list; those cannot be decrypted, and SiteInquisition lists their
-failed handshakes in Rules, Scope under "seen but not in scope" with a pinning warning.
+failed handshakes in Project settings, Capture scope under "seen but not in scope" with a pinning warning.
 
 ## Rotating or removing the CA
 

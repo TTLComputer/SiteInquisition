@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { confirmLeave } from '../unsaved';
 import type { ApiFlow, ApiSpec, FlowDraft, FlowRunResult, HeaderList, SiteMapHost, ValueField, ValueOrigin } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { downloadText, fmtMs, fmtTime } from '../format';
-import { AuthAndNegative, Compare, ContractScan, Glossary, GraphQL, Resources, useHosts } from './ApiExtras';
+import { ContractScan, useHosts } from './ApiExtras';
 import { ReplayButton } from '../components/ReplayButton';
 
-type ApiTab = 'values' | 'flows' | 'specs' | 'graphql' | 'resources' | 'glossary' | 'probes' | 'compare';
 
 const copy = (text: string, notify: (m: string) => void, what = 'Copied') =>
   navigator.clipboard.writeText(text).then(
@@ -21,7 +19,7 @@ export const pickToken = (f: Pick<ValueField, 'method' | 'template' | 'side' | '
 
 // ---------- Values ----------
 
-function Values() {
+export function Values() {
   const { client, notify, select, setView, traceInput } = useApp();
   const hosts = useHosts();
   const [host, setHost] = useState('');
@@ -322,8 +320,8 @@ function FlowEditor({ flow, onSaved, onDeleted, draft }: { flow: Partial<ApiFlow
         <button
           className="btn small"
           disabled={!f.id}
-          title="Save a test script that runs this flow and checks every step; run it after each deploy in Scripts"
-          onClick={() => void client.flowToTest(f.name!).then((sc) => notify(`Saved test script "${sc.name}". Run it in Scripts.`), (e: Error) => notify(e.message))}
+          title="Save a test script that runs this flow and checks every step; run it after each deploy in the Script console"
+          onClick={() => void client.flowToTest(f.name!).then((sc) => notify(`Saved test script "${sc.name}". Run it in Advanced tools, Script console.`), (e: Error) => notify(e.message))}
         >
           Make test
         </button>
@@ -516,8 +514,29 @@ function FlowEditor({ flow, onSaved, onDeleted, draft }: { flow: Partial<ApiFlow
   );
 }
 
-function Flows() {
-  const { client, notify, flowPicks, setFlowPicks } = useApp();
+/** A saved flow as a document in Replay's open editors. */
+export function FlowDocument({ name }: { name: string }) {
+  const { client } = useApp();
+  const [flow, setFlow] = useState<(ApiFlow & { steps: EditStep[] }) | null | undefined>(undefined);
+  const load = useCallback(() => client.flows().then((f) => setFlow((f.find((x) => x.name === name) as ApiFlow & { steps: EditStep[] }) ?? null), () => setFlow(null)), [client, name]);
+  useEffect(() => void load(), [load]);
+  if (flow === undefined) return <div className="empty">Loading flow {name}...</div>;
+  if (flow === null)
+    return (
+      <div className="empty">
+        <div className="panel-title">No flow called {name}</div>
+        <div>It was renamed or deleted since this tab was opened. Close the tab, or pick the flow again in Replay, Flows.</div>
+      </div>
+    );
+  return (
+    <div className="api-split" aria-label={`Flow ${name}`}>
+      <FlowEditor flow={flow} onSaved={() => void load()} onDeleted={() => setFlow(null)} />
+    </div>
+  );
+}
+
+export function Flows() {
+  const { client, notify, flowPicks, setFlowPicks, openFlow } = useApp();
   const [flows, setFlows] = useState<ApiFlow[]>([]);
   const [current, setCurrent] = useState<(Partial<ApiFlow> & { steps: EditStep[] }) | null>(null);
   const [draft, setDraft] = useState<FlowDraft | null>(null);
@@ -542,12 +561,17 @@ function Flows() {
         <button className="btn small" onClick={() => (setDraft(null), setCurrent(blankFlow()))}>
           <Icon name="plus" size={12} /> New flow
         </button>
-        <button className="btn small primary" disabled={!flowPicks.length} onClick={() => void makeFromPicks()} title="Pick requests in History (right-click, Add to flow) and turn them into a flow">
+        <button className="btn small primary" disabled={!flowPicks.length} onClick={() => void makeFromPicks()} title="Pick requests in Traffic (right-click, Add to flow) and turn them into a flow">
           Make flow from {flowPicks.length} picked
         </button>
         {flowPicks.length > 0 && (
           <button className="btn small" onClick={() => setFlowPicks([])}>
             Clear picks
+          </button>
+        )}
+        {current?.id && current.name && (
+          <button className="btn small" onClick={() => openFlow(current.name!)} title="Keep this flow open in its own tab beside your replay editors">
+            Open in a tab
           </button>
         )}
         <div className="nav-heading">Saved flows</div>
@@ -581,7 +605,7 @@ function Flows() {
       ) : (
         <div className="empty">
           <div className="panel-title">Pick a flow, or make one</div>
-          <div style={{ maxWidth: 520 }}>The quickest way: do the steps by hand in the browser, pick those requests in History (right-click, Add to flow), then Make flow. Values passed from one response to the next request are wired for you.</div>
+          <div style={{ maxWidth: 520 }}>The quickest way: do the steps by hand in the browser, pick those requests in Traffic (right-click, Add to flow), then Make flow. Values passed from one response to the next request are wired for you.</div>
         </div>
       )}
     </div>
@@ -590,7 +614,7 @@ function Flows() {
 
 // ---------- API files ----------
 
-function Specs() {
+export function Specs() {
   const { client, notify, openDraft, refreshInfo } = useApp();
   const [specs, setSpecs] = useState<ApiSpec[]>([]);
   const [text, setText] = useState('');
@@ -619,7 +643,7 @@ function Specs() {
       }
       if (isHar) {
         const r = await client.importHar(body, name ? `har:${name}` : 'har');
-        notify(`Added ${r.imported} requests to History${r.skipped ? `, skipped ${r.skipped}` : ''}`);
+        notify(`Added ${r.imported} requests to Traffic${r.skipped ? `, skipped ${r.skipped}` : ''}`);
         refreshInfo();
       } else {
         const s = await client.importSpec(body, name);
@@ -647,7 +671,7 @@ function Specs() {
       <div className="card" style={{ margin: 12 }}>
         <div className="sec-head">
           <b style={{ color: 'var(--text)' }}>Import</b>
-          <span>OpenAPI 3, Swagger 2 (JSON or YAML), Postman v2.1 collections, or a HAR file (added to History)</span>
+          <span>OpenAPI 3, Swagger 2 (JSON or YAML), Postman v2.1 collections, or a HAR file (added to Traffic)</span>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
           <textarea className="editor" style={{ height: 90, flex: 1 }} placeholder="Paste a spec, a collection or a HAR file here" value={text} onChange={(e) => setText(e.target.value)} aria-label="Spec text" spellCheck={false} />
@@ -720,7 +744,7 @@ function Specs() {
                           <td className="mono faint">{e.params.map((p) => `${p.in === 'query' ? '?' : p.in === 'header' ? 'h:' : ''}${p.name}${p.required ? '' : '?'}`).join(' ')}</td>
                           <td className="faint">{e.security.filter((x) => x !== 'none').join(', ') || (e.security.includes('none') ? 'no auth' : '')}</td>
                           <td>
-                            <ReplayButton build={() => openEndpoint(s, e.key)} title="Open in Replay with example values, real ids from History where it finds them" />
+                            <ReplayButton build={() => openEndpoint(s, e.key)} title="Open in Replay with example values, real ids from Traffic where it finds them" />
                           </td>
                         </tr>
                       ))}
@@ -731,37 +755,8 @@ function Specs() {
             </div>
           );
         })}
-        {!specs.length && <div className="empty">No API descriptions yet. When the app has none, record some traffic and use Export OpenAPI in History, Coverage.</div>}
+        {!specs.length && <div className="empty">No API descriptions yet. When the app has none, record some traffic and use Export OpenAPI in Explore API, Endpoints.</div>}
       </div>
-    </div>
-  );
-}
-
-/** API understanding: values handed out by the API, flows that set things up, and imported API descriptions. */
-export function Api() {
-  const { subTab, flowPicks } = useApp();
-  const [tab, setTab] = useState<ApiTab>((subTab.api as ApiTab) ?? 'values');
-  useEffect(() => {
-    if (subTab.api) setTab(subTab.api as ApiTab);
-  }, [subTab]);
-  const labels: Record<ApiTab, string> = { values: 'Values', flows: flowPicks.length ? `Flows (${flowPicks.length} picked)` : 'Flows', specs: 'API files', graphql: 'GraphQL', resources: 'Resources', glossary: 'Glossary', probes: 'Auth and negative tests', compare: 'Compare' };
-  return (
-    <div className="page" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div className="tabs" role="tablist" aria-label="API">
-        {(Object.keys(labels) as ApiTab[]).map((t) => (
-          <button key={t} role="tab" className="tab" aria-selected={tab === t} onClick={() => confirmLeave() && setTab(t)}>
-            {labels[t]}
-          </button>
-        ))}
-      </div>
-      {tab === 'values' && <Values />}
-      {tab === 'flows' && <Flows />}
-      {tab === 'specs' && <Specs />}
-      {tab === 'graphql' && <GraphQL />}
-      {tab === 'resources' && <Resources />}
-      {tab === 'glossary' && <Glossary />}
-      {tab === 'probes' && <AuthAndNegative />}
-      {tab === 'compare' && <Compare />}
     </div>
   );
 }

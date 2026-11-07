@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from '@siteinquisition/devkit/test';
-import { CaptureStore, classifyWsMessage, coverage, endpointKind, referenceKind, wsApiMap } from '@siteinquisition/core';
+import { CaptureStore, classifyWsMessage, cookieJar, coverage, endpointKind, referenceKind, wsApiMap } from '@siteinquisition/core';
 
 const dir = mkdtempSync(join(tmpdir(), 'siq-explore-'));
 const store = CaptureStore.openProject(dir);
@@ -95,5 +95,34 @@ describe('WebSocket API map', () => {
     expect(ep).toMatchObject({ host: 'w.test', template: '/rooms/{n}/socket', protocol: 'json', connections: 2, messages: 6, subprotocols: ['chat.v1'] });
     expect(ep!.kinds.map((k) => `${k.direction} ${k.name} ${k.count}`)).toEqual(['client type=subscribe 2', 'server type=tick 4']);
     expect(ep!.kinds[1]!.fields).toEqual(['type', 'price']);
+  });
+});
+
+describe('large projects stay fast', () => {
+  const plan = (sql: string) => ((store as unknown as { db: { prepare(s: string): { all(...a: unknown[]): Array<{ detail: string }> } } }).db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(1).map((r) => r.detail).join('; '));
+
+  it('finds WebSockets, MQTT, replays and streams through indexes', () => {
+    expect(plan('SELECT * FROM exchange e WHERE e.is_websocket = ? ORDER BY e.id DESC LIMIT 200')).toContain('exchange_ws');
+    expect(plan("SELECT * FROM exchange e WHERE e.scheme = ? ORDER BY e.id DESC LIMIT 200")).toContain('exchange_scheme');
+    expect(plan('SELECT * FROM exchange e WHERE e.source = ? ORDER BY e.id DESC LIMIT 200')).toContain('exchange_source');
+    expect(plan('SELECT * FROM stream WHERE exchange_id = ?')).toContain('stream_exchange');
+  });
+
+  it('keeps the cookie jar current from new responses, with later requests winning', () => {
+    const req = (url: string) => store.addRequest({ source: 'proxy', startedAt: Date.now(), method: 'GET', url, httpVersion: '1.1', headers: [] }).id;
+    const done = (id: string, cookie: string) => store.completeResponse(id, { status: 200, headers: [['Set-Cookie', cookie]] });
+    const value = () => cookieJar(store).find((c) => c.domain === 'jar.test' && c.name === 'sid')?.value;
+    done(req('http://jar.test/a'), 'sid=one');
+    expect(value()).toBe('one');
+    // An older request's response that arrives late does not replace what a newer request set.
+    const slow = req('http://jar.test/slow');
+    done(req('http://jar.test/b'), 'sid=two');
+    expect(value()).toBe('two');
+    done(slow, 'sid=stale');
+    expect(value()).toBe('two');
+    // Deleting the exchange that set it builds the jar again from what is left.
+    const newest = store.search('host:jar.test path:/b')[0]!.id;
+    store.deleteExchanges([newest]);
+    expect(value()).toBe('stale');
   });
 });

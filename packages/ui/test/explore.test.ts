@@ -120,4 +120,24 @@ describe.skipIf(!ready)('exploring endpoints, the site map and WebSocket APIs', 
     expect(height).toBeGreaterThan(300);
     await shot('replay-body');
   });
+
+  it('opens a connection older than the newest 200 straight from WebSocket APIs', async () => {
+    const st = h.core.store;
+    const ids: string[] = [];
+    st.tx(() => {
+      for (let n = 0; n < 205; n++) {
+        const e = st.addRequest({ source: 'proxy', startedAt: Date.now(), method: 'GET', url: `http://127.0.0.1:${h.upstreamPort}/bulk/${n}`, httpVersion: '1.1', headers: [], isWebSocket: true });
+        st.completeResponse(e.id, { status: 101, headers: [] });
+        ids.push(e.id);
+      }
+      const s = st.openStream('websocket', ids[0]!);
+      st.addStreamMessage({ streamId: s, direction: 'server', opcode: 'text', at: Date.now(), payload: Buffer.from('{"type":"oldest"}') });
+    });
+    await navTo(page, 'Explore API', 'WebSocket APIs');
+    const kind = page.getByTestId('ws-kind').filter({ hasText: 'type=oldest' });
+    await expect.poll(() => kind.count()).toBe(1);
+    await kind.click();
+    await expect.poll(() => page.locator('.streams .replay-bar .panel-title').textContent()).toContain('/bulk/0');
+    await expect.poll(() => page.locator('.streams .msg-table').textContent()).toContain('oldest');
+  });
 });

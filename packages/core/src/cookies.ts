@@ -87,12 +87,57 @@ export function cookiesFromResponse(res: { id: string; host: string; path: strin
   return out;
 }
 
-export function cookieJar(store: CaptureStore, now = Date.now()): JarCookie[] {
-  const jar = new Map<string, JarCookie>();
-  for (const res of store.setCookieResponses()) {
-    for (const c of cookiesFromResponse(res)) jar.set(`${c.domain}\n${c.path}\n${c.name}`, c);
+/**
+ * The jar is kept per store and brought up to date from the responses that
+ * arrived since the last call, so building it does not read every recorded
+ * response each time. Deleting exchanges rebuilds it from scratch.
+ */
+interface JarState {
+  jar: Map<string, JarCookie>;
+  pending: Set<string>;
+  ready: boolean;
+}
+const jars = new WeakMap<CaptureStore, JarState>();
+const PAGE = 5000;
+
+function jarState(store: CaptureStore): JarState {
+  let s = jars.get(store);
+  if (!s) {
+    const state: JarState = { jar: new Map(), pending: new Set(), ready: false };
+    store.on('change', (c) => {
+      if (c.kind === 'exchange.response') state.pending.add(c.entityId);
+      else if (c.kind === 'exchange.deleted' || c.kind === 'exchange.cleared') state.ready = false;
+    });
+    jars.set(store, (s = state));
   }
-  return [...jar.values()]
+  const put = (res: Parameters<typeof cookiesFromResponse>[0]) => {
+    for (const c of cookiesFromResponse(res)) {
+      const key = `${c.domain}\n${c.path}\n${c.name}`;
+      // Later exchanges win, as when the jar is built in order, even if an older request's response arrives last.
+      const had = s!.jar.get(key);
+      if (!had || had.setBy <= c.setBy) s!.jar.set(key, c);
+    }
+  };
+  if (!s.ready) {
+    s.jar.clear();
+    s.pending.clear();
+    for (let after = ''; ; ) {
+      const page = store.setCookieResponses(PAGE, { after });
+      page.forEach(put);
+      if (page.length < PAGE) break;
+      after = page[page.length - 1]!.id;
+    }
+    s.ready = true;
+  } else if (s.pending.size) {
+    const ids = [...s.pending];
+    s.pending.clear();
+    store.setCookieResponses(ids.length, { ids }).forEach(put);
+  }
+  return s;
+}
+
+export function cookieJar(store: CaptureStore, now = Date.now()): JarCookie[] {
+  return [...jarState(store).jar.values()]
     .map((c) => ({ ...c, expired: c.expires !== null && c.expires <= now }))
     .sort((a, b) => a.domain.localeCompare(b.domain) || a.name.localeCompare(b.name) || a.path.localeCompare(b.path));
 }

@@ -65,18 +65,22 @@ export function Streams() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payload, pl.regions]);
 
+  const [loaded, setLoaded] = useState(false);
+  // A connection opened from elsewhere (WebSocket APIs, a Traffic row) may be older than the list's newest 200.
+  const [picked, setPicked] = useState<{ id: string; row: ExchangeSummary | null } | null>(null);
   const load = useCallback(async () => {
-    const [ws, mqtt, l] = await Promise.all([client.search('ws:true', { limit: 200 }), client.search('scheme:mqtt', { limit: 200 }), client.liveStreams()]);
-    const mqtts = await client.search('scheme:mqtts', { limit: 200 });
+    const [ws, mqtt, mqtts, l] = await Promise.all([client.search('ws:true', { limit: 200 }), client.search('scheme:mqtt', { limit: 200 }), client.search('scheme:mqtts', { limit: 200 }), client.liveStreams()]);
     setConns([...new Map([...ws, ...mqtt, ...mqtts].map((e) => [e.id, e])).values()].sort((a, b) => (a.id < b.id ? 1 : -1)));
     setLive(l);
+    setLoaded(true);
   }, [client]);
 
   useEffect(() => {
     void load();
     let t: number | undefined;
+    // Only connections opening and closing change the list; messages and ordinary requests do not.
     const off = client.onChange((c) => {
-      if ((c.entity === 'exchange' || c.entity === 'stream') && t === undefined) t = window.setTimeout(() => ((t = undefined), void load()), 700);
+      if (c.entity === 'stream' && c.kind !== 'stream.message' && t === undefined) t = window.setTimeout(() => ((t = undefined), void load()), 300);
     });
     return () => {
       off();
@@ -93,7 +97,16 @@ export function Streams() {
     if (streamPrefill.topic) setTopic(streamPrefill.topic);
   }, [streamPrefill]);
 
-  const sel = conns.find((c) => c.id === current);
+  useEffect(() => {
+    if (!current || !loaded || conns.some((c) => c.id === current) || picked?.id === current) return;
+    let live = true;
+    client.search(`id:${current}`, { limit: 1 }).then((r) => live && setPicked({ id: current, row: r[0] ?? null }), () => live && setPicked({ id: current, row: null }));
+    return () => {
+      live = false;
+    };
+  }, [client, current, conns, picked, loaded]);
+
+  const sel = conns.find((c) => c.id === current) ?? (picked?.id === current ? (picked.row ?? undefined) : undefined);
   const isMqtt = !!sel?.scheme.startsWith('mqtt');
   const isLive = sel ? (isMqtt ? live.mqtt.includes(sel.id) : live.ws.includes(sel.id)) : false;
   const isProxied = !!sel && live.wsProxied.includes(sel.id);
@@ -144,7 +157,7 @@ export function Streams() {
         <div className="label" style={{ margin: '4px 4px 8px' }}>
           Connections
         </div>
-        {conns.length === 0 && <div className="faint" style={{ fontSize: 12, padding: 4 }}>No WebSocket or MQTT connections recorded yet.</div>}
+        {conns.length === 0 && <div className="faint" style={{ fontSize: 12, padding: 4 }}>{loaded ? 'No WebSocket or MQTT connections recorded yet.' : 'Loading connections...'}</div>}
         {conns.map((c) => {
           const mq = c.scheme.startsWith('mqtt');
           const on = mq ? live.mqtt.includes(c.id) : live.ws.includes(c.id);
@@ -164,7 +177,7 @@ export function Streams() {
       </aside>
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {!sel ? (
-          <div className="empty">Pick a connection on the left, or use Open in Live connections on a WebSocket or MQTT row in Traffic.</div>
+          <div className="empty">{current && (!loaded || picked?.id !== current) ? 'Loading the connection...' : current && picked?.id === current && !picked.row ? 'That connection is no longer recorded. Pick another on the left.' : 'Pick a connection on the left, or use Open in Live connections on a WebSocket or MQTT row in Traffic.'}</div>
         ) : (
           <>
             <div className="replay-bar">

@@ -5,6 +5,7 @@ import { extname, join, normalize } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { serveWebSockets } from '@siteinquisition/core';
 import { Core, type Keyring } from '@siteinquisition/core';
+import type { Page } from '@siteinquisition/devkit/browser';
 
 export const DIST = join(import.meta.dirname, '..', 'dist');
 
@@ -142,4 +143,32 @@ export async function startHarness(opts: { traffic?: boolean; keyring?: Keyring 
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+/** Where an old screen name lives in the work areas: the area's nav button and the page's tab. */
+const PLACES: Record<string, [area: string, page?: string]> = {
+  History: ['Traffic', 'Requests'],
+  Browser: ['Traffic', 'Browser'],
+  Timeline: ['Traffic', 'Timeline'],
+  Streams: ['Traffic', 'Live connections'],
+  API: ['Explore API', 'Values'],
+  Tech: ['Explore API', 'Technology'],
+  Replay: ['Replay', 'Open editors'],
+  Rules: ['Overrides'],
+  Scripts: ['Advanced tools', 'Script console'],
+  Codecs: ['Advanced tools', 'Decode'],
+  Race: ['Advanced tools', 'Race'],
+  'Protocol lab': ['Advanced tools', 'Protocol lab'],
+  Cookies: ['Project settings', 'Session and authentication'],
+  Settings: ['Project settings', 'Proxy and TLS'],
+};
+
+/**
+ * Go to a work area and one of its pages by clicking, as a user would.
+ * Takes an area and page ("Overrides", "Mocks") or an old screen name ("History").
+ */
+export async function navTo(page: Page, area: string, pageLabel?: string): Promise<void> {
+  const [a, p] = pageLabel ? [area, pageLabel] : (PLACES[area] ?? [area]);
+  await page.getByRole('navigation', { name: 'Work areas' }).getByRole('button', { name: a, exact: false }).first().click();
+  if (p) await page.getByRole('tablist', { name: a }).getByRole('tab', { name: p, exact: false }).first().click();
 }

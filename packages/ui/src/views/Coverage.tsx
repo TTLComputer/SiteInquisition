@@ -29,7 +29,7 @@ function toMarkdown(r: CoverageReport): string {
  * scripts mention that nobody has requested yet.
  */
 export function Coverage({ initialHost }: { initialHost: string | null }) {
-  const { client, setQuery, select, openReplayById, openDraft, notify, openAt } = useApp();
+  const { client, setQuery, select, openReplayById, openDraft, notify, openAt, navigate } = useApp();
   const [docs, setDocs] = useState<SpecCoverage | null>(null);
   const [hosts, setHosts] = useState<SiteMapHost[]>([]);
   const [host, setHost] = useState<string | null>(initialHost);
@@ -228,12 +228,12 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <button
                       className="btn small"
-                      title="Show these calls in History"
-                      onClick={() => setQuery(`host:${report.host} method:${e.method} path:${templatePrefix(e.template)}`)}
+                      title="Show these calls in Traffic"
+                      onClick={() => (setQuery(`host:${report.host} method:${e.method} path:${templatePrefix(e.template)}`), navigate('traffic/requests'))}
                     >
                       Calls
                     </button>{' '}
-                    <button className="btn small" title="Inspect one example, a successful one when there is one" onClick={() => select(e.exampleId)}>
+                    <button className="btn small" title="Inspect one example, a successful one when there is one" onClick={() => (select(e.exampleId), navigate('traffic/requests'))}>
                       Example
                     </button>{' '}
                     <ReplayButton id={e.exampleId} compact />
@@ -275,7 +275,7 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                       <td className="faint">{d.endpoint.summary}</td>
                       <td className="faint">{d.specName}</td>
                       <td>
-                        <ReplayButton build={() => tryDocumented(d.specId, d.endpoint.key)} title="Open in Replay with example values, real ids from History where it finds them" />
+                        <ReplayButton build={() => tryDocumented(d.specId, d.endpoint.key)} title="Open in Replay with example values, real ids from Traffic where it finds them" />
                       </td>
                     </tr>
                   ))}
@@ -298,7 +298,7 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                       <td className="mono">{u.path}</td>
                       <td className="faint">mentioned {u.count}×</td>
                       <td style={{ whiteSpace: 'nowrap' }}>
-                        <button className="btn small" onClick={() => select(u.foundIn)} title="Inspect the response that mentions it">
+                        <button className="btn small" onClick={() => (select(u.foundIn), navigate('traffic/requests'))} title="Inspect the response that mentions it">
                           Where
                         </button>{' '}
                         <ReplayButton build={() => tryPath(u.path)} title="Open a GET for it in Replay" />

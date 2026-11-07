@@ -5,7 +5,6 @@ import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { fmtMs, fmtSize, fmtTime, statusClass, statusText, toRawRequest, downloadText } from '../format';
 import { bodyText, breakOn, mockFromExchange } from '../actions';
-import { Coverage } from './Coverage';
 import { Inspector } from './Inspector';
 import { QueryBuilder } from './QueryBuilder';
 import { ReplayButton } from '../components/ReplayButton';
@@ -182,7 +181,7 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
         Send to Replay with fresh cookies
       </button>
       <button role="menuitem" onClick={run(() => resendNow(row.id))}>
-        {row.isWebSocket || row.scheme.startsWith('mqtt') ? 'Open in Streams' : 'Resend now'} <kbd>Ctrl Shift Enter</kbd>
+        {row.isWebSocket || row.scheme.startsWith('mqtt') ? 'Open in Live connections' : 'Resend now'} <kbd>Ctrl Shift Enter</kbd>
       </button>
       {!row.isWebSocket && !row.scheme.startsWith('mqtt') && (
         <button
@@ -198,7 +197,7 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
       )}
       {(row.isWebSocket || row.scheme.startsWith('mqtt')) && (
         <button role="menuitem" onClick={run(() => openStream(row.id))}>
-          Open in Streams composer
+          Open in Live connections composer
         </button>
       )}
       <div className="menu-sep" role="separator" />
@@ -212,7 +211,7 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
         role="menuitem"
         onClick={run(async () => {
           const name = await mockFromExchange(client, await client.get(row.id));
-          notify(`Mock "${name}" added. Edit it in Rules, Mocks.`);
+          notify(`Mock "${name}" added. Edit it in Overrides, Mocks.`);
         })}
       >
         Mock this response
@@ -241,7 +240,7 @@ function RowMenu({ menu, close, setQuery, query }: { menu: MenuState; close(): v
         onClick={run(() => {
           if (flowPicks.includes(row.id)) return notify('Already picked for the flow');
           setFlowPicks([...flowPicks, row.id]);
-          notify(`${flowPicks.length + 1} picked. Make the flow in API, Flows.`);
+          notify(`${flowPicks.length + 1} picked. Make the flow in Replay, Flows.`);
         })}
       >
         Add to flow {flowPicks.length > 0 && <span className="faint">({flowPicks.length} picked)</span>}
@@ -396,7 +395,6 @@ export function History() {
   const [mapVersion, setMapVersion] = useState(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [inspectorHeight, setInspectorHeight] = useState<number | null>(null);
-  const [mode, setMode] = useState<'requests' | 'coverage'>('requests');
   const listRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewport, setViewport] = useState(600);
@@ -406,8 +404,6 @@ export function History() {
   queryRef.current = query;
 
   useEffect(() => setDraft(query), [query]);
-  // A new filter (from Coverage's "Calls" or anywhere else) means: show the matching requests.
-  useEffect(() => setMode('requests'), [query]);
 
   // Apply typed filters after a short pause, so the table follows typing without a query per key.
   useEffect(() => {
@@ -560,14 +556,6 @@ export function History() {
   return (
     <div className="history">
       <div className="filterbar">
-        <div className="segmented" role="group" aria-label="History mode">
-          <button className="seg" aria-pressed={mode === 'requests'} onClick={() => setMode('requests')}>
-            Requests
-          </button>
-          <button className="seg" aria-pressed={mode === 'coverage'} onClick={() => setMode('coverage')} title="Endpoints seen per host, and paths referenced but never requested">
-            Coverage
-          </button>
-        </div>
         <button className="icon-btn" aria-pressed={showMap} title={showMap ? 'Hide site map' : 'Show site map'} onClick={() => setShowMap((s) => !s)}>
           <Icon name="filter" size={14} />
         </button>
@@ -639,7 +627,7 @@ export function History() {
         <button
           className="btn small"
           disabled={!query.trim()}
-          title={query.trim() ? 'Delete every recorded request that matches the filter' : 'Type a filter first; to delete everything, use Settings, Storage'}
+          title={query.trim() ? 'Delete every recorded request that matches the filter' : 'Type a filter first; to delete everything, use Project settings, Storage'}
           onClick={() => {
             const shown = rows.length + (exhausted ? '' : '+');
             if (!window.confirm(`Delete the ${shown} requests that match\n\n${query}\n\nThis cannot be undone.`)) return;
@@ -667,10 +655,7 @@ export function History() {
       <div className="split">
         {showMap && <SiteMap query={query} setQuery={setQuery} version={mapVersion} />}
         <div className="table-wrap" style={{ display: 'flex', flexDirection: 'column' }}>
-          {mode === 'coverage' && (
-            <Coverage initialHost={rows.find((r) => r.id === selectedId)?.host ?? /(?:^|\s)host:(\S+)/.exec(query)?.[1]?.replace(/^\*\./, '') ?? null} />
-          )}
-          <div className="grid-row grid-head" role="row" style={mode === 'coverage' ? { display: 'none' } : undefined}>
+          <div className="grid-row grid-head" role="row">
             <span>Time</span>
             <span>Source</span>
             <span>Method</span>
@@ -684,7 +669,6 @@ export function History() {
           </div>
           <div
             className="vlist"
-            style={mode === 'coverage' ? { display: 'none' } : undefined}
             ref={listRef}
             role="grid"
             aria-label="Recorded exchanges"
@@ -740,7 +724,7 @@ function FirstRun() {
         <span className="mono">127.0.0.1:{info?.proxyPort ?? '...'}</span>, then add hosts to the scope.
       </div>
       <button className="btn primary" onClick={() => setView('rules')}>
-        Open Rules › Scope
+        Open Capture scope
       </button>
       {seen.length > 0 && (
         <div className="muted" style={{ fontSize: 12 }}>

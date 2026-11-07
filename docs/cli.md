@@ -59,7 +59,7 @@ siq clear --yes                          # delete all recorded traffic (scope, r
 siq prune --older-than 30 --max-size 2000 --keep   # delete now, and keep doing it every hour
 ```
 
-In the app: right-click a row (or press Delete), *Delete matching* in History, and Settings, Storage.
+In the app: right-click a row (or press Delete), *Delete matching* in Traffic, Requests, and Project settings, Storage.
 
 ## Search syntax
 

@@ -486,8 +486,8 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         <button className="btn small" onClick={() => void decodeInline()} title="Show the selection, or the value under the caret, decoded in place. It is encoded again on send. Ctrl D">
           Decode
         </button>
-        <button className="btn small" onClick={decodeSelection} title="Open the selection (or the body) in Codecs, then put the result back. Ctrl Shift D">
-          Open in Codecs
+        <button className="btn small" onClick={decodeSelection} title="Open the selection (or the body) in Decode, then put the result back. Ctrl Shift D">
+          Open in Decode
         </button>
         <button
           className="btn small"
@@ -507,7 +507,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
               client
                 .get(shownId ?? tab.exchangeId)
                 .then((ex) => mockFromExchange(client, ex))
-                .then((n) => notify(`Mock "${n}" added. Edit it in Rules, Mocks.`), (e: Error) => notify(e.message))
+                .then((n) => notify(`Mock "${n}" added. Edit it in Overrides, Mocks.`), (e: Error) => notify(e.message))
             }
           >
             Mock this response
@@ -521,7 +521,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
               setView('history');
             }}
           >
-            All sends in History
+            All sends in Traffic
           </button>
         )}
       </div>
@@ -732,7 +732,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
                     setView('history');
                   }}
                 >
-                  Show in History
+                  Show in Traffic
                 </button>
               </>
             )}

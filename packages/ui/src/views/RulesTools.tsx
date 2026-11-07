@@ -222,7 +222,7 @@ export function ReplaceRules() {
     }
   };
   const runTest = async (r: Keyed<ReplaceRule>) => {
-    if (!selectedId) return notify('Select an exchange in History to test against.');
+    if (!selectedId) return notify('Select an exchange in Traffic to test against.');
     try {
       setTest({ key: r.key, ...(await client.testRule(strip(r), selectedId)) });
     } catch (e) {
@@ -260,7 +260,7 @@ export function ReplaceRules() {
             <span className="mono faint" title="Times this rule changed something since the core started">
               {r.id && data?.hits[r.id] ? `${data.hits[r.id]} hits` : '0 hits'}
             </span>
-            <button className="btn small" onClick={() => void runTest(r)} title="Run this rule (unsaved edits included) against the exchange selected in History">
+            <button className="btn small" onClick={() => void runTest(r)} title="Run this rule (unsaved edits included) against the exchange selected in Traffic">
               Test on selected
             </button>
             <button className="icon-btn" aria-label="Delete rule" onClick={() => (setList(list.filter((x) => x.key !== r.key)), setDirty(true))}>

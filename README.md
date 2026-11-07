@@ -31,8 +31,8 @@ The Windows zip is portable and not code signed yet, so SmartScreen may warn the
 
 ## Quick start
 
-1. **Open the app** and add the host you are testing to scope (Rules, Scope, or "add this host to scope" in the browser's address bar). A new project records nothing until you do.
-2. **Browse with the built-in browser.** It already trusts SiteInquisition's certificate for in-scope hosts, so HTTPS just works and every request shows up in History.
+1. **Open the app** and add the host you are testing to scope (Project settings, Capture scope, or "add this host to scope" in the browser's address bar). A new project records nothing until you do.
+2. **Browse with the built-in browser.** It already trusts SiteInquisition's certificate for in-scope hosts, so HTTPS just works and every request shows up in Traffic.
 3. **Or proxy anything else.** Point a browser, phone or device at `127.0.0.1:8080`. For HTTPS, trust the SiteInquisition CA on that device:
 
    ```sh
@@ -56,7 +56,7 @@ siq search host:api.example.com status:>=400
 claude mcp add siteinquisition -- siq mcp --project <project-folder>
 ```
 
-Settings, MCP and agents shows this command with your project's folder filled in. Agents can read traffic freely; anything that sends requests or changes settings waits for your approval in the title bar.
+Project settings, MCP and agents shows this command with your project's folder filled in. Agents can read traffic freely; anything that sends requests or changes settings waits for your approval in the title bar.
 
 More commands (scope, MQTT relay, retention, search syntax) are in [docs/cli.md](docs/cli.md).
 

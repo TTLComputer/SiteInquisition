@@ -1,8 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { confirmLeave } from './unsaved';
+import { legacyRoute, parseRoute, routeToLegacy, sameRoute, type LegacyView, type Route } from './workspace/navigation';
 import type { Approval, CoreClient, CoreInfo, ExchangeSummary, HeaderList, Paused, ScopeConfig } from './api';
 
-export type ViewId = 'browser' | 'history' | 'timeline' | 'replay' | 'race' | 'h3' | 'rules' | 'codecs' | 'cookies' | 'streams' | 'scripts' | 'api' | 'tech' | 'settings';
+/** An old screen name; resolves to a page in one of the work areas (see workspace/navigation). */
+export type ViewId = LegacyView;
 
 /** A request built somewhere other than History (Codecs, an agent, a script) and opened in Replay. */
 export interface Draft {
@@ -88,7 +90,13 @@ interface AppState {
   client: CoreClient;
   info: CoreInfo | null;
   connected: boolean;
+  /** Where the user is: a work area, one of its pages, and maybe a tab. */
+  route: Route;
+  /** Go somewhere. Every way of moving around (nav, links, shortcuts, row menus, agents) comes through here. */
+  navigate(to: Route | string): void;
+  /** The old screen name for the current route. */
   view: ViewId;
+  /** Open an old screen by name; resolves to its page in the work areas. */
   setView(v: ViewId): void;
   /** Workspace tab: 'history' or a replay tab id. */
   activeTab: string;
@@ -129,8 +137,7 @@ interface AppState {
   openStream(exchangeId: string, prefill?: { text: string; topic?: string }): void;
   paused: Paused[];
   approvals: Approval[];
-  /** Open a view at one of its tabs (Rules > Breakpoints, Cookies > Variables...). */
-  subTab: Partial<Record<ViewId, string>>;
+  /** Open an old screen at one of its tabs (Rules > Breakpoints, Cookies > Variables...); resolves like setView. */
   openAt(view: ViewId, tab: string): void;
   /** Exchanges picked in History to make a flow from, in the order picked. */
   flowPicks: string[];
@@ -166,7 +173,9 @@ const replayLabel = (path: string) => {
 export function AppProvider({ client, children }: { client: CoreClient; children: ReactNode }) {
   const [info, setInfo] = useState<CoreInfo | null>(null);
   const [connected, setConnected] = useState(client.status === 'open');
-  const [view, setViewState] = useState<ViewId>('history');
+  const [route, setRoute] = useState<Route>({ area: 'traffic', page: 'requests' });
+  const routeRef = useRef(route);
+  routeRef.current = route;
   const [activeTab, setActiveTab] = useState('history');
   const [replayTabs, setReplayTabs] = useState<ReplayTab[]>([]);
   const [selectedId, select] = useState<string | null>(null);
@@ -182,15 +191,24 @@ export function AppProvider({ client, children }: { client: CoreClient; children
   const [streamPrefill, setStreamPrefill] = useState<AppState['streamPrefill']>(null);
   const [paused, setPaused] = useState<Paused[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
-  const [subTab, setSubTab] = useState<Partial<Record<ViewId, string>>>({});
   const [flowPicks, setFlowPicks] = useState<string[]>([]);
   const [traceInput, setTraceInput] = useState<AppState['traceInput']>(null);
   const [compareMark, setCompareMark] = useState<string | null>(null);
   const [apiInput, setApiInput] = useState<AppState['apiInput']>(null);
-  const openAt = useCallback((v: ViewId, tab: string) => {
-    setSubTab((s) => ({ ...s, [v]: tab }));
-    setViewState(v);
+  /** The one place navigation happens. Leaving a page with unsaved edits asks first, whatever started the move. */
+  const navigate = useCallback((to: Route | string) => {
+    const r = typeof to === 'string' ? parseRoute(to) : to;
+    if (!r) return;
+    const cur = routeRef.current;
+    if (sameRoute(cur, r)) return;
+    const leavingPage = cur.area !== r.area || cur.page !== r.page;
+    if (leavingPage && !confirmLeave()) return;
+    routeRef.current = r;
+    setRoute(r);
   }, []);
+  const setView = useCallback((v: ViewId) => navigate(legacyRoute(v)), [navigate]);
+  const openAt = useCallback((v: ViewId, tab: string) => navigate(legacyRoute(v, tab)), [navigate]);
+  const view = routeToLegacy(route);
 
   const notify = useCallback((msg: string) => {
     setToast(msg);
@@ -235,19 +253,13 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     };
   }, [client, refreshInfo]);
 
-  const setView = useCallback((v: ViewId) => {
-    if (!confirmLeave()) return;
-    setViewState(v);
-    if (v === 'history') setActiveTab('history');
-  }, []);
-
   const openReplay = useCallback((e: ReplayTarget, options?: ReplayTab['options']) => {
     const id = `replay-${e.id}`;
     const kind = e.isWebSocket ? 'ws' : 'http';
     setReplayTabs((tabs) => (tabs.some((t) => t.id === id) ? tabs : [...tabs, { id, exchangeId: e.id, kind, label: replayLabel(e.path), method: kind === 'ws' ? 'WS' : e.method, options }]));
     setActiveTab(id);
-    setViewState('replay');
-  }, []);
+    setView('replay');
+  }, [setView]);
 
   const openDraft = useCallback((draft: Draft, label?: string) => {
     const id = `draft-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -261,28 +273,28 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     }
     setReplayTabs((tabs) => [...tabs, { id, exchangeId: '', label: name!, method: draft.method, draft, ...(draft.options ? { options: draft.options } : {}) }]);
     setActiveTab(id);
-    setViewState('replay');
-  }, []);
+    setView('replay');
+  }, [setView]);
 
   const sendToCodecs = useCallback((text: string, label: string, returnTo?: (text: string, live?: boolean) => void) => {
     setCodecInput({ text, label, nonce: Date.now(), returnTo });
-    setViewState('codecs');
-  }, []);
+    setView('codecs');
+  }, [setView]);
 
   const sendToH3 = useCallback((items: Array<Omit<H3Item, 'key'>>) => {
     setH3Items((cur) => [...cur, ...items.map((it, i) => ({ ...it, key: `${Date.now().toString(36)}-h${cur.length + i}` }))]);
-    setViewState('h3');
-  }, []);
+    setView('h3');
+  }, [setView]);
   const sendToRace = useCallback((items: Array<Omit<RaceItem, 'key' | 'offsetMs'> & { offsetMs?: number }>) => {
     setRaceItems((cur) => [...cur, ...items.map((it, i) => ({ ...it, offsetMs: it.offsetMs ?? 0, key: `${Date.now().toString(36)}-${cur.length + i}` }))]);
-    setViewState('race');
-  }, []);
+    setView('race');
+  }, [setView]);
 
   const openStream = useCallback((exchangeId: string, prefill?: { text: string; topic?: string }) => {
     setStreamId(exchangeId);
     setStreamPrefill(prefill ? { ...prefill, nonce: Date.now() } : null);
-    setViewState('streams');
-  }, []);
+    setView('streams');
+  }, [setView]);
 
   const openReplayById = useCallback(
     async (id: string) => {
@@ -296,11 +308,11 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     (id: string) => {
       setReplayTabs((tabs) => tabs.filter((t) => t.id !== id));
       if (activeTab === id) {
-        setActiveTab('history');
-        setViewState('history');
+        const rest = replayTabs.filter((t) => t.id !== id);
+        setActiveTab(rest[rest.length - 1]?.id ?? 'history');
       }
     },
-    [activeTab],
+    [activeTab, replayTabs],
   );
 
   /** Send a copy of an exchange without opening the editor; the result lands in History. */
@@ -309,14 +321,14 @@ export function AppProvider({ client, children }: { client: CoreClient; children
       const ex = await client.get(id);
       if (ex.isWebSocket || ex.scheme.startsWith('mqtt')) {
         setStreamId(id);
-        setViewState('streams');
+        setView('streams');
         return;
       }
       const body = ex.reqBodySize ? await client.body(id, 'request', false) : undefined;
       const res = await client.replay({ method: ex.method, url: ex.url, headers: ex.requestHeaders, body, replayOf: id });
       notify(res.state === 'complete' ? `Resent: ${res.status ?? ''} ${res.method} ${res.path}` : `Resend failed: ${res.method} ${res.path}`);
     },
-    [client, notify],
+    [client, notify, setView],
   );
 
   const saveView = useCallback(
@@ -349,6 +361,8 @@ export function AppProvider({ client, children }: { client: CoreClient; children
       client,
       info,
       connected,
+      route,
+      navigate,
       view,
       setView,
       activeTab,
@@ -382,7 +396,6 @@ export function AppProvider({ client, children }: { client: CoreClient; children
       openStream,
       paused,
       approvals,
-      subTab,
       openAt,
       flowPicks,
       setFlowPicks,
@@ -393,7 +406,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
       sendToApi,
       apiInput,
     }),
-    [client, info, connected, view, setView, activeTab, replayTabs, openReplay, closeReplay, resendNow, selectedId, query, savedViews, saveView, refreshInfo, scope, openReplayById, toast, notify, openDraft, codecInput, sendToCodecs, raceItems, sendToRace, h3Items, sendToH3, streamId, streamPrefill, openStream, paused, approvals, subTab, openAt, flowPicks, traceInput, traceValue, compareMark, sendToApi, apiInput],
+    [client, info, connected, route, navigate, view, setView, activeTab, replayTabs, openReplay, closeReplay, resendNow, selectedId, query, savedViews, saveView, refreshInfo, scope, openReplayById, toast, notify, openDraft, codecInput, sendToCodecs, raceItems, sendToRace, h3Items, sendToH3, streamId, streamPrefill, openStream, paused, approvals, openAt, flowPicks, traceInput, traceValue, compareMark, sendToApi, apiInput],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

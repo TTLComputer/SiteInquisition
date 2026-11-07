@@ -159,7 +159,7 @@ function TechRow({ t, open, onToggle, onInspect, onHost }: { t: TechOverviewEntr
           {t.hosts.map((h) => (
             <li key={h.host} style={{ padding: '4px 0 4px 18px' }}>
               <div className="tech-line">
-                <button className="link-btn mono" onClick={() => onHost(h.host)} title="Show this host's traffic in History">
+                <button className="link-btn mono" onClick={() => onHost(h.host)} title="Show this host's traffic in Traffic">
                   {h.host}
                 </button>
                 <span className={STATUS_CLASS[h.status]}>

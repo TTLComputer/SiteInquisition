@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Four work areas instead of fourteen screens.** The navigation now follows an investigation: **Traffic** (requests, browser, timeline, live connections), **Explore API** (endpoints, resources, values, fields, API files, GraphQL, technology), **Replay** (open editors, flows, compare, auth and negative tests) and **Overrides** (everything that changes live traffic). **Project settings** (capture scope, session and authentication, proxy, certificates, storage, integrations) and **Advanced tools** (decode, race, protocol lab, script console) sit in the footer. Coverage moved out of History into Explore API, Endpoints; variables, login macros and AWS signing moved out of Cookies into Project settings, Session and authentication. Old names still resolve, so every link, shortcut and contextual action lands on the page that now owns it. Navigation never enables, disables or reorders a rule.
+- **Overrides, Active** lists every mock, match and replace rule, breakpoint and live hook in one table, with whether it is on and how often it matched, a switch for each, and Edit to its own editor.
+- Drop a Traffic row on Replay in the navigation to open it in an editor. Coming back to an area opens the page last used there.
+
 - **Build requests without raw editing.** Replay's request now has Params, Headers, Body and Auth views next to Raw, all over the same text. Values are decoded as far as they go (a query parameter that is url › base64 › JSON with an encoded field inside opens as editable JSON, a base64 header of form fields opens as rows, Cookie and Authorization split into their parts) and encoded back the same way on edit; untouched values stay byte for byte.
 - **Import curl**: paste a curl command into the Replay editor, use Import curl, or press + on the tab bar. Bash and Windows cmd copies from browsers both work; files the command reads are asked for in Body.
 - **Multipart and file bodies**: edit multipart parts as fields and attached files, send a file as the whole body, and edit captured uploads with their files attached. `{{file:name}}` puts a file's bytes in a body (an attachment, or a file in the project folder).

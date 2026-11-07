@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devk
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
 import { placeMenu } from '../src/components/placement';
 import { generateSelfSigned } from '../../core/src/x509';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 describe('placeMenu', () => {
   const vp = { width: 800, height: 600 };
@@ -72,7 +72,7 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     mkdirSync(SHOTS, { recursive: true });
     await page.screenshot({ path: join(SHOTS, `${name}.png`) });
   };
-  const nav = (name: string) => page.getByRole('navigation', { name: 'Views' }).getByRole('button', { name, exact: false }).first().click();
+  const nav = (name: string, sub?: string) => navTo(page, name, sub);
   const inViewport = async (selector: string) => {
     const box = (await page.locator(selector).boundingBox())!;
     const vp = await page.evaluate(() => ({ width: (globalThis as any).innerWidth as number, height: (globalThis as any).innerHeight as number }));
@@ -103,8 +103,7 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
   });
 
   it('glossary entries expand and lead to the requests behind them', async () => {
-    await nav('API');
-    await page.getByRole('tab', { name: 'Glossary' }).click();
+    await nav('Explore API', 'Fields');
     const row = page.locator('[data-testid=glossary-row][data-field=path]');
     await row.waitFor();
     const more = row.getByRole('button', { name: /^\+\d+ more$/ });
@@ -117,8 +116,7 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     await row.getByRole('button', { name: /GET \/api\/stock \$\.path/ }).click();
     await expect.poll(() => page.locator('.inspector').textContent()).toContain('/api/stock');
     // The count opens every request that carried the field, as a History search.
-    await nav('API');
-    await page.getByRole('tab', { name: 'Glossary' }).click();
+    await nav('Explore API', 'Fields');
     await page.locator('[data-testid=glossary-row][data-field=path]').getByRole('button', { name: /distinct/ }).click();
     await expect.poll(() => page.locator('#filter-input').inputValue()).toMatch(/^id:/);
     await expect.poll(() => page.locator('.row').count()).toBeGreaterThanOrEqual(5);
@@ -207,7 +205,7 @@ describe.skipIf(!ready)('UI feedback fixes in the renderer', () => {
     await page.keyboard.press('Control+r');
     const tab = page.locator('.tab-host').last();
     await expect.poll(() => tab.getByLabel('Raw request').inputValue()).toContain(value);
-    await tab.getByRole('button', { name: 'Open in Codecs' }).click();
+    await tab.getByRole('button', { name: 'Open in Decode' }).click();
 
     await expect.poll(() => page.getByLabel('Codec chain').locator('.chain-step').allTextContents()).toEqual(['url›', 'base64›', 'json']);
     await expect.poll(() => page.getByTestId('nested-field').allTextContents()).toEqual([expect.stringContaining('$.inner_data')]);

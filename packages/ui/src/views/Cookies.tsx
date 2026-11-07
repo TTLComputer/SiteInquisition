@@ -1,5 +1,4 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
-import { confirmLeave } from '../unsaved';
 import type { JarCookie, JarCookieInfo, SessionCookie } from '../api';
 import { CookieToggle } from './Tech';
 import { ReSignPanel, SignedTokens } from './ReSign';
@@ -237,7 +236,7 @@ function Jar() {
                         <button className="btn small" title={`Copy ${token} for use in replays`} onClick={() => navigator.clipboard.writeText(token).then(() => notify(`Copied ${token}`), () => notify(token))}>
                           Copy token
                         </button>{' '}
-                        <button className="btn small" title="Open the value in Codecs, with its layers detected" onClick={() => sendToCodecs(c.value, `cookie ${c.name}`)}>
+                        <button className="btn small" title="Open the value in Decode, with its layers detected" onClick={() => sendToCodecs(c.value, `cookie ${c.name}`)}>
                           Decode
                         </button>{' '}
                         <button className="btn small" aria-expanded={openSession === key} title="Read it as a framework session cookie (Flask, Django, Rails, Laravel, Express)" onClick={() => setOpenSession(openSession === key ? null : key)}>
@@ -279,14 +278,13 @@ function Jar() {
   );
 }
 
-export function Cookies({ macros, vars, aws }: { macros?: React.ReactNode; vars?: React.ReactNode; aws?: React.ReactNode }) {
-  const { subTab } = useApp();
-  const [tab, setTab] = useState<Tab>((subTab.cookies as Tab) ?? 'jar');
-  useEffect(() => {
-    if (subTab.cookies) setTab(subTab.cookies as Tab);
-  }, [subTab]);
-  const labels: Record<Tab, string> = { jar: 'Cookie jar', macros: 'Login macros', vars: 'Variables', signed: 'Signed tokens', aws: 'AWS SigV4' };
-  const body: Record<Tab, React.ReactNode> = {
+export type SessionTab = 'jar' | 'vars' | 'macros' | 'signed' | 'aws';
+
+/** Project settings > Session and authentication: cookies, extracted values, sign-in and signing, in one place. */
+export function Cookies({ macros, vars, aws, tab: wanted, onTab }: { macros?: React.ReactNode; vars?: React.ReactNode; aws?: React.ReactNode; tab?: string; onTab?: (t: SessionTab) => void }) {
+  const labels: Record<SessionTab, string> = { jar: 'Cookie jar', vars: 'Variables', macros: 'Login macros', signed: 'Signed tokens', aws: 'AWS SigV4' };
+  const tab: SessionTab = wanted && wanted in labels ? (wanted as SessionTab) : 'jar';
+  const body: Record<SessionTab, React.ReactNode> = {
     jar: <Jar />,
     macros: macros ?? <div className="empty">Login macros arrive with the power tools.</div>,
     vars: vars ?? <div className="empty">Token variables arrive with the power tools.</div>,
@@ -295,9 +293,9 @@ export function Cookies({ macros, vars, aws }: { macros?: React.ReactNode; vars?
   };
   return (
     <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
-      <div className="tabs" role="tablist" aria-label="Cookies and auth">
-        {(Object.keys(labels) as Tab[]).map((t) => (
-          <button key={t} role="tab" className="tab" aria-selected={tab === t} onClick={() => confirmLeave() && setTab(t)}>
+      <div className="tabs" role="tablist" aria-label="Session and authentication">
+        {(Object.keys(labels) as SessionTab[]).map((t) => (
+          <button key={t} role="tab" className="tab" aria-selected={tab === t} onClick={() => onTab?.(t)}>
             {labels[t]}
           </button>
         ))}

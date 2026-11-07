@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 // Decoding a selected region in place, in read-only views and in editors.
 const SHOTS = process.env.SIQ_SCREENSHOTS;
@@ -21,7 +21,7 @@ describe.skipIf(!ready)('Decoded regions in the renderer', () => {
     mkdirSync(SHOTS, { recursive: true });
     await page.screenshot({ path: join(SHOTS, `${name}.png`) });
   };
-  const nav = (name: string) => page.getByRole('navigation', { name: 'Views' }).getByRole('button', { name, exact: false }).first().click();
+  const nav = (name: string, sub?: string) => navTo(page, name, sub);
   /** Select the first place `needle` appears inside a decodable zone, the way a mouse drag would. */
   const select = (zone: string, needle: string) =>
     page.evaluate(

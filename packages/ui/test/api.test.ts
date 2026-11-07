@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 // API understanding in the renderer: values, tag references, flows, API files.
 const SHOTS = process.env.SIQ_SCREENSHOTS;
@@ -40,7 +40,7 @@ describe.skipIf(!ready)('API understanding in the renderer', () => {
     mkdirSync(SHOTS, { recursive: true });
     await page.screenshot({ path: join(SHOTS, `${name}.png`) });
   };
-  const nav = (name: string) => page.getByRole('navigation', { name: 'Views' }).getByRole('button', { name, exact: false }).first().click();
+  const nav = (name: string, sub?: string) => navTo(page, name, sub);
 
   beforeAll(async () => {
     h = await startHarness();
@@ -121,8 +121,7 @@ describe.skipIf(!ready)('API understanding in the renderer', () => {
   });
 
   it('builds and runs a flow, and a request uses it with {{flow:...}}', async () => {
-    await nav('API');
-    await page.getByRole('tab', { name: /Flows/ }).click();
+    await nav('Replay', 'Flows');
     await page.getByRole('button', { name: 'New flow' }).click();
     await page.getByLabel('Flow name').fill('make-order');
     await page.getByLabel('Step 1 request').fill(`POST ${base}/api/orders\nContent-Type: application/json\n\n{"sku":"{{pick:/api/products $.items[*].sku:last}}"}`);
@@ -147,21 +146,19 @@ describe.skipIf(!ready)('API understanding in the renderer', () => {
       await page.locator('.row', { hasText: path }).first().click({ button: 'right' });
       await page.getByRole('menuitem', { name: /Add to flow/ }).click();
     }
-    await nav('API');
-    await page.getByRole('tab', { name: /Flows/ }).click();
+    await nav('Replay', 'Flows');
     await page.getByRole('button', { name: /Make flow from 2 picked/ }).click();
     await expect.poll(() => page.locator('.flow-step').count()).toBe(2);
     expect(await page.getByLabel('Step 2 request').inputValue()).toContain('/api/apply-coupon');
   });
 
   it('imports an OpenAPI file, shows documented but never called endpoints, and opens one in Replay', async () => {
-    await page.getByRole('tab', { name: 'API files' }).click();
+    await nav('Explore API', 'API files');
     await page.getByLabel('Spec text').fill(OPENAPI(h.upstreamPort));
     await page.getByRole('button', { name: 'Import', exact: true }).click();
     await expect.poll(() => page.locator('.spec-card').textContent()).toContain('/api/orders/{orderId}');
     await shot('api-files');
-    await nav('History');
-    await page.getByRole('group', { name: 'History mode' }).getByRole('button', { name: 'Coverage' }).click();
+    await nav('Explore API', 'Endpoints');
     const never = page.getByLabel('Documented but never called');
     await expect.poll(() => never.textContent()).toContain('/api/refunds');
     expect(await never.textContent()).not.toContain('/api/orders/{orderId}');

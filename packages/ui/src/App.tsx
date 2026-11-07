@@ -1,13 +1,15 @@
-import { useEffect, useState } from 'react';
-import { useApp, type ViewId } from './state';
+import { useEffect, useRef, useState } from 'react';
+import { useApp } from './state';
 import { Icon } from './components/icons';
 import { fmtCount, fmtSize } from './format';
 import { DRAG_TYPE, History } from './views/History';
 import { Replay } from './views/Replay';
 import { NewRequestButton } from './views/NewRequest';
 import { WsReplay } from './views/WsReplay';
-import { Rules } from './views/Rules';
-import { SHORTCUTS, Settings } from './views/Settings';
+import { ScopeEditor } from './views/Rules';
+import { Breakpoints, Mocks, ReplaceRules } from './views/RulesTools';
+import { ActiveOverrides } from './views/Overrides';
+import { SHORTCUTS, SettingsSection, type SettingsSectionId } from './views/Settings';
 import { Placeholder } from './views/Placeholder';
 import { Browser } from './views/Browser';
 import { Timeline } from './views/Timeline';
@@ -17,7 +19,10 @@ import { Race } from './views/Race';
 import { H3Lab } from './views/H3Lab';
 import { Streams } from './views/Streams';
 import { Scripts } from './views/Scripts';
-import { Api } from './views/Api';
+import { Flows, Specs, Values } from './views/Api';
+import { AuthAndNegative, Compare, Glossary, GraphQL, Resources } from './views/ApiExtras';
+import { Coverage } from './views/Coverage';
+import { AREAS, areaDef, defaultRoute, type AreaDef, type AreaId, type Route } from './workspace/navigation';
 import { TechOverview } from './views/TechOverview';
 import { Aws, Macros, Variables } from './views/CookiesTools';
 import { ApprovalChip } from './views/Mcp';
@@ -25,27 +30,10 @@ import { LanChip } from './views/Lan';
 import { bodyText } from './actions';
 import { toRawRequest } from './format';
 
-const NAV: Array<{ id: ViewId; label: string }> = [
-  { id: 'browser', label: 'Browser' },
-  { id: 'history', label: 'History' },
-  { id: 'timeline', label: 'Timeline' },
-  { id: 'replay', label: 'Replay' },
-  { id: 'race', label: 'Race' },
-  { id: 'h3', label: 'Protocol lab' },
-  { id: 'rules', label: 'Rules' },
-  { id: 'codecs', label: 'Codecs' },
-  { id: 'cookies', label: 'Cookies' },
-  { id: 'streams', label: 'Streams' },
-  { id: 'scripts', label: 'Scripts' },
-  { id: 'api', label: 'API' },
-  { id: 'tech', label: 'Tech' },
-  { id: 'settings', label: 'Settings' },
-];
-
 const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 
 function TitleBar() {
-  const { info, connected, scope, setView, paused, openAt } = useApp();
+  const { info, connected, scope, navigate, paused } = useApp();
   const included = scope?.rules.filter((r) => r.action === 'include' && r.enabled !== false).length ?? 0;
   return (
     <header className="titlebar">
@@ -63,11 +51,11 @@ function TitleBar() {
         <span className="mono">{info?.proxyPort ? `${info.allowLan ? '0.0.0.0' : '127.0.0.1'}:${info.proxyPort}` : 'not listening'}</span>
         <span className="muted">{connected ? 'Recording in scope' : 'Disconnected'}</span>
       </span>
-      <button className="chip-btn" onClick={() => setView('rules')} title="Edit scope">
+      <button className="chip-btn" onClick={() => navigate('project/scope')} title="Edit the capture scope (Project settings)">
         Scope: {included === 0 ? (scope?.defaultAction === 'record' ? 'everything' : 'nothing yet') : `${included} ${included === 1 ? 'rule' : 'rules'}`}
       </button>
       {paused.length > 0 && (
-        <button className="chip-btn attention" onClick={() => openAt('rules', 'breakpoints')} data-testid="paused-chip">
+        <button className="chip-btn attention" onClick={() => navigate('overrides/breakpoints')} data-testid="paused-chip">
           <span className="dot" style={{ background: 'var(--warn)' }} />
           {paused.length} paused at a breakpoint
         </button>
@@ -77,7 +65,7 @@ function TitleBar() {
       <button
         className="chip-btn search"
         onClick={() => {
-          setView('history');
+          navigate('traffic/requests');
           window.setTimeout(() => document.getElementById('filter-input')?.focus(), 0);
         }}
       >
@@ -90,24 +78,54 @@ function TitleBar() {
 }
 
 function NavRail() {
-  const { view, setView, info, replayTabs, savedViews, setQuery, scope, raceItems, paused, flowPicks } = useApp();
-  const badge: Partial<Record<ViewId, string>> = {
-    history: info ? fmtCount(info.stats.exchanges) : undefined,
+  const { route, navigate, info, replayTabs, savedViews, setQuery, paused, raceItems, openReplayById, notify } = useApp();
+  const badge: Partial<Record<AreaId, string>> = {
+    traffic: info ? fmtCount(info.stats.exchanges) : undefined,
     replay: replayTabs.length ? String(replayTabs.length) : undefined,
-    race: raceItems.length ? String(raceItems.length) : undefined,
-    rules: paused.length ? `${paused.length} paused` : scope ? String(scope.rules.length) : undefined,
-    streams: info?.mqtt.length ? `${info.mqtt.length} mqtt` : undefined,
-    api: flowPicks.length ? `${flowPicks.length} picked` : undefined,
+    overrides: paused.length ? `${paused.length} paused` : undefined,
+    advanced: raceItems.length ? `${raceItems.length} in race` : undefined,
   };
+  const item = (a: AreaDef) => (
+    <button
+      key={a.id}
+      className="nav-item"
+      aria-current={route.area === a.id ? 'page' : undefined}
+      title={a.hint}
+      onClick={() => navigate(route.area === a.id ? defaultRoute(a.id) : lastPage.current[a.id] ?? defaultRoute(a.id))}
+      // Drop a History row on Replay to open it there.
+      onDragOver={
+        a.id === 'replay'
+          ? (e) => {
+              if (e.dataTransfer.types.includes(DRAG_TYPE)) {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'copy';
+              }
+            }
+          : undefined
+      }
+      onDrop={
+        a.id === 'replay'
+          ? (e) => {
+              const id = e.dataTransfer.getData(DRAG_TYPE);
+              if (id) {
+                e.preventDefault();
+                openReplayById(id).catch((err: Error) => notify(err.message));
+              }
+            }
+          : undefined
+      }
+    >
+      <Icon name={a.icon} />
+      {a.label}
+      {badge[a.id] && <span className="nav-badge">{badge[a.id]}</span>}
+    </button>
+  );
+  // Coming back to an area returns to the page last used there.
+  const lastPage = useRef<Partial<Record<AreaId, Route>>>({});
+  lastPage.current[route.area] = route;
   return (
-    <nav className="nav" aria-label="Views">
-      {NAV.map((n) => (
-        <button key={n.id} className="nav-item" aria-current={view === n.id ? 'page' : undefined} onClick={() => setView(n.id)}>
-          <Icon name={n.id} />
-          {n.label}
-          {badge[n.id] && <span className="nav-badge">{badge[n.id]}</span>}
-        </button>
-      ))}
+    <nav className="nav" aria-label="Work areas">
+      {AREAS.filter((a) => !a.footer).map(item)}
       {savedViews.length > 0 && <div className="nav-heading">Saved views</div>}
       {savedViews.map((v) => (
         <button
@@ -115,7 +133,7 @@ function NavRail() {
           className="saved-view"
           onClick={() => {
             setQuery(v.query);
-            setView('history');
+            navigate('traffic/requests');
           }}
         >
           <span>{v.name}</span>
@@ -125,6 +143,7 @@ function NavRail() {
         </button>
       ))}
       <div style={{ flex: 1 }} />
+      <div className="nav-footer">{AREAS.filter((a) => a.footer).map(item)}</div>
       {info && (
         <div className="nav-summary" aria-label="Capture summary">
           <div>
@@ -142,13 +161,35 @@ function NavRail() {
   );
 }
 
-function WorkspaceTabs() {
-  const { activeTab, setActiveTab, setView, replayTabs, closeReplay, openReplayById, notify } = useApp();
+/** The pages of the current work area, as tabs. */
+function AreaTabs() {
+  const { route, navigate, paused, flowPicks, replayTabs } = useApp();
+  const area = areaDef(route.area);
+  const extra: Record<string, string> = {
+    'overrides/breakpoints': paused.length ? ` (${paused.length} paused)` : '',
+    'replay/flows': flowPicks.length ? ` (${flowPicks.length} picked)` : '',
+    'replay/editors': replayTabs.length ? ` (${replayTabs.length})` : '',
+  };
+  return (
+    <div className="tabs area-tabs" role="tablist" aria-label={area.label}>
+      {area.pages.map((p) => (
+        <button key={p.id} role="tab" className="tab" aria-selected={route.page === p.id} title={p.hint} onClick={() => navigate({ area: area.id, page: p.id })}>
+          {p.label}
+          {extra[`${area.id}/${p.id}`]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The open replay editors: one tab per request or conversation. */
+function EditorTabs() {
+  const { activeTab, setActiveTab, replayTabs, closeReplay, openReplayById, notify } = useApp();
   return (
     <div
       className="tabs"
       role="tablist"
-      aria-label="Workspace"
+      aria-label="Open editors"
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes(DRAG_TYPE)) {
           e.preventDefault();
@@ -163,31 +204,14 @@ function WorkspaceTabs() {
         }
       }}
     >
-      <button
-        role="tab"
-        className="tab"
-        aria-selected={activeTab === 'history'}
-        onClick={() => {
-          setActiveTab('history');
-          setView('history');
-        }}
-      >
-        History
-      </button>
       {replayTabs.map((t) => (
         <div key={t.id} role="tab" className="tab" aria-selected={activeTab === t.id} tabIndex={0}
-          onClick={() => {
-            setActiveTab(t.id);
-            setView('replay');
-          }}
+          onClick={() => setActiveTab(t.id)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              setActiveTab(t.id);
-              setView('replay');
-            }
+            if (e.key === 'Enter' || e.key === ' ') setActiveTab(t.id);
           }}
         >
-          <span className="muted">Replay:</span> <span className={`mono m-${t.method}`}>{t.method}</span> {t.label}
+          <span className="muted">{t.kind === 'ws' ? 'Conversation:' : 'Replay:'}</span> <span className={`mono m-${t.method}`}>{t.method}</span> {t.label}
           <button
             className="close"
             aria-label={`Close replay ${t.label}`}
@@ -203,6 +227,74 @@ function WorkspaceTabs() {
       <NewRequestButton />
     </div>
   );
+}
+
+/** The page a route shows. Each capability has one owning component; routes are only ways to reach it. */
+function Page({ route }: { route: Route }) {
+  const { query, navigate } = useApp();
+  switch (`${route.area}/${route.page}`) {
+    case 'traffic/requests':
+      return <History />;
+    case 'traffic/browser':
+      return <Browser />;
+    case 'traffic/timeline':
+      return <Timeline />;
+    case 'traffic/connections':
+      return <Streams />;
+    case 'explore/endpoints':
+      return (
+        <div className="page">
+          <Coverage initialHost={/(?:^|\s)host:(\S+)/.exec(query)?.[1]?.replace(/^\*\./, '') ?? null} />
+        </div>
+      );
+    case 'explore/resources':
+      return <Resources />;
+    case 'explore/values':
+      return <Values />;
+    case 'explore/fields':
+      return <Glossary />;
+    case 'explore/specs':
+      return <Specs />;
+    case 'explore/graphql':
+      return <GraphQL />;
+    case 'explore/tech':
+      return <TechOverview />;
+    case 'replay/flows':
+      return <Flows />;
+    case 'replay/compare':
+      return <Compare />;
+    case 'replay/probes':
+      return <AuthAndNegative />;
+    case 'overrides/active':
+      return <ActiveOverrides />;
+    case 'overrides/mocks':
+      return <Mocks />;
+    case 'overrides/replace':
+      return <ReplaceRules />;
+    case 'overrides/breakpoints':
+      return <Breakpoints />;
+    case 'overrides/hooks':
+      return <Scripts only="hook" />;
+    case 'project/scope':
+      return <ScopeEditor />;
+    case 'project/session':
+      return <Cookies macros={<Macros />} vars={<Variables />} aws={<Aws />} tab={route.tab} onTab={(t) => navigate({ ...route, tab: t })} />;
+    case 'advanced/codecs':
+      return <Codecs />;
+    case 'advanced/race':
+      return <Race />;
+    case 'advanced/h3':
+      return <H3Lab />;
+    case 'advanced/scripts':
+      return <Scripts />;
+  }
+  if (route.area === 'project')
+    return (
+      <div className="page">
+        <SettingsSection section={route.page as SettingsSectionId} />
+      </div>
+    );
+  return null;
 }
 
 /** The text selected anywhere on the page, including inside a text field. */
@@ -251,7 +343,7 @@ function ShortcutOverlay() {
           </tbody>
         </table>
         <div className="muted" style={{ padding: '8px 14px 12px', fontSize: 12 }}>
-          Also in Settings, Keyboard. Esc closes this.
+          Also in Project settings, Keyboard. Esc closes this.
         </div>
       </div>
     </div>
@@ -259,7 +351,7 @@ function ShortcutOverlay() {
 }
 
 function useShortcuts() {
-  const { client, selectedId, openReplayById, resendNow, notify, setView, sendToCodecs, sendToRace } = useApp();
+  const { client, selectedId, openReplayById, resendNow, notify, navigate, sendToCodecs, sendToRace } = useApp();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -267,7 +359,7 @@ function useShortcuts() {
       const key = e.key.toLowerCase();
       if (key === 'k') {
         e.preventDefault();
-        setView('history');
+        navigate('traffic/requests');
         window.setTimeout(() => document.getElementById('filter-input')?.focus(), 0);
       } else if (key === 'd') {
         e.preventDefault();
@@ -285,7 +377,7 @@ function useShortcuts() {
             (t) => sendToCodecs(t, 'selected response'),
             (err: Error) => notify(err.message),
           );
-        else notify('Select some text, or an exchange in History, then press Ctrl D to decode it.');
+        else notify('Select some text, or an exchange in Traffic, then press Ctrl D to decode it.');
       } else if (key === 'r' && e.shiftKey && selectedId) {
         e.preventDefault();
         (async () => {
@@ -303,43 +395,33 @@ function useShortcuts() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [client, selectedId, openReplayById, resendNow, notify, setView, sendToCodecs, sendToRace]);
+  }, [client, selectedId, openReplayById, resendNow, notify, navigate, sendToCodecs, sendToRace]);
 }
 
 export function App() {
-  const { view, connected, toast, activeTab, replayTabs } = useApp();
+  const { route, connected, toast, activeTab, replayTabs } = useApp();
   useShortcuts();
-  const activeReplay = replayTabs.find((t) => t.id === activeTab);
+  const onEditors = route.area === 'replay' && route.page === 'editors';
+  const activeReplay = replayTabs.find((t) => t.id === activeTab) ?? replayTabs[replayTabs.length - 1];
   return (
     <div className="app">
       <TitleBar />
       {!connected && <div className="connection-lost" role="status">Lost the connection to the core. Reconnecting...</div>}
       <div className="body">
         <NavRail />
-        <main className="main">
-          {(view === 'history' || view === 'replay') && <WorkspaceTabs />}
-          {view === 'history' && <History />}
-          {/* Replay tabs stay mounted while hidden so unsent edits survive switching views. */}
+        <main className="main" aria-label={areaDef(route.area).label}>
+          <AreaTabs />
+          {onEditors && <EditorTabs />}
+          {/* Replay editors stay mounted while hidden so unsent edits survive moving around. */}
           {replayTabs.map((t) => (
-            <div key={t.id} className="tab-host" style={{ display: view === 'replay' && t.id === activeTab ? 'flex' : 'none' }}>
+            <div key={t.id} className="tab-host" style={{ display: onEditors && t.id === activeReplay?.id ? 'flex' : 'none' }}>
               {t.kind === 'ws' ? <WsReplay tab={t} /> : <Replay tab={t} />}
             </div>
           ))}
-          {view === 'replay' && !activeReplay && (
-            <Placeholder title="Replay" text="Send a request here with Send to Replay: the Replay pill on any History row, Ctrl R, the right-click menu, or the button in the Inspector, Timeline and API screens. Or press + on the tab bar for a blank request, or one from a curl command." />
+          {onEditors && !activeReplay && (
+            <Placeholder title="No open editors" text="Send a request here with Send to Replay: the Replay pill on any Traffic row, Ctrl R, the right-click menu, or the button in the Inspector, Timeline and Explore API screens. Drop a row on Replay in the navigation. Or press + on the tab bar for a blank request, or one from a curl command." />
           )}
-          {view === 'browser' && <Browser />}
-          {view === 'timeline' && <Timeline />}
-          {view === 'cookies' && <Cookies macros={<Macros />} vars={<Variables />} aws={<Aws />} />}
-          {view === 'codecs' && <Codecs />}
-          {view === 'race' && <Race />}
-          {view === 'h3' && <H3Lab />}
-          {view === 'streams' && <Streams />}
-          {view === 'scripts' && <Scripts />}
-          {view === 'api' && <Api />}
-          {view === 'tech' && <TechOverview />}
-          {view === 'rules' && <Rules />}
-          {view === 'settings' && <Settings />}
+          {!onEditors && <Page route={route} />}
         </main>
       </div>
       <ShortcutOverlay />

@@ -161,7 +161,7 @@ export function H3Lab() {
   const defaultScheme = h2 ? 'https' : 'https';
 
   const addSelected = async () => {
-    if (!selectedId) return notify('Select a request in History first.');
+    if (!selectedId) return notify('Select a request in Traffic first.');
     const ex = await client.get(selectedId);
     const body = ex.reqBodySize ? await bodyText(client, ex.id, 'request').catch(() => '') : '';
     const url = ex.url.replace(/^http:/, `${defaultScheme}:`);
@@ -353,7 +353,7 @@ export function H3Lab() {
         <button className="btn small" onClick={() => void runLadder()} disabled={running || !h3Items.length} title="Probe the first row's host: which ways of getting HTTP/2 and HTTP/3 does it accept?">
           Ladder test
         </button>
-        <button className="btn small" onClick={() => void addSelected()} disabled={!selectedId} title="Add the request selected in History">
+        <button className="btn small" onClick={() => void addSelected()} disabled={!selectedId} title="Add the request selected in Traffic">
           Add selected request
         </button>
         <button className="btn small" onClick={fromRace} disabled={!raceItems.length} title="Copy the requests lined up in Race">
@@ -553,7 +553,7 @@ export function H3Lab() {
         <div className="empty">
           <div className="panel-title">No streams planned</div>
           <div style={{ maxWidth: 560 }}>
-            Select a request in History and press Add selected request, or copy what is lined up in Race. Every row becomes a stream on one {h2 ? 'HTTP/2' : 'QUIC'} connection, so all rows must share a host and port. Then set when each stream opens, what it holds back, and when it resets.
+            Select a request in Traffic and press Add selected request, or copy what is lined up in Race. Every row becomes a stream on one {h2 ? 'HTTP/2' : 'QUIC'} connection, so all rows must share a host and port. Then set when each stream opens, what it holds back, and when it resets.
           </div>
         </div>
       ) : (
@@ -693,7 +693,7 @@ export function H3Lab() {
                 setView('history');
               }}
             >
-              All streams in History
+              All streams in Traffic
             </button>
           </div>
           {result.runs.map((r) => (
@@ -716,7 +716,7 @@ export function H3Lab() {
                 setView('history');
               }}
             >
-              All streams in History
+              All streams in Traffic
             </button>
           </div>
           {h2Result.runs.map((r) => (

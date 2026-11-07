@@ -51,7 +51,7 @@ export function Macros() {
     }
   };
   const addSelected = async (m: MacroDraft) => {
-    if (!selectedId) return notify('Select the login request in History first.');
+    if (!selectedId) return notify('Select the login request in Traffic first.');
     const ex = await client.get(selectedId);
     const body = ex.reqBodySize ? await bodyText(client, ex.id, 'request').catch(() => '') : '';
     const headers = ex.requestHeaders.filter(([h]) => h.toLowerCase() !== 'cookie');
@@ -91,7 +91,7 @@ export function Macros() {
               on
               <input className="input mono" value={m.statusesText} onChange={(e) => set(m.key, { statusesText: e.target.value })} style={{ width: 90 }} aria-label="Statuses" />
             </label>
-            <button className="btn small" onClick={() => void addSelected(m)} title="Add the request selected in History as a step">
+            <button className="btn small" onClick={() => void addSelected(m)} title="Add the request selected in Traffic as a step">
               Add selected request
             </button>
             <button

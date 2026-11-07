@@ -111,7 +111,7 @@ export function ReSignPanel({ value, label, cookie, onClose, onSaved }: { value:
   };
 
   const keepEvergreen = async () => {
-    if (!keyName) return notify('Pick a stored key for an evergreen token. Add one in Settings › Signing keys, then select it here.');
+    if (!keyName) return notify('Pick a stored key for an evergreen token. Add one in Project settings › Signing keys, then select it here.');
     if (!tokenName.trim()) return notify('Give the evergreen token a name.');
     if (parsedPayload.error) return notify(`Payload is not valid JSON: ${parsedPayload.error}`);
     try {
@@ -196,7 +196,7 @@ export function ReSignPanel({ value, label, cookie, onClose, onSaved }: { value:
         {output && (
           <>
             <Copy text={output} />
-            <button className="btn small" onClick={() => sendToCodecs(output, label ?? 're-signed')}>Open in Codecs</button>
+            <button className="btn small" onClick={() => sendToCodecs(output, label ?? 're-signed')}>Open in Decode</button>
           </>
         )}
       </div>
@@ -282,7 +282,7 @@ export function SignedTokens() {
                 <td>
                   {e.keyName}
                   {!e.canSign && (
-                    <div className="faint" style={{ fontSize: 11 }} title="Add the key in Settings › Signing keys to mint this token">
+                    <div className="faint" style={{ fontSize: 11 }} title="Add the key in Project settings › Signing keys to mint this token">
                       key not loaded
                     </div>
                   )}

@@ -388,16 +388,16 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
         <button className="btn small" onClick={() => void decodeInline()} title="Show the selection, or the value under the caret, decoded in place in the message being edited. It is encoded again when the script runs. Ctrl D">
           Decode
         </button>
-        <button className="btn small" onClick={decodeSelection} title="Open the selection (or the message being edited) in Codecs, then put the result back. Ctrl Shift D">
-          Open in Codecs
+        <button className="btn small" onClick={decodeSelection} title="Open the selection (or the message being edited) in Decode, then put the result back. Ctrl Shift D">
+          Open in Decode
         </button>
         <button
           className="btn small"
-          title="Pause messages on connections to this URL so you can edit or drop them (Rules, Breakpoints)"
+          title="Pause messages on connections to this URL so you can edit or drop them (Overrides, Breakpoints)"
           onClick={() =>
             original &&
             breakOnMessages(client, original).then(
-              () => notify('Messages on this URL will pause in Rules, Breakpoints. Traffic through the proxy waits there for you.'),
+              () => notify('Messages on this URL will pause in Overrides, Breakpoints. Traffic through the proxy waits there for you.'),
               (e: Error) => notify(e.message),
             )
           }
@@ -414,7 +414,7 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
             setView('history');
           }}
         >
-          All runs in History
+          All runs in Traffic
         </button>
       </div>
       <div className="replay-options" aria-label="Run options">
@@ -530,8 +530,8 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
             )}
             {shownSummary && (
               <>
-                <button className="btn small" onClick={() => openStream(shownSummary.id)} title="Open this connection in Streams for exact frames and presets">
-                  Open in Streams
+                <button className="btn small" onClick={() => openStream(shownSummary.id)} title="Open this connection in Live connections for exact frames and presets">
+                  Open in Live connections
                 </button>
                 <button
                   className="btn small"
@@ -540,7 +540,7 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
                     setView('history');
                   }}
                 >
-                  Show in History
+                  Show in Traffic
                 </button>
               </>
             )}

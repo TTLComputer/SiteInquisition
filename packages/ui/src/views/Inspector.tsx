@@ -86,13 +86,13 @@ function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrac
         {onDecode && bytes && bytes.length > 0 && (
           <button
             className="btn small"
-            title="Open the selected text, or the whole body, in Codecs (Ctrl Shift D). To decode in place, select a value and press Ctrl D."
+            title="Open the selected text, or the whole body, in Decode (Ctrl Shift D). To decode in place, select a value and press Ctrl D."
             onClick={() => {
               const sel = window.getSelection()?.toString();
               onDecode(sel && sel.length > 0 ? sel : (asText(bytes) ?? hexDump(bytes)));
             }}
           >
-            Codecs
+            Open in Decode
           </button>
         )}
         {onTrace && (
@@ -522,14 +522,14 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
         <ReplayButton exchange={ex} primary />
         {ex.stream ? (
           <>
-            <button className="btn small" onClick={() => openStream(ex.id)} title="Open this connection in the Streams composer to send messages">
-              Open in Streams
+            <button className="btn small" onClick={() => openStream(ex.id)} title="Open this connection in the Live connections composer to send messages">
+              Open in Live connections
             </button>
             {ex.isWebSocket && (
               <button
                 className="btn small"
                 title="Pause messages on connections to this URL, to edit or drop them before they go on"
-                onClick={() => breakOnMessages(client, ex).then(() => notify('Messages on this URL will pause in Rules, Breakpoints.'), (e: Error) => notify(e.message))}
+                onClick={() => breakOnMessages(client, ex).then(() => notify('Messages on this URL will pause in Overrides, Breakpoints.'), (e: Error) => notify(e.message))}
               >
                 Break
               </button>
@@ -550,7 +550,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
             <button
               className="btn small"
               title="Serve this response as a mock from now on"
-              onClick={() => mockFromExchange(client, ex).then((n) => notify(`Mock "${n}" added. Edit it in Rules, Mocks.`), (e: Error) => notify(e.message))}
+              onClick={() => mockFromExchange(client, ex).then((n) => notify(`Mock "${n}" added. Edit it in Overrides, Mocks.`), (e: Error) => notify(e.message))}
             >
               Mock
             </button>

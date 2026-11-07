@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
 import { createHmac } from 'node:crypto';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
 function hs256(payload: object, secret: string): string {
@@ -29,7 +29,7 @@ describe.skipIf(!ready)('technologies in the renderer', () => {
   };
   const names = () => page.locator('[data-testid=tech-row] .tech-line > b').allTextContents();
   const row = async (name: string) => page.getByTestId('tech-row').nth((await names()).indexOf(name));
-  const nav = (name: string) => page.getByRole('navigation', { name: 'Views' }).getByRole('button', { name, exact: false }).first().click();
+  const nav = (name: string, sub?: string) => navTo(page, name, sub);
 
   beforeAll(async () => {
     h = await startHarness();

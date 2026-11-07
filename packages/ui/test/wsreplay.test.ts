@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devk
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
 import { connectWebSocket } from '@siteinquisition/core';
 import { tunnel } from '../../core/test/proxy-client';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 // WebSocket replay, driven through the built renderer against a real core.
 const SHOTS = process.env.SIQ_SCREENSHOTS;
@@ -21,7 +21,7 @@ describe.skipIf(!ready)('WebSocket replay in the renderer', () => {
     mkdirSync(SHOTS, { recursive: true });
     await page.screenshot({ path: join(SHOTS, `${name}.png`) });
   };
-  const nav = (name: string) => page.getByRole('navigation', { name: 'Views' }).getByRole('button', { name, exact: false }).first().click();
+  const nav = (name: string, sub?: string) => navTo(page, name, sub);
   const texts = (id: string, dir: 'client' | 'server') =>
     h.core.store
       .getStreamMessages(h.core.store.getStreamForExchange(id)!.id)
@@ -55,7 +55,7 @@ describe.skipIf(!ready)('WebSocket replay in the renderer', () => {
   it('opens a WebSocket in its own Replay editor from Send to Replay', async () => {
     await page.locator('.row', { hasText: '/chat' }).first().click();
     await page.getByLabel('Inspector').getByRole('button', { name: 'Send to Replay' }).click();
-    await expect.poll(() => page.getByRole('tablist', { name: 'Workspace' }).textContent()).toContain('WS');
+    await expect.poll(() => page.getByRole('tablist', { name: 'Open editors' }).textContent()).toContain('WS');
     await expect.poll(() => page.getByLabel('Handshake').inputValue()).toContain('X-Room: lobby');
     expect(await page.getByLabel('Handshake').inputValue()).toMatch(/^GET ws:\/\/127\.0\.0\.1:\d+\/chat/);
     const steps = page.getByLabel('Steps');

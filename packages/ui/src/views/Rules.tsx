@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { confirmLeave, useUnsaved } from '../unsaved';
+import { useUnsaved } from '../unsaved';
 import type { ScopeConfig, ScopeRule, SeenHost } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { fmtTime } from '../format';
-import { Breakpoints, Mocks, ReplaceRules } from './RulesTools';
+
 
 type RuleDraft = Omit<ScopeRule, 'id'> & { id?: string; key: string };
-type RulesTab = 'scope' | 'replace' | 'mocks' | 'breakpoints';
 
 let nextKey = 1;
 const draftOf = (r: ScopeRule): RuleDraft => ({ ...r, key: r.id });
@@ -20,7 +19,7 @@ function Flag({ value, onChange, label, disabled }: { value: boolean; onChange(v
   return <input type="checkbox" aria-label={label} checked={value} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />;
 }
 
-function ScopeEditor() {
+export function ScopeEditor() {
   const { client, scope, notify } = useApp();
   const [rules, setRules] = useState<RuleDraft[]>([]);
   const [defaultAction, setDefaultAction] = useState<ScopeConfig['defaultAction']>('ignore');
@@ -229,30 +228,6 @@ function ScopeEditor() {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-export function Rules() {
-  const { subTab, paused } = useApp();
-  const [tab, setTab] = useState<RulesTab>((subTab.rules as RulesTab) ?? 'scope');
-  useEffect(() => {
-    if (subTab.rules) setTab(subTab.rules as RulesTab);
-  }, [subTab]);
-  const labels: Record<RulesTab, string> = { scope: 'Scope', replace: 'Match and replace', mocks: 'Mocks', breakpoints: paused.length ? `Breakpoints (${paused.length} paused)` : 'Breakpoints' };
-  return (
-    <div className="page" style={{ display: 'flex', flexDirection: 'column' }}>
-      <div className="tabs" role="tablist" aria-label="Rules">
-        {(Object.keys(labels) as RulesTab[]).map((t) => (
-          <button key={t} role="tab" className="tab" aria-selected={tab === t} onClick={() => confirmLeave() && setTab(t)}>
-            {labels[t]}
-          </button>
-        ))}
-      </div>
-      {tab === 'scope' && <ScopeEditor />}
-      {tab === 'replace' && <ReplaceRules />}
-      {tab === 'mocks' && <Mocks />}
-      {tab === 'breakpoints' && <Breakpoints />}
     </div>
   );
 }

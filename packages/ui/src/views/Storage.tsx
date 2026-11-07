@@ -97,7 +97,7 @@ export function StorageSettings({ Row }: { Row: (p: { label: string; children: R
         </button>
         <span className="muted" style={{ fontSize: 12 }}>
           {' '}
-          To delete some of it, filter History and use Delete matching.
+          To delete some of it, filter Traffic, Requests and use Delete matching.
         </span>
       </Row>
     </>

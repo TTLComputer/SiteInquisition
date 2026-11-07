@@ -32,7 +32,7 @@ export function Race() {
   const patch = (key: string, p: Partial<RaceItem>) => setRaceItems(raceItems.map((i) => (i.key === key ? { ...i, ...p } : i)));
 
   const addSelected = async () => {
-    if (!selectedId) return notify('Select a request in History first.');
+    if (!selectedId) return notify('Select a request in Traffic first.');
     const ex = await client.get(selectedId);
     const body = ex.reqBodySize ? await bodyText(client, ex.id, 'request').catch(() => '') : '';
     setRaceItems([...raceItems, { key: `${Date.now()}`, label: ex.path.split('?')[0]!.split('/').pop() || '/', raw: toRawRequest(ex.method, ex.url, ex.requestHeaders, body), offsetMs: 0, replayOf: ex.id }]);
@@ -83,7 +83,7 @@ export function Race() {
           <input type="checkbox" checked={ignoreTls} onChange={(e) => setIgnoreTls(e.target.checked)} /> Ignore TLS errors
         </label>
         <span style={{ flex: 1 }} />
-        <button className="btn small" onClick={() => void addSelected()} disabled={!selectedId} title="Add the request selected in History">
+        <button className="btn small" onClick={() => void addSelected()} disabled={!selectedId} title="Add the request selected in Traffic">
           Add selected request
         </button>
         <button className="btn primary" onClick={() => void run()} disabled={running || raceItems.length === 0}>
@@ -96,7 +96,7 @@ export function Race() {
       {raceItems.length === 0 ? (
         <div className="empty">
           <div className="panel-title">Nothing lined up</div>
-          <div style={{ maxWidth: 520 }}>Send requests here with Race in the inspector, Send to Race in a Replay tab or the History right-click menu, or select a request in History and press Add selected request.</div>
+          <div style={{ maxWidth: 520 }}>Send requests here with Race in the inspector, Send to Race in a Replay tab or the Traffic right-click menu, or select a request in Traffic and press Add selected request.</div>
         </div>
       ) : (
         <div className="race-items">
@@ -169,7 +169,7 @@ export function Race() {
                 setView('history');
               }}
             >
-              All sends in History
+              All sends in Traffic
             </button>
           </div>
           {result.runs.map((r) => {

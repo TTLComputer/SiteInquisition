@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
 import { MemoryKeyring, parseJwt, verifyJwt } from '@siteinquisition/core';
-import { DIST, startHarness, type Harness } from './harness';
+import { DIST, navTo, startHarness, type Harness } from './harness';
 
 // Re-signing and evergreen tokens, driven through the built renderer against a real core.
 const SHOTS = process.env.SIQ_SCREENSHOTS;
@@ -21,7 +21,7 @@ describe.skipIf(!ready)('re-signing and evergreen tokens in the renderer', () =>
     mkdirSync(SHOTS, { recursive: true });
     await page.screenshot({ path: join(SHOTS, `${name}.png`), fullPage: true });
   };
-  const nav = (name: string) => page.getByRole('navigation', { name: 'Views' }).getByRole('button', { name, exact: false }).first().click();
+  const nav = (name: string, sub?: string) => navTo(page, name, sub);
 
   beforeAll(async () => {
     // A memory keyring makes saving keys available (as a real OS keyring would).

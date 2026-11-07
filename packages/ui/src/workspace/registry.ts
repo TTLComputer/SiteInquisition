@@ -107,6 +107,16 @@ export const EXCHANGE_ACTIONS: ExchangeAction[] = [
       a.notify(`${a.flowPicks.length + 1} picked. Make the flow in Replay, Flows.`);
     },
   },
+  {
+    id: 'endpoint',
+    label: 'Explore endpoint',
+    group: 'explore',
+    when: httpOnly,
+    run: async (r, a) => {
+      const n = await a.client.noteFor(r.id);
+      if (n) a.openEndpoint(n.key);
+    },
+  },
   { id: 'auth', label: 'Try as other users (auth matrix)', group: 'explore', when: httpOnly, run: (r, a) => a.sendToApi('auth', [r.id]) },
   { id: 'negative', label: 'Run negative tests', group: 'explore', when: httpOnly, run: (r, a) => a.sendToApi('negative', [r.id]) },
   {

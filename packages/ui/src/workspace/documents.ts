@@ -37,6 +37,7 @@ function validDoc(d: unknown): d is WorkspaceDoc {
   if (!str(x.id) || !str(x.label)) return false;
   if (x.kind === 'compare') return str(x.a) && str(x.b);
   if (x.kind === 'flow') return str(x.flow);
+  if (x.kind === 'endpoint') return str(x.key) && str(x.method);
   if (x.kind !== undefined && x.kind !== 'http' && x.kind !== 'ws') return false;
   if (!str(x.exchangeId) || !str(x.method)) return false;
   // A draft-only document needs its draft; one from an exchange needs the exchange id.

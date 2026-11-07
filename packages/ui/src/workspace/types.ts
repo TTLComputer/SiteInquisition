@@ -83,7 +83,17 @@ export interface FlowDoc {
   flow: string;
 }
 
-export type WorkspaceDoc = ReplayTab | ComparisonDoc | FlowDoc;
+/** One endpoint: what was seen, what the API files say, and everything that touches it. */
+export interface EndpointDoc {
+  id: string;
+  kind: 'endpoint';
+  label: string;
+  method: string;
+  /** The endpoint reference, "host METHOD /template". */
+  key: string;
+}
+
+export type WorkspaceDoc = ReplayTab | ComparisonDoc | FlowDoc | EndpointDoc;
 
 export const isReplayDoc = (d: WorkspaceDoc): d is ReplayTab => d.kind === undefined || d.kind === 'http' || d.kind === 'ws';
 

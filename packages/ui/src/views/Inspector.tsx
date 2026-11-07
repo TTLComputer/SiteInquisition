@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { ContractResult, ExchangeDetail, HeaderList, SearchColumn, SearchTerm, WireStreamMessage } from '../api';
+import type { ContractResult, ExchangeDetail, HeaderList, SearchColumn, SearchTerm, WireStreamMessage, Transform } from '../api';
 import { base64ToBytes } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -16,7 +16,7 @@ import { regionLabel } from '@siteinquisition/codecs/regionedit';
 /** What the History search looks for, per part of the exchange. */
 type Hl = { line: RegExp | null; headers: RegExp | null; body: RegExp | null };
 
-type Tab = 'exchange' | 'messages' | 'tech' | 'timings' | 'notes';
+type Tab = 'exchange' | 'messages' | 'changes' | 'tech' | 'timings' | 'notes';
 type BodyMode = 'pretty' | 'raw' | 'hex';
 /** A body with its saved field codecs decoded in place, as regions. */
 type FieldView = Decoded | null;
@@ -248,6 +248,82 @@ export function Messages({ exchangeId, protocol }: { exchangeId: string; protoco
           </dl>
         )}
       </section>
+    </div>
+  );
+}
+
+const TRANSFORM_PAGE: Record<Transform['kind'], string | null> = { mock: 'overrides/mocks', replace: 'overrides/replace', breakpoint: 'overrides/breakpoints', hook: 'overrides/hooks', token: null };
+const TRANSFORM_KIND: Record<Transform['kind'], string> = { mock: 'Mock', replace: 'Replace rule', breakpoint: 'Breakpoint', hook: 'Live hook', token: 'Token' };
+
+function transformSentence(t: Transform): string {
+  switch (t.outcome) {
+    case 'answered':
+      return `answered the request itself (${t.target ?? 'mocked'}). No upstream server response exists for this exchange.`;
+    case 'dropped':
+      return `dropped the ${t.phase}.`;
+    case 'edited':
+      return `paused the ${t.phase} and it was sent on with edits.`;
+    case 'forwarded':
+      return `paused the ${t.phase}; it was sent on unchanged.`;
+    case 'paused':
+      return `paused the ${t.phase}.`;
+    default:
+      return `changed the ${t.phase}${t.target ? ` ${t.target}` : ''}.`;
+  }
+}
+
+/** Why this exchange looks the way it does: each override that acted on it, in order, with what it changed. */
+function Changes({ ex }: { ex: ExchangeDetail }) {
+  const { client, navigate } = useApp();
+  const [list, setList] = useState<Transform[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    client.transforms(ex.id).then((t) => live && setList(t), () => live && setList([]));
+    return () => {
+      live = false;
+    };
+  }, [client, ex.id, ex.status]);
+  if (!list) return <div className="empty">Loading...</div>;
+  const suspended = ex.tags.includes('overrides:suspended');
+  const oldTags = ex.tags.filter((t) => /^(rule|mock|script|breakpoint):/.test(t));
+  return (
+    <div className="transform-list" data-testid="transforms">
+      {suspended && <div className="muted">Overrides were suspended when this was captured, so nothing changed it.</div>}
+      {!list.length && !suspended && (
+        <div className="muted" data-testid="no-transforms">
+          {oldTags.length ? `Recorded before explanations were kept. Its tags say: ${oldTags.join(', ')}.` : 'No override matched this exchange. What you see is what the client and server sent.'}
+        </div>
+      )}
+      {list.map((t, i) => (
+        <div key={i} className="card" data-testid="transform">
+          <div>
+            <span className="badge">{TRANSFORM_KIND[t.kind]}</span> <b>{t.name}</b> {transformSentence(t)}
+            {t.revision && (
+              <span className="faint mono" title="Which version of the rule ran. Editing the rule later does not change this record." style={{ marginLeft: 6 }}>
+                rev {t.revision.slice(0, 7)}
+              </span>
+            )}
+            {TRANSFORM_PAGE[t.kind] && (
+              <button className="btn small ghost" style={{ marginLeft: 8 }} onClick={() => navigate(TRANSFORM_PAGE[t.kind]!)}>
+                Edit
+              </button>
+            )}
+          </div>
+          {(t.before !== undefined || t.after !== undefined) && (
+            <div className="transform-diff">
+              <div>
+                <div className="faint">Before</div>
+                <pre className="raw diff-del">{t.before}</pre>
+              </div>
+              <div>
+                <div className="faint">After</div>
+                <pre className="raw diff-add">{t.after}</pre>
+              </div>
+            </div>
+          )}
+          {t.truncated && <div className="faint">Shortened to the part around the first difference.</div>}
+        </div>
+      ))}
     </div>
   );
 }
@@ -506,7 +582,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
 
   const tabs: Array<[Tab, string]> = [['exchange', 'Request and response']];
   if (ex.stream) tabs.push(['messages', ex.stream.protocol.startsWith('mqtt') ? 'MQTT packets' : 'WebSocket messages']);
-  tabs.push(['tech', 'Tech and CSRF'], ['timings', 'Timings'], ['notes', 'Notes and tags']);
+  tabs.push(['changes', 'What changed it'], ['tech', 'Tech and CSRF'], ['timings', 'Timings'], ['notes', 'Notes and tags']);
 
   const responseLine =
     ex.status !== null ? `HTTP/${ex.httpVersion} ${ex.status} ${ex.statusMessage ?? ''}` : ex.state === 'pending' ? '(waiting for response)' : ex.error ? `(${ex.state}: ${ex.error})` : `(${ex.state})`;
@@ -639,6 +715,7 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
         )}
         {tab === 'messages' && ex.stream && <Messages exchangeId={ex.id} protocol={ex.stream.protocol} />}
         {tab === 'tech' && <TechPanel ex={ex} />}
+        {tab === 'changes' && <Changes ex={ex} />}
         {tab === 'timings' && <Timings ex={ex} />}
         {tab === 'notes' && <Notes ex={ex} />}
       </div>

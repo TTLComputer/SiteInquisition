@@ -105,6 +105,8 @@ export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeCon
 export type { ScopeRule, MatchCondition, MatchOp, RuleConditions } from '@siteinquisition/core';
 export type { ErrorCause, ErrorFinding, ParsedJwt, JwtFlag, AwsRequestInfo, KeyInfo, SessionCookie, SessionFramework, SessionStructure } from '@siteinquisition/core';
 export type { EvergreenEntry, EvergreenStatus, SignableKind } from '@siteinquisition/core';
+export type { Transform, OverrideGroup, OverrideKind, OverrideRef, OverrideState, EndpointDetail, EndpointRef } from '@siteinquisition/core';
+import type { Transform, OverrideGroup, OverrideState, OverrideRef, EndpointDetail } from '@siteinquisition/core';
 import type { ParsedJwt, AwsRequestInfo, KeyInfo, SessionCookie, EvergreenEntry, EvergreenStatus, SignableKind, WsScript, WsScriptStep, WsRunState } from '@siteinquisition/core';
 export type { WsScript, WsScriptStep, WsRunState, WsStepResult } from '@siteinquisition/core';
 
@@ -476,6 +478,14 @@ export class CoreClient {
   testRule = (rule: Partial<ReplaceRule>, exchangeId: string) => this.call<{ matched: boolean; count: number; before: string; after: string }>('rules.test', { rule, exchangeId });
   setMocks = (mocks: Array<Partial<MockRule>>) => this.call<MockRule[]>('mocks.set', { mocks });
   setBreakpoints = (breakpoints: Array<Partial<Breakpoint>>) => this.call<Breakpoint[]>('breakpoints.set', { breakpoints });
+  overrideState = () => this.call<OverrideState>('overrides.state');
+  /** Suspend or resume every override; their own on/off settings are left as they are. */
+  suspendOverrides = (suspended: boolean) => this.call<OverrideState>('overrides.suspend', { suspended });
+  setOverrideGroups = (groups: Array<Omit<OverrideGroup, 'id'> & { id?: string }>) => this.call<OverrideGroup[]>('overrides.setGroups', { groups });
+  applyOverrideGroup = (id: string, on: boolean, dryRun = false) =>
+    this.call<{ changed: OverrideRef[]; unchanged: OverrideRef[]; shared: Array<OverrideRef & { groups: string[] }> }>('overrides.applyGroup', { id, on, dryRun });
+  /** What mocks, rules, breakpoints and hooks did to one exchange, in order. */
+  transforms = (id: string) => this.call<Transform[]>('traffic.transforms', { id });
   paused = () => this.call<Paused[]>('intercept.list');
   resolvePaused = (id: string, action: 'forward' | 'drop' | 'forward-pause-response', edits?: Record<string, unknown>) => this.call<boolean>('intercept.resolve', { id, action, edits });
   releaseAll = () => this.call<number>('intercept.releaseAll');
@@ -583,6 +593,10 @@ export class CoreClient {
   exportPostman = (p: { flow?: string; ids?: string[]; name?: string }) => this.call<Record<string, unknown>>('export.postman', p);
   flowToTest = (name: string) => this.call<Script>('flows.toTest', { name });
   endpointNotes = () => this.call<Record<string, { notes: string; tags: string[]; updatedAt: number; by: string }>>('notes.endpoints');
+  /** Everything known about one endpoint reference, "host METHOD /template". */
+  endpoint = (key: string) => this.call<EndpointDetail>('endpoint.get', { key });
+  /** Make one endpoint reference an alias of another (null removes the alias). */
+  setEndpointAlias = (from: string, to: string | null) => this.call<Record<string, string>>('endpoint.alias', { from, to });
   setEndpointNote = (key: string, notes: string, tags: string[] = []) => this.call<Record<string, { notes: string; tags: string[] }>>('notes.setEndpoint', { key, notes, tags });
   noteFor = (id: string) => this.call<{ key: string; notes: string; tags: string[] } | null>('notes.forExchange', { id });
 }

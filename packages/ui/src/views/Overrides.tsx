@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Breakpoint, MockRule, ReplaceRule, Script } from '../api';
+import type { Breakpoint, MockRule, OverrideGroup, OverrideState, ReplaceRule, Script } from '../api';
 import { useApp } from '../state';
 
 /** One thing that changes live traffic, whichever engine runs it. */
@@ -17,7 +17,28 @@ export interface OverrideRow {
 }
 
 /** Project metadata keys that hold overrides; a change to any of them redraws the list. */
-export const OVERRIDE_META = new Set(['replaceRules', 'mocks', 'breakpoints', 'scripts']);
+export const OVERRIDE_META = new Set(['replaceRules', 'mocks', 'breakpoints', 'scripts', 'overridesSuspended', 'overrideGroups']);
+
+/** The master switch and groups, kept current for everyone looking at the project. */
+export function useOverrideState(): [OverrideState | null, () => Promise<void>] {
+  const { client, connected } = useApp();
+  const [state, setState] = useState<OverrideState | null>(null);
+  const load = useCallback(async () => {
+    try {
+      setState(await client.overrideState());
+    } catch {
+      // older core, or not connected yet
+    }
+  }, [client]);
+  useEffect(() => {
+    if (!connected) return;
+    void load();
+    return client.onChange((c) => {
+      if (c.kind === 'meta.set' && (c.entityId === 'overridesSuspended' || c.entityId === 'overrideGroups')) void load();
+    });
+  }, [client, connected, load]);
+  return [state, load];
+}
 
 const KIND_LABEL: Record<OverrideRow['kind'], string> = { mock: 'Mock', replace: 'Replace', breakpoint: 'Breakpoint', hook: 'Live hook' };
 
@@ -44,8 +65,11 @@ export function overrideRows(data: { rules: ReplaceRule[]; mocks: MockRule[]; br
 
 /** Overrides > Active: every mock, replacement, breakpoint and live hook in one list, with its state. */
 export function ActiveOverrides() {
-  const { client, notify, navigate, paused } = useApp();
+  const { client, notify, navigate, paused, ask } = useApp();
   const [rows, setRows] = useState<OverrideRow[] | null>(null);
+  const [state, reloadState] = useOverrideState();
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [groupName, setGroupName] = useState('');
   const load = useCallback(async () => {
     try {
       const [r, s] = await Promise.all([client.rules(), client.scripts()]);
@@ -78,10 +102,79 @@ export function ActiveOverrides() {
     }
   };
 
+  const suspend = async (on: boolean) => {
+    try {
+      await client.suspendOverrides(on);
+      await reloadState();
+      notify(on ? 'Overrides suspended. Their own switches are unchanged; traffic already paused stays paused.' : 'Overrides resumed');
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  const refOf = (key: string) => {
+    const r = rows?.find((x) => x.key === key);
+    return r ? { kind: r.kind, id: r.id } : null;
+  };
+  const nameOf = (m: { kind: string; id: string }) => rows?.find((r) => r.kind === m.kind && r.id === m.id)?.name ?? `${m.kind} (deleted)`;
+
+  const makeGroup = async () => {
+    const name = groupName;
+    if (!name.trim()) return notify('Name the group first');
+    const members = [...picked].map(refOf).filter((m): m is NonNullable<ReturnType<typeof refOf>> => !!m);
+    try {
+      await client.setOverrideGroups([...(state?.groups ?? []), { name: name.trim(), members }]);
+      setPicked(new Set());
+      setGroupName('');
+      await reloadState();
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  const deleteGroup = async (g: OverrideGroup) => {
+    try {
+      await client.setOverrideGroups((state?.groups ?? []).filter((x) => x.id !== g.id));
+      await reloadState();
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
+  /** Shows what would change first, including members shared with other groups, then changes all of them or none. */
+  const applyGroup = async (g: OverrideGroup, on: boolean) => {
+    try {
+      const plan = await client.applyOverrideGroup(g.id, on, true);
+      if (!plan.changed.length) return notify(`Every member of ${g.name} is already ${on ? 'on' : 'off'}`);
+      if (plan.shared.length) {
+        const text = `${plan.changed.length} will turn ${on ? 'on' : 'off'}. Also in other groups: ${plan.shared.map((m) => `${nameOf(m)} (${m.groups.join(', ')})`).join('; ')}.`;
+        if ((await ask({ title: `Turn ${on ? 'on' : 'off'} ${g.name}?`, text, choices: [{ id: 'cancel', label: 'Cancel' }, { id: 'go', label: `Turn ${on ? 'on' : 'off'}`, primary: true }] })) !== 'go') return;
+      }
+      const done = await client.applyOverrideGroup(g.id, on);
+      notify(`${g.name}: turned ${on ? 'on' : 'off'} ${done.changed.map(nameOf).join(', ')}`);
+      await load();
+    } catch (e) {
+      // All or nothing: the core changed nothing.
+      notify((e as Error).message);
+    }
+  };
+
   if (!rows) return <div className="empty">Loading overrides...</div>;
   const enabled = rows.filter((r) => r.enabled).length;
+  const suspended = !!state?.suspended;
   return (
     <div className="page-inner" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+      <div className={`card override-master${suspended ? ' suspended' : ''}`} data-testid="override-master">
+        <button className="switch" role="switch" aria-checked={!suspended} aria-label={suspended ? 'Resume all overrides' : 'Suspend all overrides'} onClick={() => void suspend(!suspended)} />
+        <div>
+          <b>{suspended ? 'All overrides suspended' : 'Overrides active'}</b>
+          <div className="faint">
+            {suspended
+              ? `Since ${state?.suspendedAt ? new Date(state.suspendedAt).toLocaleTimeString() : 'earlier'}. Traffic passes through unchanged and nothing new pauses. Each override keeps its own switch, so resuming puts back exactly what was on.${paused.length ? ` ${paused.length} already paused stay paused until you answer them.` : ''}`
+              : 'Suspend to see the real traffic without turning anything off one by one. Reopening the project keeps it suspended.'}
+          </div>
+        </div>
+      </div>
       <div className="muted" data-testid="override-summary">
         {rows.length === 0
           ? 'Nothing changes live traffic. Create a mock, replacement or breakpoint from any request (right-click it in Traffic), or from the pages above.'
@@ -91,6 +184,9 @@ export function ActiveOverrides() {
         <table className="data-table" aria-label="Overrides">
           <thead>
             <tr>
+              <th>
+                <span className="sr-only">Pick for a group</span>
+              </th>
               <th>On</th>
               <th>Kind</th>
               <th>Name</th>
@@ -102,7 +198,20 @@ export function ActiveOverrides() {
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.key} data-testid="override-row" data-kind={r.kind}>
+              <tr key={r.key} data-testid="override-row" data-kind={r.kind} className={suspended ? 'faint' : undefined}>
+                <td>
+                  <input
+                    type="checkbox"
+                    aria-label={`Pick ${KIND_LABEL[r.kind]} ${r.name} for a group`}
+                    checked={picked.has(r.key)}
+                    onChange={(e) => setPicked((p) => {
+                      const n = new Set(p);
+                      if (e.target.checked) n.add(r.key);
+                      else n.delete(r.key);
+                      return n;
+                    })}
+                  />
+                </td>
                 <td>
                   <button className="switch" role="switch" aria-checked={r.enabled} aria-label={`${r.enabled ? 'Turn off' : 'Turn on'} ${KIND_LABEL[r.kind]} ${r.name}`} onClick={() => void toggle(r, !r.enabled)} />
                 </td>
@@ -123,6 +232,66 @@ export function ActiveOverrides() {
           </tbody>
         </table>
       )}
+      {rows.length > 0 && (
+        <div className="filterbar">
+          <input className="input" placeholder="Group name, e.g. Checkout outage" aria-label="New group name" value={groupName} onChange={(e) => setGroupName(e.target.value)} style={{ width: 260 }} />
+          <button className="btn small" disabled={!picked.size || !groupName.trim()} onClick={() => void makeGroup()} title="Turn the picked overrides on or off together later">
+            Group {picked.size || ''} picked
+          </button>
+        </div>
+      )}
+      {!!state?.groups.length && (
+        <>
+          <div className="panel-title" style={{ margin: '12px 0 4px' }}>
+            Groups
+          </div>
+          <table className="data-table" aria-label="Override groups">
+            <tbody>
+              {state.groups.map((g) => {
+                const members = g.members.map((m) => rows.find((r) => r.kind === m.kind && r.id === m.id));
+                const on = members.filter((m) => m?.enabled).length;
+                const missing = members.filter((m) => !m).length;
+                return (
+                  <tr key={g.id} data-testid="override-group">
+                    <td>
+                      <b>{g.name}</b>
+                    </td>
+                    <td className="wrap">
+                      {g.members.map(nameOf).join(', ')}
+                      {missing > 0 && <span className="s-4"> · {missing} deleted, edit the group</span>}
+                    </td>
+                    <td>{on === g.members.length ? 'all on' : on === 0 ? 'all off' : `${on} of ${g.members.length} on`}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn small" onClick={() => void applyGroup(g, true)}>
+                        Turn on
+                      </button>{' '}
+                      <button className="btn small" onClick={() => void applyGroup(g, false)}>
+                        Turn off
+                      </button>{' '}
+                      <button className="btn small ghost" aria-label={`Delete group ${g.name}`} onClick={() => void deleteGroup(g)}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
     </div>
+  );
+}
+
+/** Title bar chip: says plainly when overrides are suspended, wherever you are. */
+export function OverridesChip() {
+  const { navigate } = useApp();
+  const [state] = useOverrideState();
+  if (!state?.suspended) return null;
+  return (
+    <button className="chip-btn attention" data-testid="overrides-suspended-chip" onClick={() => navigate('overrides/active')} title="Mocks, replacements, breakpoints and live hooks are not running">
+      <span className="dot" style={{ background: 'var(--warn)' }} />
+      Overrides suspended
+    </button>
   );
 }

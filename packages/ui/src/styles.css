@@ -725,3 +725,13 @@ textarea.region-ta::selection { background: color-mix(in srgb, var(--accent) 35%
 .new-request textarea { width: 100%; resize: vertical; }
 .cond-row > .label:first-child { min-width: 34px; }
 .where-row { padding-top: 0; }
+.override-master { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; margin-bottom: 10px; }
+.override-master.suspended { border-color: var(--warn); }
+.override-master .faint { margin-top: 2px; font-size: 12px; }
+.transform-list { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+.transform-list .card { padding: 8px 10px; }
+.transform-diff { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+.transform-diff pre { margin: 0; max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.endpoint-doc { padding: 12px 16px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
+.endpoint-doc section > h3 { font-size: 13px; margin: 0 0 6px; }
+.endpoint-doc .empty-note { color: var(--text-muted); font-size: 12px; }

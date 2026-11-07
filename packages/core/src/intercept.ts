@@ -44,6 +44,8 @@ export interface Paused {
 
 export interface Resolution {
   action: 'forward' | 'drop' | 'forward-pause-response';
+  /** Set by check(): the breakpoint that paused it. */
+  breakpointId?: string;
   /** Replacements for the paused message; omitted fields stay as they were. */
   edits?: Partial<Omit<HookMessage, 'body'>> & { bodyBase64?: string; /** WebSocket messages: send as text or binary instead. */ opcode?: 'text' | 'binary' };
 }
@@ -116,7 +118,7 @@ export class Intercept extends EventEmitter<{ paused: [Paused]; resolved: [strin
     };
     const res = await this.hold(item);
     if (res.action === 'forward-pause-response' && phase === 'request') this.pauseResponse.add(requestKey);
-    return res;
+    return { ...res, breakpointId: bp.id };
   }
 
   private hold(item: Paused): Promise<Resolution> {

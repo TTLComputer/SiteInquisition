@@ -223,4 +223,65 @@ describe.skipIf(!ready)('work areas in the renderer', () => {
     expect(await raw.inputValue()).toContain('HANDEDITED');
     expect(await raw.inputValue()).not.toContain(Buffer.from('{"inner":"value-3"}').toString('base64'));
   });
+  it('explains what changed an exchange, and suspends every override from one switch without turning any off', async () => {
+    h.core.tools.setMocks(h.core.tools.mocks().map((m) => ({ ...m, enabled: true })));
+    expect(await h.send('/api/pay', 'POST', '{}')).toBe(402);
+    await navTo(page, 'Traffic', 'Requests');
+    await page.locator('.row', { hasText: '/api/pay' }).first().click();
+    const insp = page.getByLabel('Inspector', { exact: true });
+    await insp.getByRole('tab', { name: 'What changed it' }).click();
+    await expect.poll(() => insp.getByTestId('transform').textContent()).toContain('Checkout payment failure');
+    expect(await insp.getByTestId('transform').textContent()).toContain('No upstream server response');
+    await page.locator('.row', { hasText: '/api/cart' }).first().click();
+    await insp.getByRole('tab', { name: 'What changed it' }).click();
+    await expect.poll(() => insp.getByTestId('no-transforms').textContent()).toContain('No override matched');
+
+    await navTo(page, 'Overrides', 'Active');
+    await page.getByRole('switch', { name: 'Suspend all overrides' }).click();
+    await expect.poll(() => h.core.tools.overrides.suspended).toBe(true);
+    await expect.poll(() => page.getByTestId('overrides-suspended-chip').count()).toBe(1);
+    expect(h.core.tools.mocks()[0]!.enabled).toBe(true);
+    expect(await h.send('/api/pay', 'POST', '{}')).toBe(200);
+    await shot('overrides-suspended');
+    await page.getByRole('switch', { name: 'Resume all overrides' }).click();
+    await expect.poll(() => page.getByTestId('overrides-suspended-chip').count()).toBe(0);
+    expect(await h.send('/api/pay', 'POST', '{}')).toBe(402);
+  });
+
+  it('turns a group of overrides on and off together', async () => {
+    h.core.tools.setMocks(h.core.tools.mocks().map((m) => ({ ...m, enabled: false })));
+    await navTo(page, 'Overrides', 'Active');
+    await expect.poll(() => page.getByTestId('override-summary').textContent()).toMatch(/configured, 0 on/);
+    await page.getByRole('checkbox', { name: /Pick Mock Checkout payment failure/ }).check();
+    await page.getByRole('checkbox', { name: /Pick Breakpoint/ }).check();
+    await page.getByLabel('New group name').fill('Checkout outage');
+    await page.getByRole('button', { name: /Group 2 picked/ }).click();
+    const group = page.getByTestId('override-group');
+    await expect.poll(() => group.textContent()).toContain('all off');
+    await group.getByRole('button', { name: 'Turn on' }).click();
+    await expect.poll(() => [h.core.tools.mocks()[0]!.enabled, h.core.tools.breakpoints()[0]!.enabled]).toEqual([true, true]);
+    await expect.poll(() => group.textContent()).toContain('all on');
+    await group.getByRole('button', { name: 'Turn off' }).click();
+    await expect.poll(() => [h.core.tools.mocks()[0]!.enabled, h.core.tools.breakpoints()[0]!.enabled]).toEqual([false, false]);
+  });
+
+  it('opens an endpoint as a document with its calls, contract state and related overrides', async () => {
+    await navTo(page, 'Explore API', 'Endpoints');
+    await page.locator('.coverage-table tr', { hasText: '/api/cart' }).first().getByRole('button', { name: 'Details' }).click();
+    await expect.poll(() => page.getByRole('tablist', { name: 'Open editors' }).textContent()).toContain('Endpoint:');
+    const doc = page.locator('.tab-host:not([style*="none"])').getByTestId('endpoint-doc');
+    await expect.poll(() => doc.getByTestId('endpoint-observed').textContent()).toContain('calls');
+    expect(await doc.textContent()).toContain('No documented operation');
+    await doc.getByRole('tab', { name: /Related work/ }).click();
+    await expect.poll(() => doc.getByTestId('endpoint-related-item').textContent()).toContain('Pause request');
+    await doc.getByRole('tab', { name: 'Traffic' }).click();
+    await expect.poll(() => doc.getByTestId('endpoint-call').count()).toBeGreaterThan(0);
+    await shot('endpoint');
+    // The same document opens from a request's menu.
+    await navTo(page, 'Traffic', 'Requests');
+    await page.locator('.row', { hasText: '/api/cart' }).first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Explore endpoint' }).click();
+    await expect.poll(() => selectedTab('Replay')).toContain('Open editors');
+    expect((await page.getByRole('tablist', { name: 'Open editors' }).textContent())!.match(/Endpoint:/g)).toHaveLength(1);
+  });
 });

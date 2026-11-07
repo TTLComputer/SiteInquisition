@@ -29,7 +29,7 @@ function toMarkdown(r: CoverageReport): string {
  * scripts mention that nobody has requested yet.
  */
 export function Coverage({ initialHost }: { initialHost: string | null }) {
-  const { client, setQuery, select, openReplayById, openDraft, notify, openAt, navigate } = useApp();
+  const { client, setQuery, select, openReplayById, openDraft, notify, openAt, navigate, openEndpoint } = useApp();
   const [docs, setDocs] = useState<SpecCoverage | null>(null);
   const [hosts, setHosts] = useState<SiteMapHost[]>([]);
   const [host, setHost] = useState<string | null>(initialHost);
@@ -226,6 +226,9 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                     <td>{undocumented.has(`${e.method} ${e.template}`) ? <span className="chip s-4" title="No imported API file describes this endpoint">undocumented</span> : <span className="faint">documented</span>}</td>
                   )}
                   <td style={{ whiteSpace: 'nowrap' }}>
+                    <button className="btn small" title="Open this endpoint: calls, fields, contract and related overrides" onClick={() => openEndpoint(`${report.host} ${e.method} ${e.template}`)}>
+                      Details
+                    </button>{' '}
                     <button
                       className="btn small"
                       title="Show these calls in Traffic"

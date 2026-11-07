@@ -99,6 +99,8 @@ interface AppState {
   openComparison(a: string, b: string): void;
   /** Open a saved flow as a document. */
   openFlow(name: string): void;
+  /** Open an endpoint, by its reference "host METHOD /template", as a document. */
+  openEndpoint(key: string): void;
   /** How the workspace last saved: shown beside the open editors. */
   workspaceStatus: { state: 'idle' | 'saved' | 'error'; at?: number; message?: string; restored?: number };
   /** Ask a question with buttons; resolves with the chosen button's id (or 'cancel'). */
@@ -394,6 +396,17 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     [setView],
   );
 
+  const openEndpoint = useCallback(
+    (key: string) => {
+      const id = `endpoint-${key}`;
+      const [, method = 'GET', template = key] = key.split(' ');
+      setDocs((tabs) => (tabs.some((t) => t.id === id) ? tabs : [...tabs, { id, kind: 'endpoint', label: template, method, key }]));
+      setActiveTab(id);
+      setView('replay');
+    },
+    [setView],
+  );
+
   // ---------- recovery: the workspace is saved per user, and put back on the next start ----------
   const asked = useRef(false);
   // Saving starts only once the last session has been read, so an empty start never overwrites it.
@@ -491,6 +504,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
       reportDraft,
       openComparison,
       openFlow,
+      openEndpoint,
       workspaceStatus,
       ask,
       dialog,
@@ -532,7 +546,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
       sendToApi,
       apiInput,
     }),
-    [client, info, connected, route, navigate, view, setView, goBack, goForward, historyTick, activeTab, docs, dirtyDocs, markDirty, reportDraft, openComparison, openFlow, workspaceStatus, ask, dialog, openReplay, closeReplay, resendNow, selectedId, query, savedViews, saveView, refreshInfo, scope, openReplayById, toast, notify, openDraft, codecInput, sendToCodecs, raceItems, sendToRace, h3Items, sendToH3, streamId, streamPrefill, openStream, paused, approvals, openAt, flowPicks, traceInput, traceValue, compareMark, sendToApi, apiInput],
+    [client, info, connected, route, navigate, view, setView, goBack, goForward, historyTick, activeTab, docs, dirtyDocs, markDirty, reportDraft, openComparison, openFlow, openEndpoint, workspaceStatus, ask, dialog, openReplay, closeReplay, resendNow, selectedId, query, savedViews, saveView, refreshInfo, scope, openReplayById, toast, notify, openDraft, codecInput, sendToCodecs, raceItems, sendToRace, h3Items, sendToH3, streamId, streamPrefill, openStream, paused, approvals, openAt, flowPicks, traceInput, traceValue, compareMark, sendToApi, apiInput],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

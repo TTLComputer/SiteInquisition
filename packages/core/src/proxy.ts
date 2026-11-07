@@ -10,7 +10,7 @@ import { globToRegExp, type Scope } from './scope.js';
 import { skipsTlsChecks } from './upstreamtls.js';
 import type { PlanStep, SentStep } from './wsplan.js';
 import type { SeenHosts } from './seen.js';
-import type { CaptureStore, ExchangeSource, ExchangeSummary, HeaderList, Timings } from './store.js';
+import type { CaptureStore, ExchangeSource, ExchangeSummary, HeaderList, Timings, Transform } from './store.js';
 
 export interface ProxyOptions {
   /** Port to listen on. 0 or undefined lets the OS pick a free port. */
@@ -52,8 +52,8 @@ export interface ProxyOptions {
  * canned response / drop for requests.
  */
 export interface ProxyHooks {
-  request?(msg: HookMessage, ctx: { key: string; source: ExchangeSource }): Promise<{ applied: string[]; respond?: { status: number; statusMessage?: string; headers: HeaderList; body: Uint8Array }; drop?: boolean }>;
-  response?(req: HookMessage, res: HookMessage, ctx: { key: string; source: ExchangeSource }): Promise<{ applied: string[]; drop?: boolean }>;
+  request?(msg: HookMessage, ctx: { key: string; source: ExchangeSource }): Promise<{ applied: string[]; transforms?: Transform[]; respond?: { status: number; statusMessage?: string; headers: HeaderList; body: Uint8Array }; drop?: boolean }>;
+  response?(req: HookMessage, res: HookMessage, ctx: { key: string; source: ExchangeSource }): Promise<{ applied: string[]; transforms?: Transform[]; drop?: boolean }>;
   /**
    * Whether the response hook needs this response. Responses it does not need
    * stream straight through (server-sent events, long downloads); the others
@@ -128,6 +128,7 @@ export class ProxyEngine extends EventEmitter<{
   private hooks?: ProxyHooks;
   /** Tags from hooks, by proxy request id, waiting for the exchange to be recorded. */
   private pendingTags = new Map<string, string[]>();
+  private pendingTransforms = new Map<string, Transform[]>();
   /** PING interval (ms) for HTTP/2 and HTTP/3 connections held at a breakpoint; 0 is off. */
   private pausedKeepAliveMs = 0;
 
@@ -159,6 +160,13 @@ export class ProxyEngine extends EventEmitter<{
   /** The current held-connection keepalive interval in ms, 0 when off. */
   get pausedKeepAlive(): number {
     return this.pausedKeepAliveMs;
+  }
+
+  private addTransforms(reqId: string, list: Transform[] | undefined): void {
+    if (!list?.length) return;
+    const live = this.live.get(reqId);
+    if (live) return this.store.addTransforms(live.exchangeId, list);
+    this.pendingTransforms.set(reqId, [...(this.pendingTransforms.get(reqId) ?? []), ...list]);
   }
 
   private addTags(reqId: string, tags: string[]): void {
@@ -194,6 +202,7 @@ export class ProxyEngine extends EventEmitter<{
               const before = JSON.stringify([msg.method, msg.url, msg.headers]);
               const out = await hooks.request!(msg, { key: req.id, source });
               this.addTags(req.id, tagsOf(out.applied));
+              this.addTransforms(req.id, out.transforms);
               if (out.drop) return { close: true };
               if (out.respond) return { respond: out.respond };
               const changedBody = !body.equals(Buffer.from(msg.body));
@@ -227,6 +236,7 @@ export class ProxyEngine extends EventEmitter<{
               const before = JSON.stringify([msg.status, msg.statusMessage, msg.headers]);
               const out = await hooks.response!(reqMsg, msg, { key: req.id, source });
               this.addTags(req.id, tagsOf(out.applied));
+              this.addTransforms(req.id, out.transforms);
               if (out.drop) return { close: true };
               const changedBody = !res.decodedBody.equals(Buffer.from(msg.body));
               if (before === JSON.stringify([msg.status, msg.statusMessage, msg.headers]) && !changedBody) return;
@@ -394,6 +404,11 @@ export class ProxyEngine extends EventEmitter<{
       this.pendingTags.delete(req.id);
       this.store.tagExchange(ex.id, [...new Set([...ex.tags, ...tags])]);
     }
+    const transforms = this.pendingTransforms.get(req.id);
+    if (transforms) {
+      this.pendingTransforms.delete(req.id);
+      this.store.addTransforms(ex.id, transforms);
+    }
     this.emit('exchange', ex);
   }
 
@@ -407,6 +422,7 @@ export class ProxyEngine extends EventEmitter<{
       this.guard((res) => {
         const live = this.live.get(res.id);
         this.pendingTags.delete(res.id);
+        this.pendingTransforms.delete(res.id);
         if (!live) return;
         this.live.delete(res.id);
         const summary = this.store.completeResponse(live.exchangeId, {
@@ -467,6 +483,7 @@ export class ProxyEngine extends EventEmitter<{
       'abort',
       this.guard((a) => {
         this.pendingTags.delete(a.id);
+        this.pendingTransforms.delete(a.id);
         const live = this.live.get(a.id);
         if (live) {
           this.live.delete(a.id);

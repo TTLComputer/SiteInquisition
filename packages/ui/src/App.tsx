@@ -8,7 +8,8 @@ import { NewRequestButton } from './views/NewRequest';
 import { WsReplay } from './views/WsReplay';
 import { ScopeEditor } from './views/Rules';
 import { Breakpoints, Mocks, ReplaceRules } from './views/RulesTools';
-import { ActiveOverrides } from './views/Overrides';
+import { ActiveOverrides, OverridesChip } from './views/Overrides';
+import { EndpointDocument } from './views/Endpoint';
 import { SHORTCUTS, SettingsSection, type SettingsSectionId } from './views/Settings';
 import { Placeholder } from './views/Placeholder';
 import { Browser } from './views/Browser';
@@ -63,6 +64,7 @@ function TitleBar() {
           {paused.length} paused at a breakpoint
         </button>
       )}
+      <OverridesChip />
       <ApprovalChip />
       <LanChip />
       <button
@@ -249,7 +251,7 @@ function EditorTabs() {
   );
 }
 
-const DOC_KIND: Record<string, string> = { http: 'Replay', ws: 'Conversation', compare: 'Compare', flow: 'Flow' };
+const DOC_KIND: Record<string, string> = { http: 'Replay', ws: 'Conversation', compare: 'Compare', flow: 'Flow', endpoint: 'Endpoint' };
 
 /** Whether open editors and drafts are saved for the next start. */
 function WorkspaceStatus({ status }: { status: ReturnType<typeof useApp>['workspaceStatus'] }) {
@@ -271,6 +273,7 @@ function WorkspaceStatus({ status }: { status: ReturnType<typeof useApp>['worksp
 function DocumentView({ doc }: { doc: WorkspaceDoc }) {
   if (doc.kind === 'compare') return <Compare a={doc.a} b={doc.b} />;
   if (doc.kind === 'flow') return <FlowDocument name={doc.flow} />;
+  if (doc.kind === 'endpoint') return <EndpointDocument endpointKey={doc.key} />;
   return doc.kind === 'ws' ? <WsReplay tab={doc} /> : <Replay tab={doc} />;
 }
 

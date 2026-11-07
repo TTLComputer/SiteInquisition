@@ -4,6 +4,7 @@ import { Icon } from './components/icons';
 import { fmtCount, fmtSize } from './format';
 import { DRAG_TYPE, History } from './views/History';
 import { Replay } from './views/Replay';
+import { NewRequestButton } from './views/NewRequest';
 import { WsReplay } from './views/WsReplay';
 import { Rules } from './views/Rules';
 import { SHORTCUTS, Settings } from './views/Settings';
@@ -199,6 +200,7 @@ function WorkspaceTabs() {
           </button>
         </div>
       ))}
+      <NewRequestButton />
     </div>
   );
 }
@@ -324,7 +326,7 @@ export function App() {
             </div>
           ))}
           {view === 'replay' && !activeReplay && (
-            <Placeholder title="Replay" text="Send a request here with Send to Replay: the Replay pill on any History row, Ctrl R, the right-click menu, or the button in the Inspector, Timeline and API screens." />
+            <Placeholder title="Replay" text="Send a request here with Send to Replay: the Replay pill on any History row, Ctrl R, the right-click menu, or the button in the Inspector, Timeline and API screens. Or press + on the tab bar for a blank request, or one from a curl command." />
           )}
           {view === 'browser' && <Browser />}
           {view === 'timeline' && <Timeline />}

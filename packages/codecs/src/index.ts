@@ -423,3 +423,5 @@ export * from './protobuf.js';
 
 export * from './fields.js';
 export * from './regions.js';
+export * from './structure.js';
+export * from './httpmsg.js';

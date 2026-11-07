@@ -36,6 +36,7 @@ import { KeyStore, type KeyVault, type PersistedKey } from './keys.js';
 import { Evergreen, renderEvergreen, signableKind, type EvergreenEntry, type SignableKind } from './evergreen.js';
 import { decodeSessionCookie, signFlaskCookie, tryFlaskSecrets, verifyFlaskCookie } from './sessioncookies.js';
 import { TechService } from './tech.js';
+import { OAuthService } from './oauth.js';
 import { Vars } from './vars.js';
 import { WsReplays } from './wsreplay.js';
 import type { WsScript } from './wsscript.js';
@@ -67,6 +68,8 @@ export class PowerTools {
   readonly keys: KeyStore;
   /** Saved evergreen signed tokens (JWTs and session cookies), re-minted on each send. */
   readonly evergreen: Evergreen;
+  /** OAuth 2.0 profiles and their tokens, for {{oauth:name}}. */
+  readonly oauth: OAuthService;
 
   constructor(private readonly core: Core) {
     const store = core.store;
@@ -94,6 +97,7 @@ export class PowerTools {
     this.keys = new KeyStore(vault);
     this.evergreen = new Evergreen(store, this.keys);
     this.vars = new Vars(store);
+    this.oauth = new OAuthService(store, () => core.secrets);
     this.errors = new ErrorService(store);
     this.tech = new TechService(store, this.vars, this.errors);
     this.fieldCodecs = new FieldCodecs(store);
@@ -129,6 +133,7 @@ export class PowerTools {
       fieldCodecs: this.fieldCodecs,
       sign: (name) => this.evergreen.resolve(name),
       signCookie: (host, name) => this.evergreen.resignCookie(host, name)?.value ?? null,
+      oauth: this.oauth,
     });
     // Search values can use the same tokens as Replay. Flows are left out: a search never sends requests.
     store.resolveTokens = (text) => resolveTokens(text, this.sender.tokenContext('http://localhost/'));
@@ -172,6 +177,7 @@ export class PowerTools {
     this.mcp.on('decided', (id, d) => emit('mcp.decided', id, d));
     this.mcp.on('activity', (a) => emit('mcp.activity', a.tool, a));
     this.ws.on('progress', (st) => emit('wsreplay.progress', st.exchangeId, st));
+    this.oauth.on('updated', (name) => emit('oauth.updated', name, null));
   }
 
   // ---------- config ----------
@@ -543,6 +549,9 @@ export class PowerTools {
 
   readonly hooks: ProxyHooks = {
     request: async (msg, ctx) => {
+      // The redirect back from an OAuth sign-in that is waiting for its code.
+      const signedIn = this.oauth.capture(msg.url);
+      if (signedIn) return { applied: ['oauth:callback'], respond: signedIn };
       const applied: string[] = [];
       const paused = await this.intercept.check('request', msg, ctx.source, ctx.key);
       if (paused?.action === 'drop') return { applied: ['breakpoint:dropped'], drop: true };

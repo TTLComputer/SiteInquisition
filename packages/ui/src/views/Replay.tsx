@@ -9,6 +9,8 @@ import { CertHelp } from './TlsSettings';
 import { mockFromExchange } from '../actions';
 import { DecodableText, RegionEditor, decodeInto, encodeAll } from '../components/Decoded';
 import { adjustForEdit, shiftRegions, type TextRegion } from '@siteinquisition/codecs/regionedit';
+import { boundaryOf, buildMultipart, crlf, fileToken, looksLikeCurl, parseCurl, parseMultipartBytes, type Part } from '@siteinquisition/codecs/httpmsg';
+import { RequestBuilder, builderCounts, fileRefs, type Attachment, type BuilderTab } from './RequestBuilder';
 
 interface Options {
   refreshCookies: boolean;
@@ -31,6 +33,43 @@ interface Options {
 const DEFAULT_OPTIONS: Options = { refreshCookies: false, applyRules: false, loginMacro: false, followRedirects: false, csrf: false, sigv4: '', ignoreTls: false, protocol: 'h1', h2Method: '', flow: '', encode: '', fields: '' };
 
 const binaryMarker = (n: number) => `<binary body: ${n} bytes, sent as captured>`;
+
+const BUILDER_TABS: Array<[BuilderTab, string]> = [
+  ['raw', 'Raw'],
+  ['params', 'Params'],
+  ['headers', 'Headers'],
+  ['body', 'Body'],
+  ['auth', 'Auth'],
+];
+
+/** What a curl import brought in, and what it could not. */
+interface ImportNote {
+  warnings: string[];
+  files: string[];
+  /** The request before the import, for Undo. */
+  before: string | null;
+}
+
+/**
+ * A captured multipart body that is not all text: text fields stay inline
+ * and each binary part becomes an attached file, so the upload can be edited.
+ */
+function editableMultipart(body: Uint8Array, contentType: string | undefined): { text: string; attachments: Record<string, Attachment> } | null {
+  const boundary = boundaryOf(contentType);
+  if (!boundary) return null;
+  const parts = parseMultipartBytes(body, boundary);
+  if (!parts) return null;
+  const attachments: Record<string, Attachment> = {};
+  const out: Part[] = parts.map((p, i) => {
+    const { text, bytes, ...head } = p;
+    if (text !== undefined) return { ...head, value: text };
+    let name = p.filename || `${p.name || 'part'}-${i + 1}.bin`;
+    for (let n = 2; attachments[name]; n++) name = `${n}-${name}`;
+    attachments[name] = { bytes: bytes!, type: p.contentType ?? 'application/octet-stream' };
+    return { ...head, value: fileToken(name) };
+  });
+  return { text: buildMultipart(out, boundary), attachments };
+}
 
 interface Shown {
   ex: ExchangeDetail;
@@ -90,6 +129,11 @@ export function Replay({ tab }: { tab: ReplayTab }) {
   const [shown, setShown] = useState<Shown | null>(null);
   const [compare, setCompare] = useState(false);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const [builderTab, setBuilderTab] = useState<BuilderTab>('raw');
+  const [attachments, setAttachments] = useState<Record<string, Attachment>>({});
+  const [curlOpen, setCurlOpen] = useState(false);
+  const [curlText, setCurlText] = useState('');
+  const [importNote, setImportNote] = useState<ImportNote | null>(tab.draft?.imported && (tab.draft.imported.warnings.length || tab.draft.imported.files.length) ? { ...tab.draft.imported, before: null } : null);
 
   // Send options are remembered per host, so the next replay to the same API starts the same way.
   const host = useMemo(() => {
@@ -133,6 +177,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
       setRegions([]);
       return;
     }
+    setAttachments({});
     const ex = await client.get(tab.exchangeId);
     const reqBody = ex.reqBodySize ? await client.body(ex.id, 'request', false) : new Uint8Array();
     const resBody = ex.state === 'pending' ? new Uint8Array() : await client.body(ex.id, 'response');
@@ -156,6 +201,12 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     const v = ex.httpVersion ?? '';
     capturedProtocol.current = v.startsWith('2') ? 'h2' : v.startsWith('3') ? 'h3' : undefined;
     setOpts((o) => ({ ...o, fields: '', ...(capturedProtocol.current && !tab.options ? { protocol: capturedProtocol.current } : {}) }));
+    // An upload with files in it opens as editable parts with the files attached.
+    const multipart = body === null ? editableMultipart(reqBody, ex.requestHeaders.find(([k]) => k.toLowerCase() === 'content-type')?.[1]) : null;
+    if (multipart) {
+      setAttachments(multipart.attachments);
+      body = multipart.text;
+    }
     const next = toRawRequest(ex.method, ex.url, ex.requestHeaders, body === null ? binaryMarker(reqBody.length) : body);
     setRaw(next);
     setRegions(body === null ? [] : shiftRegions(found, next.length - body.length));
@@ -195,11 +246,11 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         return;
       }
       client
-        .previewTokens([parsed.url, ...parsed.headers.map(([, v]) => v), parsed.body ?? ''], parsed.url)
+        .previewTokens([parsed.url, ...parsed.headers.map(([, v]) => v), parsed.body ?? ''], parsed.url, Object.keys(attachments))
         .then((r) => setPreview({ sends: r.sends, url: r.resolved[0]?.text ?? null, error: r.resolved.find((x) => !x.ok)?.error ?? null }), () => setPreview(null));
     }, 250);
     return () => window.clearTimeout(t);
-  }, [client, raw]);
+  }, [client, raw, attachments]);
 
   useEffect(() => {
     reset().catch((e: Error) => setError(`Could not load the original request: ${e.message}`));
@@ -239,8 +290,13 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     setSending(true);
     try {
       const marker = originalReqBody && parsed.body === binaryMarker(originalReqBody.length);
-      const body = marker ? originalReqBody! : parsed.body ? new TextEncoder().encode(parsed.body) : undefined;
-      const req = { method: parsed.method, url: parsed.url, headers: parsed.headers, body, replayOf: tab.exchangeId || null };
+      // Multipart needs CRLF line ends; the editor shows plain new lines.
+      const multipart = /^multipart\//i.test(parsed.headers.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '');
+      const text = multipart ? crlf(parsed.body) : parsed.body;
+      const body = marker ? originalReqBody! : text ? new TextEncoder().encode(text) : undefined;
+      const used = fileRefs(text ?? '');
+      const files = Object.fromEntries(Object.entries(attachments).filter(([n]) => used.includes(n)).map(([n, a]) => [n, a.bytes]));
+      const req = { method: parsed.method, url: parsed.url, headers: parsed.headers, body, replayOf: tab.exchangeId || null, attachments: files };
       const options: SendOptions = {
         tokens: true,
         refreshCookies: opts.refreshCookies,
@@ -274,7 +330,47 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     } finally {
       setSending(false);
     }
-  }, [raw, regions, originalReqBody, client, tab.exchangeId, opts, preview, loadSends, notify]);
+  }, [raw, regions, originalReqBody, client, tab.exchangeId, opts, preview, loadSends, notify, attachments]);
+
+  /** Replace the request with a curl command's. */
+  const importCurl = (cmd: string): boolean => {
+    let r;
+    try {
+      r = parseCurl(cmd);
+    } catch (e) {
+      notify(`Could not read that curl command: ${(e as Error).message}`);
+      return false;
+    }
+    const before = raw;
+    setRaw(toRawRequest(r.method, r.url, r.headers, r.body));
+    setRegions([]);
+    const o = r.options;
+    if (o.insecure !== undefined || o.followRedirects !== undefined || o.protocol) {
+      setOpts((cur) => ({
+        ...cur,
+        ...(o.insecure ? { ignoreTls: true } : {}),
+        ...(o.followRedirects ? { followRedirects: true } : {}),
+        ...(o.protocol ? { protocol: o.protocol, h2Method: o.h2PriorKnowledge ? 'prior-knowledge' : '' } : {}),
+      }));
+    }
+    setImportNote({ warnings: r.warnings, files: r.files, before });
+    if (r.files.length) setBuilderTab('body');
+    return true;
+  };
+
+  /** Fold decoded regions back before a structured view rewrites the text. */
+  const openBuilderTab = async (t: BuilderTab) => {
+    if (t !== 'raw' && regions.length) {
+      try {
+        setRaw(await encodeAll(client, { text: raw, regions }));
+        setRegions([]);
+      } catch (e) {
+        return notify((e as Error).message);
+      }
+    }
+    setBuilderTab(t);
+  };
+  const counts = useMemo(() => builderCounts(raw), [raw]);
 
   const decodeSelection = () => {
     const el = editorRef.current;
@@ -384,6 +480,9 @@ export function Replay({ tab }: { tab: ReplayTab }) {
           <input type="checkbox" checked={compare} onChange={(e) => setCompare(e.target.checked)} disabled={showOriginal} /> Diff with original
         </label>
         <span style={{ flex: 1 }} />
+        <button className="btn small" aria-expanded={curlOpen} onClick={() => setCurlOpen((o) => !o)} title="Replace this request with a curl command (from browser devtools, API docs or a terminal). Pasting one into the editor works too.">
+          Import curl
+        </button>
         <button className="btn small" onClick={() => void decodeInline()} title="Show the selection, or the value under the caret, decoded in place. It is encoded again on send. Ctrl D">
           Decode
         </button>
@@ -496,6 +595,63 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         <span style={{ flex: 1 }} />
         <TokenPicker onPick={insertToken} />
       </div>
+      {curlOpen && (
+        <div className="curl-import" aria-label="Import curl">
+          <textarea
+            className="input mono"
+            aria-label="curl command"
+            placeholder="curl 'https://api.example.com/items' -H 'Authorization: Bearer ...' --data-raw '{...}'"
+            value={curlText}
+            rows={4}
+            spellCheck={false}
+            onChange={(e) => setCurlText(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                if (importCurl(curlText)) setCurlOpen(false);
+              }
+            }}
+          />
+          <div className="rb-row">
+            <button className="btn small primary" disabled={!curlText.trim()} onClick={() => importCurl(curlText) && setCurlOpen(false)}>
+              Import
+            </button>
+            <button className="btn small" onClick={() => setCurlOpen(false)}>
+              Cancel
+            </button>
+            <span className="faint rb-note">bash and cmd forms from Copy as cURL both work. Files the command reads (-F @file, --data-binary @file, -T) are asked for in Body.</span>
+          </div>
+        </div>
+      )}
+      {importNote && (
+        <div className="banner" role="status" style={{ margin: 8 }} aria-label="Curl import">
+          <span>
+            Imported from curl.
+            {(() => {
+              const missing = importNote.files.filter((f) => !attachments[f]);
+              if (!missing.length) return importNote.files.length ? ' Its files are attached.' : '';
+              return ` It reads ${missing.length === 1 ? 'a file' : `${missing.length} files`} (${missing.join(', ')}): attach ${missing.length === 1 ? 'it' : 'them'} in Body.`;
+            })()}
+            {importNote.warnings.map((w) => ` ${w}`).join('')}
+          </span>
+          {importNote.before !== null && (
+            <button
+              className="btn small"
+              onClick={() => {
+                setRaw(importNote.before!);
+                setRegions([]);
+                setImportNote(null);
+              }}
+            >
+              Undo
+            </button>
+          )}
+          <button className="btn small" onClick={() => setImportNote(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
       {error && (
         <div className="banner" role="alert" style={{ margin: 8 }}>
           {error}
@@ -506,14 +662,46 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         <section>
           <div className="sec-head">
             <b style={{ color: 'var(--text)' }}>Request</b>
-            <span>Raw. Edit anything; Content-Length is recalculated on send.</span>
+            <div className="segmented rb-tabs" role="tablist" aria-label="Request view">
+              {BUILDER_TABS.map(([t, label]) => (
+                <button key={t} role="tab" className="seg" aria-selected={builderTab === t} aria-pressed={builderTab === t} onClick={() => void openBuilderTab(t)}>
+                  {label}
+                  {counts[t] && <span className="faint"> {counts[t]}</span>}
+                </button>
+              ))}
+            </div>
+            {builderTab === 'raw' && <span>Edit anything; Content-Length is recalculated on send.</span>}
           </div>
           {preview && (
             <div className={`token-preview${preview.error ? ' bad' : ''}`} aria-live="polite" data-testid="token-preview">
               {preview.error ? `Token problem: ${preview.error}` : `${preview.sends === 1 ? 'Tokens resolve to' : `${preview.sends} sends, first is`} ${preview.url ?? ''}`}
             </div>
           )}
-          <RegionEditor
+          {builderTab !== 'raw' && (
+            <RequestBuilder
+              tab={builderTab}
+              raw={raw}
+              setRaw={(r) => {
+                setRaw(r);
+                setRegions([]);
+              }}
+              attachments={attachments}
+              attach={(n, a) => setAttachments((cur) => ({ ...cur, [n]: a }))}
+              detach={(n) =>
+                setAttachments((cur) => {
+                  const { [n]: _gone, ...rest } = cur;
+                  return rest;
+                })
+              }
+            />
+          )}
+          {builderTab === 'raw' && <RegionEditor
+            onPaste={(e) => {
+              const text = e.clipboardData.getData('text/plain');
+              if (!looksLikeCurl(text)) return;
+              e.preventDefault();
+              importCurl(text);
+            }}
             decodeKey={false}
             textareaRef={editorRef}
             aria-label="Raw request"
@@ -525,7 +713,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
               setRaw(d.text);
               setRegions(d.regions);
             }}
-          />
+          />}
         </section>
         <section>
           <div className="sec-head">

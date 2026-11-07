@@ -668,5 +668,42 @@ textarea.region-ta::selection { background: color-mix(in srgb, var(--accent) 35%
 }
 .region-strip .mono { color: var(--script-soft); }
 .region-backdrop.composer-text { border-top: 1px solid transparent; }
+
+/* Request builder (Replay: Params, Headers, Body, Auth) */
+.rb-tabs .seg { padding: 2px 9px; font-size: 12px; }
+.rb { flex: 1; min-height: 0; overflow: auto; }
+.rb-pane { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+.rb-rows { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; width: 100%; }
+.rb-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; width: 100%; }
+.rb-rows > .rb-row { flex-wrap: nowrap; }
+.rb-row > .rb-value { flex: 1 1 0; min-width: 0; }
+.rb-decoded .rb-name { flex-basis: 130px; }
+.rb-part { display: grid; grid-template-columns: minmax(90px, 140px) minmax(0, 1fr) minmax(80px, 130px) minmax(90px, 150px) 26px; gap: 6px; align-items: start; width: 100%; }
+.rb-name { flex: 0 1 180px; min-width: 90px; }
+.rb-value { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rb-value-line { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.rb-part .rb-value-line { flex-wrap: wrap; }
+.rb-part .rb-value-line > .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.rb-value-line > .input { flex: 1; min-width: 0; }
+.rb-scheme { flex-direction: row; flex-wrap: wrap; align-items: flex-start; }
+.rb-scheme-name { width: 80px; flex: none; }
+.rb-scheme > .rb-value { flex: 1 1 200px; }
+.rb-chain { cursor: pointer; background: var(--bg-raised); font-family: var(--font-mono); color: var(--accent); }
+.rb-chain.on { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.rb-decoded { border-left: 2px solid color-mix(in srgb, var(--accent) 50%, transparent); padding: 4px 0 4px 10px; display: flex; flex-direction: column; gap: 4px; }
+.rb-json { width: 100%; min-height: 80px; resize: vertical; }
+.rb-decoded textarea, .rb-value textarea { width: 100%; resize: vertical; }
+.rb-note { font-size: 11px; }
+.rb-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 12px; }
+.rb-attachments { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line-soft); padding-top: 8px; }
+.oauth { display: flex; flex-direction: column; gap: 8px; }
+.oauth-status { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; }
+.oauth-form { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.curl-import { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--bg-panel); }
+.curl-import textarea { width: 100%; resize: vertical; }
+.new-tab { font-size: 15px; padding: 0 12px; }
+.new-request { width: min(460px, calc(100vw - 32px)); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.new-request textarea { width: 100%; resize: vertical; }
 .cond-row > .label:first-child { min-width: 34px; }
 .where-row { padding-top: 0; }

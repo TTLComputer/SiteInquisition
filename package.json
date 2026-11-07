@@ -31,6 +31,7 @@
     "timeout": 20000,
     "hookTimeout": 20000,
     "alias": {
+      "@siteinquisition/codecs/httpmsg": "packages/codecs/src/httpmsg.ts",
       "@siteinquisition/codecs/jsonpath": "packages/codecs/src/jsonpath.ts",
       "@siteinquisition/codecs/regionedit": "packages/codecs/src/regionedit.ts",
       "@siteinquisition/codecs": "packages/codecs/src/index.ts",

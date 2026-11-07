@@ -84,6 +84,9 @@ function Feed({ host }: { host: string | null }) {
   );
 }
 
+/** A tab another view opened (an OAuth sign-in, say) to show when the Browser view opens next. */
+export const browserFocus: { id: number | null } = { id: null };
+
 export function Browser() {
   const { client, scope, notify, setView, info } = useApp();
   const bridge = window.siq?.browser;
@@ -108,7 +111,9 @@ export function Browser() {
         return;
       }
       setTabs(list);
-      setActive((a) => a ?? list[0]!.id);
+      const want = browserFocus.id;
+      browserFocus.id = null;
+      setActive((a) => (want !== null && list.some((t) => t.id === want) ? want : (a ?? list[0]!.id)));
     });
     const off = bridge.onTab((t) => {
       if ('closed' in t) {

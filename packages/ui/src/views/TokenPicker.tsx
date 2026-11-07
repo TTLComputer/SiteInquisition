@@ -18,6 +18,8 @@ const REFERENCES: Array<[string, string]> = [
   ['{{$my-tag.field}}', 'a field of the newest request tagged my-tag (right-click a row, Set reference tag)'],
   ['{{$my-tag.@status}}', 'its status; also @url @path @id header.Name query.name'],
   ['{{var:name | base64}}', 'pipes encode any token: url base64 base64url hex json jsonesc upper lower'],
+  ['{{oauth:profile}}', 'an OAuth access token (set profiles up in Replay, Auth); .id_token .refresh_token .header'],
+  ['{{file:name}}', 'body only: the bytes of an attached file, or a file in the project folder'],
 ];
 
 /** A menu of {{tokens}}: generators, cookies in the jar, and variables. */

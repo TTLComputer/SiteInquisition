@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { CoverageReport, SiteMapHost, SpecCoverage } from '../api';
+import type { CoverageReport, EndpointCoverage, SiteMapHost, SpecCoverage } from '../api';
 import { useApp } from '../state';
 import { fmtMs, fmtTime } from '../format';
 import { bodyText, templatePrefix } from '../actions';
@@ -7,7 +7,7 @@ import { ReplayButton } from '../components/ReplayButton';
 
 const AUTH_HEADER = /^(authorization|cookie|x-api-key|api-key|apikey|x-auth-token|x-access-token|x-session-token)$/i;
 
-const statusCls = (s: string) => (/^2/.test(s) ? 's-2' : /^3/.test(s) ? 's-3' : /^4/.test(s) ? 's-4' : /^5/.test(s) ? 's-5' : 's-err');
+const statusCls = (s: string) => (/^[12]/.test(s) ? 's-2' : /^3/.test(s) ? 's-3' : /^4/.test(s) ? 's-4' : /^5/.test(s) ? 's-5' : 's-err');
 
 function toMarkdown(r: CoverageReport): string {
   const lines = [`# Endpoints seen on ${r.host}`, '', `${r.endpoints.length} endpoints from ${r.scanned} recorded exchanges.`, '', '| Method | Path | Calls | Statuses | Auth | Parameters | Types |', '|---|---|---|---|---|---|---|'];
@@ -30,6 +30,7 @@ function toMarkdown(r: CoverageReport): string {
  */
 export function Coverage({ initialHost }: { initialHost: string | null }) {
   const { client, setQuery, select, openReplayById, openDraft, notify, openAt, navigate, openEndpoint } = useApp();
+  const showCalls = (e: EndpointCoverage) => (setQuery(`host:${report!.host} method:${e.method} path:${templatePrefix(e.template)}`), navigate('traffic/requests'));
   const [docs, setDocs] = useState<SpecCoverage | null>(null);
   const [hosts, setHosts] = useState<SiteMapHost[]>([]);
   const [host, setHost] = useState<string | null>(initialHost);
@@ -83,7 +84,8 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
     }
   };
 
-  const neverOk = report?.endpoints.filter((e) => !Object.keys(e.statuses).some((s) => /^[23]/.test(s))).length ?? 0;
+  const apis = shown.filter((e) => e.kind === 'api' || !e.kind);
+  const neverOk = report?.endpoints.filter((e) => (e.kind === 'api' || !e.kind) && !Object.keys(e.statuses).some((s) => /^[23]/.test(s))).length ?? 0;
   const hasDocs = !!docs && docs.documented.length > 0;
   const undocumented = new Set(docs?.undocumented ?? []);
   const neverCalled = docs?.documented.filter((d) => d.count === 0) ?? [];
@@ -112,6 +114,65 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
       notify((e as Error).message);
     }
   };
+
+  /** Clicking anywhere on a row (but its buttons) opens that endpoint's calls in Traffic. */
+  const rowProps = (e: EndpointCoverage) => ({
+    className: 'clickable-row',
+    tabIndex: 0,
+    title: 'Show these calls in Traffic',
+    onClick: (ev: React.MouseEvent) => {
+      if (!(ev.target as HTMLElement).closest('button, a, input, select')) showCalls(e);
+    },
+    onKeyDown: (ev: React.KeyboardEvent) => {
+      if (ev.key === 'Enter' && ev.target === ev.currentTarget) showCalls(e);
+    },
+  });
+  const statuses = (e: EndpointCoverage) =>
+    Object.entries(e.statuses).map(([st, n]) => (
+      <span key={st} className={`mono ${statusCls(st)}`} style={{ marginRight: 6 }}>
+        {st}
+        <span className="faint">×{n}</span>
+      </span>
+    ));
+  const pages = shown.filter((e) => e.kind === 'page');
+  const files = shown.filter((e) => e.kind === 'file');
+  const sockets = shown.filter((e) => e.kind === 'websocket');
+  const refEndpoints = report?.unexercised.filter((u) => u.kind !== 'file') ?? [];
+  const refFiles = report?.unexercised.filter((u) => u.kind === 'file') ?? [];
+
+  /** Pages and files: what they are and how often, without API columns. */
+  const simpleTable = (rows: EndpointCoverage[], label: string) => (
+    <table className="data-table coverage-table" aria-label={label}>
+      <thead>
+        <tr>
+          <th>Method</th>
+          <th>Path</th>
+          <th>Calls</th>
+          <th>Statuses</th>
+          <th>Types</th>
+          <th>Last seen</th>
+          <th />
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((e) => (
+          <tr key={`${e.method} ${e.template}`} {...rowProps(e)}>
+            <td className={`mono m-${e.method}`}>{e.method}</td>
+            <td className="mono">{e.template}</td>
+            <td className="mono">{e.count}</td>
+            <td>{statuses(e)}</td>
+            <td className="faint">{e.contentTypes.join(', ')}</td>
+            <td className="faint">{fmtTime(e.lastAt)}</td>
+            <td style={{ whiteSpace: 'nowrap' }}>
+              <button className="btn small" title="Inspect one example" onClick={() => (select(e.exampleId), navigate('traffic/requests'))}>
+                Example
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
 
   return (
     <div className="coverage" aria-label="Endpoint coverage">
@@ -147,8 +208,14 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
       {report && (
         <div className="coverage-body">
           <div className="coverage-summary" aria-live="polite">
-            <b>{report.endpoints.length}</b> endpoints from <b>{report.scanned}</b> exchanges · <b className={neverOk ? 's-4' : ''}>{neverOk}</b> never succeeded ·{' '}
-            <b>{report.unexercised.length}</b> referenced but never requested
+            <b>{apis.length}</b> API endpoints from <b>{report.scanned}</b> exchanges · <b className={neverOk ? 's-4' : ''}>{neverOk}</b> never succeeded · <b>{refEndpoints.length}</b> referenced but never requested
+            {sockets.length > 0 && (
+              <>
+                {' '}
+                · <b>{sockets.length}</b> WebSocket
+              </>
+            )}{' '}
+            · {pages.length} pages · {files.length} files
             {hasDocs && (
               <>
                 {' '}
@@ -156,7 +223,15 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
               </>
             )}
           </div>
-          <table className="data-table coverage-table">
+          <div className="panel-title" style={{ margin: '12px 12px 4px' }}>
+            API endpoints
+          </div>
+          <div className="faint" style={{ margin: '0 12px 6px', fontSize: 12 }}>
+            Click a row to see its calls in Traffic.
+          </div>
+          {apis.length === 0 && <div className="empty-note" style={{ margin: '0 12px' }}>No API calls seen on this host{filter || onlyProblems ? ' that match the filter' : ''}.</div>}
+          {apis.length > 0 && (
+          <table className="data-table coverage-table" aria-label="API endpoints">
             <thead>
               <tr>
                 <th>Method</th>
@@ -173,19 +248,12 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
               </tr>
             </thead>
             <tbody>
-              {shown.map((e) => (
-                <tr key={`${e.method} ${e.template}`}>
+              {apis.map((e) => (
+                <tr key={`${e.method} ${e.template}`} {...rowProps(e)}>
                   <td className={`mono m-${e.method}`}>{e.method}</td>
                   <td className="mono">{e.template}</td>
                   <td className="mono">{e.count}</td>
-                  <td>
-                    {Object.entries(e.statuses).map(([s, n]) => (
-                      <span key={s} className={`mono ${statusCls(s)}`} style={{ marginRight: 6 }}>
-                        {s}
-                        <span className="faint">×{n}</span>
-                      </span>
-                    ))}
-                  </td>
+                  <td>{statuses(e)}</td>
                   <td>
                     {(e.auth ?? []).map((a) => (
                       <span key={a} className={`chip ${a === 'none' ? 's-4' : ''}`} style={{ marginRight: 4 }} title={a === 'none' ? 'Called without credentials' : `Sent with ${a} credentials`}>
@@ -229,13 +297,6 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                     <button className="btn small" title="Open this endpoint: calls, fields, contract and related overrides" onClick={() => openEndpoint(`${report.host} ${e.method} ${e.template}`)}>
                       Details
                     </button>{' '}
-                    <button
-                      className="btn small"
-                      title="Show these calls in Traffic"
-                      onClick={() => (setQuery(`host:${report.host} method:${e.method} path:${templatePrefix(e.template)}`), navigate('traffic/requests'))}
-                    >
-                      Calls
-                    </button>{' '}
                     <button className="btn small" title="Inspect one example, a successful one when there is one" onClick={() => (select(e.exampleId), navigate('traffic/requests'))}>
                       Example
                     </button>{' '}
@@ -261,6 +322,37 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
               ))}
             </tbody>
           </table>
+          )}
+          {sockets.length > 0 && (
+            <>
+              <div className="panel-title" style={{ margin: '16px 12px 4px' }}>
+                WebSocket
+              </div>
+              <div className="faint" style={{ margin: '0 12px 8px', fontSize: 12 }}>
+                Connections, and the messages each one carries, are mapped in{' '}
+                <button className="btn small ghost" onClick={() => navigate({ area: 'explore', page: 'websockets' })}>
+                  Explore API, WebSocket APIs
+                </button>
+              </div>
+              {simpleTable(sockets, 'WebSocket endpoints')}
+            </>
+          )}
+          {pages.length > 0 && (
+            <>
+              <div className="panel-title" style={{ margin: '16px 12px 4px' }}>
+                Pages
+              </div>
+              {simpleTable(pages, 'Pages')}
+            </>
+          )}
+          {files.length > 0 && (
+            <details className="coverage-files">
+              <summary className="panel-title" style={{ margin: '16px 12px 4px' }}>
+                Files ({files.length}): scripts, styles, images, fonts and downloads
+              </summary>
+              {simpleTable(files, 'Files')}
+            </details>
+          )}
           {neverCalled.length > 0 && (
             <>
               <div className="panel-title" style={{ margin: '16px 12px 4px' }}>
@@ -286,17 +378,17 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
               </table>
             </>
           )}
-          {report.unexercised.length > 0 && (
+          {refEndpoints.length > 0 && (
             <>
               <div className="panel-title" style={{ margin: '16px 12px 4px' }}>
-                Referenced but never requested
+                Possible endpoints, referenced but never requested
               </div>
               <div className="faint" style={{ margin: '0 12px 8px', fontSize: 12 }}>
-                Paths that this host&apos;s own HTML, scripts and JSON mention. Often hidden features, admin pages or API calls behind a button nobody has clicked.
+                Paths that this host&apos;s own HTML, scripts and JSON mention. Often hidden features, admin pages or API calls behind a button nobody has clicked. Candidates only: nothing has confirmed they exist.
               </div>
-              <table className="data-table">
+              <table className="data-table" aria-label="Possible endpoints">
                 <tbody>
-                  {report.unexercised.map((u) => (
+                  {refEndpoints.map((u) => (
                     <tr key={u.path}>
                       <td className="mono">{u.path}</td>
                       <td className="faint">mentioned {u.count}×</td>
@@ -311,6 +403,28 @@ export function Coverage({ initialHost }: { initialHost: string | null }) {
                 </tbody>
               </table>
             </>
+          )}
+          {refFiles.length > 0 && (
+            <details className="coverage-files">
+              <summary className="panel-title" style={{ margin: '16px 12px 4px' }}>
+                Referenced files ({refFiles.length})
+              </summary>
+              <table className="data-table" aria-label="Referenced files">
+                <tbody>
+                  {refFiles.map((u) => (
+                    <tr key={u.path}>
+                      <td className="mono">{u.path}</td>
+                      <td className="faint">mentioned {u.count}×</td>
+                      <td>
+                        <button className="btn small" onClick={() => (select(u.foundIn), navigate('traffic/requests'))} title="Inspect the response that mentions it">
+                          Where
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
           )}
         </div>
       )}

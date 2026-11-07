@@ -134,14 +134,21 @@ function useDecoded(value: string): DecodedValue | null {
 const chainLabel = (d: DecodedValue) => d.chain.join(' › ');
 
 /** A value with its decoded structure underneath when it has one. */
-export function ValueEditor({ value, onChange, label, multiline = false }: { value: string; onChange(v: string): void; label: string; multiline?: boolean }) {
+export function ValueEditor({ value, onChange, label, multiline = false, grow = false }: { value: string; onChange(v: string): void; label: string; multiline?: boolean; /** Fill the space there is (the body editor). */ grow?: boolean }) {
   const d = useDecoded(value);
   const [open, setOpen] = useState(false);
   return (
     <div className="rb-value">
       <div className="rb-value-line">
         {multiline ? (
-          <textarea className="input mono" aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} rows={Math.min(6, value.split('\n').length)} />
+          <textarea
+            className={`input mono${grow ? (d && open ? ' rb-grow-small' : ' rb-grow') : ''}`}
+            aria-label={label}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            spellCheck={false}
+            rows={grow ? Math.max(8, value.split('\n').length + 1) : Math.min(6, value.split('\n').length)}
+          />
         ) : (
           <input className="input mono" aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} />
         )}
@@ -151,13 +158,13 @@ export function ValueEditor({ value, onChange, label, multiline = false }: { val
           </button>
         )}
       </div>
-      {d && open && <DecodedEditor d={d} onChange={onChange} label={label} />}
+      {d && open && <DecodedEditor d={d} onChange={onChange} label={label} grow={grow} />}
     </div>
   );
 }
 
 /** The decoded side of a value: JSON, form rows or text. Edits are encoded back through the value's layers. */
-function DecodedEditor({ d, onChange, label }: { d: DecodedValue; onChange(v: string): void; label: string }) {
+function DecodedEditor({ d, onChange, label, grow = false }: { d: DecodedValue; onChange(v: string): void; label: string; grow?: boolean }) {
   const { client } = useApp();
   const [draft, setDraft] = useState(d.display);
   const [error, setError] = useState<string | null>(null);
@@ -184,9 +191,9 @@ function DecodedEditor({ d, onChange, label }: { d: DecodedValue; onChange(v: st
       {d.kind === 'form' ? (
         <PairsTable rows={parsePairs(draft, 'form')} kind="form" label={`${label} field`} onChange={(rows) => push(buildPairs(rows, 'form'))} />
       ) : d.kind === 'json' ? (
-        <textarea className="input mono rb-json" aria-label={`${label} as JSON`} value={draft} spellCheck={false} rows={Math.min(14, draft.split('\n').length + 1)} onChange={(e) => push(e.target.value)} />
+        <textarea className={`input mono rb-json${grow ? ' rb-grow' : ''}`} aria-label={`${label} as JSON`} value={draft} spellCheck={false} rows={grow ? Math.max(8, draft.split('\n').length + 1) : Math.min(14, draft.split('\n').length + 1)} onChange={(e) => push(e.target.value)} />
       ) : (
-        <textarea className="input mono" aria-label={`${label} decoded text`} value={draft} spellCheck={false} rows={Math.min(6, draft.split('\n').length)} onChange={(e) => push(e.target.value)} />
+        <textarea className={`input mono${grow ? ' rb-grow' : ''}`} aria-label={`${label} decoded text`} value={draft} spellCheck={false} rows={grow ? Math.max(8, draft.split('\n').length + 1) : Math.min(6, draft.split('\n').length)} onChange={(e) => push(e.target.value)} />
       )}
       <div className="faint rb-note">
         {chainLabel(d)}
@@ -367,7 +374,7 @@ function BodyTab({ parts, write, attachments, attach, detach }: { parts: RawPart
   const guessTypeFor = (name: string, list: Record<string, Attachment>) => list[name]?.type || guessType(name);
 
   return (
-    <div className="rb-pane">
+    <div className={`rb-pane${mode === 'raw' ? ' rb-body' : ''}`}>
       {el}
       <div className="segmented" role="group" aria-label="Body type">
         {(['none', 'raw', 'form', 'multipart', 'file'] as BodyMode[]).map((m) => (
@@ -380,7 +387,7 @@ function BodyTab({ parts, write, attachments, attach, detach }: { parts: RawPart
       {mode === 'raw' && (
         <>
           <div className="faint rb-note">Edit the body in Raw. Here it is opened up when it holds encoded or nested JSON.</div>
-          <ValueEditor value={parts.body} label="Body" multiline onChange={(v) => write({ ...parts, body: v })} />
+          <ValueEditor value={parts.body} label="Body" multiline grow onChange={(v) => write({ ...parts, body: v })} />
         </>
       )}
       {mode === 'form' && <PairsTable rows={parsePairs(parts.body.replace(/\n$/, ''), 'form')} kind="form" label="Field" onChange={(rows) => write({ ...parts, body: buildPairs(rows, 'form') })} />}

@@ -57,3 +57,4 @@ export * from './workspace.js';
 export * from './overrides.js';
 export * from './endpoints.js';
 export * from './reproductions.js';
+export * from './wsapi.js';

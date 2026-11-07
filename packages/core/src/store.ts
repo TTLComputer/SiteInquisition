@@ -125,6 +125,22 @@ export interface Transform {
   at: number;
 }
 
+/** A path segment in a host's site tree. */
+export interface SiteNode {
+  name: string;
+  /** The path up to and including this segment, e.g. /api/orders. */
+  path: string;
+  /** Exchanges at or below this path. */
+  count: number;
+  /** Exchanges at exactly this path. */
+  here: number;
+  children: SiteNode[];
+  /** Some exchange at exactly this path is a WebSocket connection. */
+  websocket?: boolean;
+  /** Exchanges below this node not shown because the tree was cut. */
+  omitted?: number;
+}
+
 export interface Change {
   id: string;
   actor: string;
@@ -759,6 +775,55 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
        GROUP BY segment ORDER BY count DESC LIMIT ?`,
     );
     return hosts.map((h) => ({ ...h, paths: seg.all(h.host, segmentsPerHost) as unknown as Array<{ segment: string; count: number }> }));
+  }
+
+  /**
+   * One host's paths as a tree: each node is a path segment with how many
+   * exchanges are at or below it. Query strings are left out. Deep or wide
+   * trees are cut (`maxNodes`), and a cut node says how many it left out.
+   */
+  siteTree(host: string, maxNodes = 3000): SiteNode {
+    const rows = this.q(
+      `SELECT CASE WHEN instr(path, '?') > 0 THEN substr(path, 1, instr(path, '?') - 1) ELSE path END AS p, COUNT(*) AS n, MAX(is_websocket) AS ws
+       FROM exchange WHERE host = ? GROUP BY p ORDER BY n DESC LIMIT 20000`,
+    ).all(host) as unknown as Array<{ p: string; n: number; ws: number }>;
+    const root: SiteNode = { name: host, path: '/', count: 0, here: 0, children: [] };
+    let nodes = 0;
+    for (const r of rows) {
+      root.count += r.n;
+      const segs = r.p.split('/').filter(Boolean);
+      if (!segs.length) {
+        root.here += r.n;
+        continue;
+      }
+      let cur = root;
+      let path = '';
+      for (const [i, seg] of segs.entries()) {
+        path += `/${seg}`;
+        let next = cur.children.find((c) => c.name === seg);
+        if (!next) {
+          if (nodes >= maxNodes) {
+            cur.omitted = (cur.omitted ?? 0) + r.n;
+            break;
+          }
+          nodes++;
+          next = { name: seg, path, count: 0, here: 0, children: [] };
+          cur.children.push(next);
+        }
+        next.count += r.n;
+        if (i === segs.length - 1) {
+          next.here += r.n;
+          if (r.ws) next.websocket = true;
+        }
+        cur = next;
+      }
+    }
+    const sort = (n: SiteNode) => {
+      n.children.sort((a, b) => (b.children.length > 0 ? 1 : 0) - (a.children.length > 0 ? 1 : 0) || a.name.localeCompare(b.name));
+      n.children.forEach(sort);
+    };
+    sort(root);
+    return root;
   }
 
   /** Every distinct host with recorded traffic. */

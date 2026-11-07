@@ -75,14 +75,14 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
 
   it('shows endpoint coverage with parameters, and links back to the calls', async () => {
     await nav('Explore API', 'Endpoints');
-    const table = page.locator('.coverage-table');
+    const table = page.getByRole('table', { name: 'API endpoints' });
     await expect.poll(() => table.textContent()).toContain('/api/apply-coupon');
     const post = table.locator('tr', { hasText: '/api/apply-coupon' });
     expect(await post.textContent()).toContain('cart:number, code:string');
     expect(await post.textContent()).toContain('no auth');
     expect(await table.locator('tr', { hasText: '/api/cart' }).first().textContent()).toContain('?page');
     await shot('coverage');
-    await post.getByRole('button', { name: 'Calls' }).click();
+    await post.locator('td', { hasText: '/api/apply-coupon' }).first().click();
     await expect.poll(() => page.locator('#filter-input').inputValue()).toContain('method:POST path:/api/apply-coupon');
     await expect.poll(() => page.locator('.vlist .row').count()).toBe(1);
     await page.locator('#filter-input').fill('');

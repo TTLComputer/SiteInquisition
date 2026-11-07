@@ -27,7 +27,35 @@ export interface EndpointCoverage {
   auth: string[];
   /** Query and body fields with the JSON types seen and one example value. */
   params: ParamInfo[];
+  /**
+   * What it looks like: an API call, an HTML page, a static file (scripts,
+   * styles, images, fonts, downloads), or a WebSocket connection. Inferred
+   * from the path and the response type.
+   */
+  kind: EndpointKind;
 }
+
+export type EndpointKind = 'api' | 'page' | 'file' | 'websocket';
+
+const FILE_EXT = /\.(m?js|cjs|jsx|ts|css|map|png|jpe?g|gif|svg|ico|webp|avif|bmp|woff2?|ttf|otf|eot|mp4|webm|ogg|mp3|wav|flac|pdf|zip|gz|tar|txt|wasm|webmanifest|xml|csv|docx?|xlsx?|pptx?)$/i;
+const FILE_TYPE = /^(image|font|audio|video)\/|^text\/(css|javascript|csv)$|javascript|^application\/(wasm|pdf|zip|octet-stream|manifest\+json|font)/i;
+const API_HINT = /\/(api|graphql|gql|rest|rpc|v\d+)(\/|$)|\.json$/i;
+
+/** Whether a path and its response types look like an API call, a page or a static file. */
+export function endpointKind(method: string, path: string, contentTypes: string[], isWebSocket = false): EndpointKind {
+  if (isWebSocket) return 'websocket';
+  const p = (path.split(/[?#]/)[0] ?? '/').toLowerCase();
+  if (method !== 'GET' && method !== 'HEAD') return 'api';
+  if (API_HINT.test(p) && !/\.(m?js|css|map)$/.test(p)) return 'api';
+  if (FILE_EXT.test(p)) return 'file';
+  if (contentTypes.length && contentTypes.every((t) => FILE_TYPE.test(t))) return 'file';
+  if (contentTypes.some((t) => /json|xml|grpc|protobuf|msgpack|event-stream/i.test(t))) return 'api';
+  if (contentTypes.some((t) => /html/i.test(t))) return 'page';
+  return contentTypes.length ? 'api' : 'page';
+}
+
+/** A path seen only in references: a file by its extension, otherwise a possible endpoint. */
+export const referenceKind = (path: string): 'endpoint' | 'file' => (FILE_EXT.test(path.split(/[?#]/)[0]!) && !API_HINT.test(path) ? 'file' : 'endpoint');
 
 export interface ParamInfo {
   in: 'query' | 'body';
@@ -63,7 +91,7 @@ export interface CoverageReport {
   scanned: number;
   endpoints: EndpointCoverage[];
   /** Paths referenced in recorded responses (HTML, JS, JSON) that match no exercised endpoint. */
-  unexercised: Array<{ path: string; foundIn: string; count: number }>;
+  unexercised: Array<{ path: string; foundIn: string; count: number; kind: 'endpoint' | 'file' }>;
 }
 
 const SEGMENT_RULES: Array<[RegExp, string]> = [
@@ -136,7 +164,7 @@ function referencedPaths(text: string, host: string): string[] {
     }
     p = p.split(/[?#]/)[0]!;
     if (!p.startsWith('/') || p.startsWith('//') || p.length < 2 || p.length > 200) return;
-    if (/\.(png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|css|map)$/i.test(p)) return;
+    if (/\.(png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot|map)$/i.test(p)) return;
     if (/[\s<>{}"'`\\]/.test(p)) return;
     out.add(p);
   };
@@ -156,7 +184,7 @@ export function coverage(store: CaptureStore, host: string, limit = 5000): Cover
     const key = `${e.method} ${template}`;
     let c = map.get(key);
     if (!c) {
-      c = { method: e.method, template, count: 0, statuses: {}, queryParams: [], bodyParams: [], contentTypes: [], sources: [], firstAt: e.startedAt, lastAt: e.startedAt, exampleId: e.id, maxMs: null, auth: [], params: [], bestStatus: 999 };
+      c = { method: e.method, template, count: 0, statuses: {}, queryParams: [], bodyParams: [], contentTypes: [], sources: [], firstAt: e.startedAt, lastAt: e.startedAt, exampleId: e.id, maxMs: null, auth: [], params: [], kind: e.isWebSocket ? 'websocket' : 'api', bestStatus: 999 };
       map.set(key, c);
     }
     c.count++;
@@ -207,12 +235,12 @@ export function coverage(store: CaptureStore, host: string, limit = 5000): Cover
       }
     }
   }
-  const endpoints = [...map.values()].map(({ bestStatus: _b, ...c }) => ({ ...c, queryParams: c.queryParams.sort(), bodyParams: c.bodyParams.sort(), params: c.params.sort((a, b) => a.in.localeCompare(b.in) || a.name.localeCompare(b.name)) }));
+  const endpoints = [...map.values()].map(({ bestStatus: _b, ...c }) => ({ ...c, kind: endpointKind(c.method, c.template, c.contentTypes, c.kind === 'websocket'), queryParams: c.queryParams.sort(), bodyParams: c.bodyParams.sort(), params: c.params.sort((a, b) => a.in.localeCompare(b.in) || a.name.localeCompare(b.name)) }));
   endpoints.sort((a, b) => a.template.localeCompare(b.template) || a.method.localeCompare(b.method));
   const patterns = endpoints.map((e) => templateRegex(e.template));
   const unexercised = [...referenced.entries()]
     .filter(([p]) => !patterns.some((re) => re.test(p)) && !patterns.some((re) => re.test(pathTemplate(p))))
-    .map(([path, v]) => ({ path, ...v }))
+    .map(([path, v]) => ({ path, ...v, kind: referenceKind(path) }))
     .sort((a, b) => a.path.localeCompare(b.path))
     .slice(0, 500);
   return { host, scanned: rows.length, endpoints, unexercised };

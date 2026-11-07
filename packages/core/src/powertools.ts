@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { SecretBox } from './secrets.js';
 import { bytesToString, decodeChain, detectChain } from '@siteinquisition/codecs';
 import { coverage, pathTemplate } from './coverage.js';
+import { wsApiMap } from './wsapi.js';
 import { checkExchange, contractScan } from './contract.js';
 import { exchangeCurl, exchangesToPostman, exportHar, flowToPostman, flowToTest } from './exporters.js';
 import { harvestOperations, introspect, probeSuggestions, schemaDrift, schemaFromOperations, schemaToSpec, type GqlSchema } from './graphql.js';
@@ -979,10 +980,17 @@ export class PowerTools {
       },
       {
         name: 'endpoint_coverage',
-        description: 'Distinct endpoints seen for a host (method, path with ids collapsed, status codes, count, which query and body parameters were used), to see what has and has not been exercised.',
+        description: 'Distinct endpoints seen for a host (method, path with ids collapsed, status codes, count, which query and body parameters were used, and kind: api, page, file or websocket), to see what has and has not been exercised.',
         inputSchema: { type: 'object', properties: { host: str }, required: ['host'] },
         write: false,
         run: (a) => coverage(store, String(a.host)),
+      },
+      {
+        name: 'websocket_api',
+        description: 'The APIs spoken over WebSockets: per endpoint (host and path), the protocol (Socket.IO, SignalR, GraphQL over WebSocket, JSON-RPC, STOMP, plain JSON) and every kind of message seen in each direction, with counts, fields and an example. Omit host for every host.',
+        inputSchema: { type: 'object', properties: { host: str } },
+        write: false,
+        run: (a) => wsApiMap(store, { host: a.host ? String(a.host) : undefined }),
       },
       {
         name: 'api_values',

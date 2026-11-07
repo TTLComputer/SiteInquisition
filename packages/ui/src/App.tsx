@@ -11,6 +11,7 @@ import { Breakpoints, Mocks, ReplaceRules } from './views/RulesTools';
 import { ActiveOverrides, OverridesChip } from './views/Overrides';
 import { EndpointDocument } from './views/Endpoint';
 import { Library, Profiles } from './views/Library';
+import { WsApi } from './views/WsApi';
 import { SHORTCUTS, SettingsSection, type SettingsSectionId } from './views/Settings';
 import { Placeholder } from './views/Placeholder';
 import { Browser } from './views/Browser';
@@ -304,6 +305,8 @@ function Page({ route }: { route: Route }) {
       return <Glossary />;
     case 'explore/specs':
       return <Specs />;
+    case 'explore/websockets':
+      return <WsApi />;
     case 'explore/graphql':
       return <GraphQL />;
     case 'explore/tech':

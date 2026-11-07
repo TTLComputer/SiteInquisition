@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { collapseNested, decodeFieldsText, encodeRegions, fieldRegions, planRegion, regionPath, type TextRegion, decodeLayers, deepDecode, deepEncode, detectChain, expandNested, encodeChain, encodeFieldsText, listCodecs, parseFieldSpecs, replaceThroughChain, type FieldCodec } from '@siteinquisition/codecs';
 import { coverage } from './coverage.js';
+import { wsApiMap } from './wsapi.js';
 import { parseSigV4 } from './sigv4.js';
 import { batchPlan, flowRefs, resolveTokens } from './tokens.js';
 import { pickValues, tagValue } from './values.js';
@@ -161,6 +162,8 @@ export class CoreApiServer {
       },
       'traffic.flow': (p) => store.getFlow(str(p, 'flowId')!),
       'traffic.siteMap': (p) => store.siteMap(num(p, 'limit')),
+      'traffic.siteTree': (p) => store.siteTree(str(p, 'host')!),
+      'traffic.wsApi': (p) => wsApiMap(store, { host: str(p, 'host', false) }),
       'traffic.delete': (p) => {
         if (Array.isArray(p.ids)) return { deleted: store.deleteExchanges(p.ids.map(String)) };
         const q = str(p, 'query');

@@ -134,8 +134,9 @@ describe.skipIf(!ready)('work areas in the renderer', () => {
     const box = page.getByRole('dialog', { name: 'Command search' });
     await box.getByLabel('Search commands').fill('compare marked');
     const opt = box.getByRole('option', { name: /Compare with the marked request/ });
+    // The selected exchange loads after the box opens.
+    await expect.poll(() => opt.textContent()).toContain('Mark a request to compare first');
     expect(await opt.evaluate((el) => el.getAttribute('aria-disabled'))).toBe('true');
-    expect(await opt.textContent()).toContain('Mark a request to compare first');
     await box.getByLabel('Search commands').fill('go endpoints');
     await page.keyboard.press('Enter');
     await expect.poll(() => selectedTab('Explore API')).toContain('Endpoints');

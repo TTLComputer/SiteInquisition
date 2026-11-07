@@ -201,6 +201,8 @@ export interface FramePreset {
 
 export type ExchangeDetail = Exchange & { stream: { id: string; protocol: string; openedAt: number; closedAt: number | null; closeCode: number | null } | null };
 export type WireStreamMessage = Omit<StreamMessage, 'payload'> & { base64: string };
+export type { SiteNode, WsEndpoint, WsMessageKind, WsProtocol, EndpointKind, EndpointCoverage } from '@siteinquisition/core';
+import type { SiteNode, WsEndpoint } from '@siteinquisition/core';
 export interface SiteMapHost {
   host: string;
   count: number;
@@ -368,6 +370,10 @@ export class CoreClient {
     this.call<{ size: number; base64: string }>('traffic.body', { id, side, decoded }).then((b) => base64ToBytes(b.base64));
   streamMessages = (exchangeId: string, after?: string) => this.call<WireStreamMessage[]>('traffic.streamMessages', { exchangeId, after, limit: 1000 });
   siteMap = () => this.call<SiteMapHost[]>('traffic.siteMap', { limit: 200 });
+  /** One host's paths as a full tree. */
+  siteTree = (host: string) => this.call<SiteNode>('traffic.siteTree', { host });
+  /** APIs spoken over WebSockets: endpoints, protocol and message kinds. */
+  wsApi = (host?: string) => this.call<WsEndpoint[]>('traffic.wsApi', { host });
   tag = (id: string, tags: string[]) => this.call<boolean>('traffic.tag', { id, tags });
   notes = (id: string, notes: string) => this.call<boolean>('traffic.notes', { id, notes });
   scope = () => this.call<ScopeConfig>('scope.get');

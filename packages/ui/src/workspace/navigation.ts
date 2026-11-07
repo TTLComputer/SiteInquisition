@@ -72,6 +72,7 @@ export const AREAS: AreaDef[] = [
     hint: 'Reproduce requests and conversations, chain them into flows, compare and test them',
     pages: [
       { id: 'editors', label: 'Open editors', hint: 'Replay editors for HTTP requests and WebSocket conversations' },
+      { id: 'saved', label: 'Saved', hint: 'Saved reproductions: rerun them with inputs, a session profile and checks, and see every run' },
       { id: 'flows', label: 'Flows', hint: 'Requests chained together, with values carried between steps' },
       { id: 'compare', label: 'Compare', hint: 'Two exchanges side by side' },
       { id: 'probes', label: 'Auth and negative tests', hint: 'Rerun a request as other users, or with broken input' },
@@ -98,7 +99,7 @@ export const AREAS: AreaDef[] = [
     footer: true,
     pages: [
       { id: 'scope', label: 'Capture scope', hint: 'Which hosts are recorded and decrypted' },
-      { id: 'session', label: 'Session and authentication', hint: 'Cookie jar, variables, login macros, signed tokens, AWS signing' },
+      { id: 'session', label: 'Session and authentication', hint: 'Cookie jar, variables, session profiles, setup and login, signed tokens, AWS signing' },
       { id: 'proxy', label: 'Proxy and TLS' },
       { id: 'servers', label: 'Server certificates' },
       { id: 'signing', label: 'Signing keys' },

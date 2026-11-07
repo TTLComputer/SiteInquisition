@@ -15,6 +15,16 @@ siq search host:api.example.com status:>=400
 siq show <exchange-id>
 ```
 
+## Saved reproductions
+
+```sh
+siq repro                                        # saved reproductions and how each last run went
+siq repro run "apply coupon"                     # run one; exit code 1 unless it passes
+siq repro run "apply coupon" --profile staging --input code=SAVE99
+```
+
+`run` uses the running app or `siq proxy` when there is one (so the run shows in the app), and otherwise opens the project itself. It prints the run's state, the revision it ran, each check, and the exchanges it sent. Agents get the same through the `list_reproductions` and `run_reproduction` MCP tools.
+
 ## Desktop app options
 
 ```sh

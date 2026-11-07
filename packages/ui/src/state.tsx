@@ -124,7 +124,7 @@ interface AppState {
   toast: string | null;
   notify(msg: string): void;
   /** Open a Replay tab on a request that was never recorded. */
-  openDraft(draft: Draft, label?: string): void;
+  openDraft(draft: Draft, label?: string, saved?: { id: string; revision: number }): void;
   codecInput: CodecInput | null;
   /** Send text (a selection, a body, a header value) to the Codecs workbench. */
   sendToCodecs(text: string, label: string, returnTo?: (text: string, live?: boolean) => void): void;
@@ -285,7 +285,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
     setView('replay');
   }, [setView]);
 
-  const openDraft = useCallback((draft: Draft, label?: string) => {
+  const openDraft = useCallback((draft: Draft, label?: string, saved?: { id: string; revision: number }) => {
     const id = newDocId('draft');
     let name = label;
     if (!name) {
@@ -295,7 +295,7 @@ export function AppProvider({ client, children }: { client: CoreClient; children
         name = 'draft';
       }
     }
-    setDocs((tabs) => [...tabs, { id, exchangeId: '', label: name!, method: draft.method, draft, ...(draft.options ? { options: draft.options } : {}) } satisfies ReplayTab]);
+    setDocs((tabs) => [...tabs, { id, exchangeId: '', label: name!, method: draft.method, draft, ...(draft.options ? { options: draft.options } : {}), ...(saved ? { saved } : {}) } satisfies ReplayTab]);
     setActiveTab(id);
     setView('replay');
   }, [setView]);

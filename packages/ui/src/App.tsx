@@ -10,6 +10,7 @@ import { ScopeEditor } from './views/Rules';
 import { Breakpoints, Mocks, ReplaceRules } from './views/RulesTools';
 import { ActiveOverrides, OverridesChip } from './views/Overrides';
 import { EndpointDocument } from './views/Endpoint';
+import { Library, Profiles } from './views/Library';
 import { SHORTCUTS, SettingsSection, type SettingsSectionId } from './views/Settings';
 import { Placeholder } from './views/Placeholder';
 import { Browser } from './views/Browser';
@@ -307,6 +308,8 @@ function Page({ route }: { route: Route }) {
       return <GraphQL />;
     case 'explore/tech':
       return <TechOverview />;
+    case 'replay/saved':
+      return <Library />;
     case 'replay/flows':
       return <Flows />;
     case 'replay/compare':
@@ -326,7 +329,7 @@ function Page({ route }: { route: Route }) {
     case 'project/scope':
       return <ScopeEditor />;
     case 'project/session':
-      return <Cookies macros={<Macros />} vars={<Variables />} aws={<Aws />} tab={route.tab} onTab={(t) => navigate({ ...route, tab: t })} />;
+      return <Cookies macros={<Macros />} vars={<Variables />} aws={<Aws />} profiles={<Profiles />} tab={route.tab} onTab={(t) => navigate({ ...route, tab: t })} />;
     case 'advanced/codecs':
       return <Codecs />;
     case 'advanced/race':

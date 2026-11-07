@@ -62,6 +62,8 @@ export interface ReplayTab {
   options?: ReplayOptions;
   /** The editor's contents from the last session. Opening it sends nothing. */
   recovered?: DraftState;
+  /** The saved reproduction this editor saves into, and the revision it was opened at. */
+  saved?: { id: string; revision: number };
 }
 
 /** Two exchanges side by side. */

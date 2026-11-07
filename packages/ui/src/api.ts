@@ -106,7 +106,8 @@ export type { ScopeRule, MatchCondition, MatchOp, RuleConditions } from '@sitein
 export type { ErrorCause, ErrorFinding, ParsedJwt, JwtFlag, AwsRequestInfo, KeyInfo, SessionCookie, SessionFramework, SessionStructure } from '@siteinquisition/core';
 export type { EvergreenEntry, EvergreenStatus, SignableKind } from '@siteinquisition/core';
 export type { Transform, OverrideGroup, OverrideKind, OverrideRef, OverrideState, EndpointDetail, EndpointRef } from '@siteinquisition/core';
-import type { Transform, OverrideGroup, OverrideState, OverrideRef, EndpointDetail } from '@siteinquisition/core';
+export type { Reproduction, ReproInput, ReproDefinition, ReproRevision, ReproRun, Assertion, AssertionResult, SessionProfile, EffectiveValue, ValueSource, RunState } from '@siteinquisition/core';
+import type { Transform, OverrideGroup, OverrideState, OverrideRef, EndpointDetail, Reproduction, ReproInput, ReproRevision, ReproRun, SessionProfile, EffectiveValue } from '@siteinquisition/core';
 import type { ParsedJwt, AwsRequestInfo, KeyInfo, SessionCookie, EvergreenEntry, EvergreenStatus, SignableKind, WsScript, WsScriptStep, WsRunState } from '@siteinquisition/core';
 export type { WsScript, WsScriptStep, WsRunState, WsStepResult } from '@siteinquisition/core';
 
@@ -478,6 +479,19 @@ export class CoreClient {
   testRule = (rule: Partial<ReplaceRule>, exchangeId: string) => this.call<{ matched: boolean; count: number; before: string; after: string }>('rules.test', { rule, exchangeId });
   setMocks = (mocks: Array<Partial<MockRule>>) => this.call<MockRule[]>('mocks.set', { mocks });
   setBreakpoints = (breakpoints: Array<Partial<Breakpoint>>) => this.call<Breakpoint[]>('breakpoints.set', { breakpoints });
+  reproductions = () => this.call<Reproduction[]>('repro.list');
+  /** Save a reproduction; pass the revision you opened to refuse overwriting someone else's save. */
+  saveReproduction = (reproduction: ReproInput, baseRevision?: number) => this.call<Reproduction>('repro.save', { reproduction, baseRevision });
+  removeReproduction = (id: string) => this.call<boolean>('repro.remove', { id });
+  reproductionRevision = (id: string, revision: number) => this.call<ReproRevision | undefined>('repro.revision', { id, revision });
+  promoteReproduction = (id: string) => this.call<Reproduction>('repro.promote', { id });
+  reproductionEffective = (id: string, profile?: string, inputs?: Record<string, string>) =>
+    this.call<{ profile?: string; values: EffectiveValue[]; setupFlow?: string; target?: string }>('repro.effective', { id, profile, inputs });
+  runReproduction = (id: string, opts: { inputs?: Record<string, string>; profile?: string } = {}) => this.call<ReproRun>('repro.run', { id, ...opts });
+  reproductionRuns = (id?: string) => this.call<ReproRun[]>('repro.runs', { id });
+  cancelReproductionRun = (runId: string) => this.call<boolean>('repro.cancel', { runId });
+  sessionProfiles = () => this.call<SessionProfile[]>('profiles.get');
+  setSessionProfiles = (profiles: Array<Omit<SessionProfile, 'id'> & { id?: string }>) => this.call<SessionProfile[]>('profiles.set', { profiles });
   overrideState = () => this.call<OverrideState>('overrides.state');
   /** Suspend or resume every override; their own on/off settings are left as they are. */
   suspendOverrides = (suspended: boolean) => this.call<OverrideState>('overrides.suspend', { suspended });

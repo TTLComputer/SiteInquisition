@@ -3,6 +3,8 @@
  * the commands people script against, with and without a running core.
  */
 import { execFile } from 'node:child_process';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -144,6 +146,29 @@ describe('siq with a core running', () => {
     expect(core.retention()).toEqual({ maxAgeDays: undefined, maxSizeMB: 500 });
     await siq('agent-writes', 'ask');
     expect(core.tools.mcpSettings()).toEqual({ writeMode: 'ask' });
+  }, 90_000);
+
+  it('lists and runs saved reproductions, failing the exit code when a check fails', async () => {
+    const server = createServer((req, res) => (res.writeHead(200, { 'content-type': 'application/json' }), res.end(JSON.stringify({ q: req.url }))));
+    const port = await new Promise<number>((r) => server.listen(0, '127.0.0.1', () => r((server.address() as AddressInfo).port)));
+    try {
+      core.tools.repros.save({
+        name: 'coupon',
+        definition: { kind: 'request', request: { method: 'GET', url: `http://127.0.0.1:${port}/c?code={{var:code}}`, headers: [] } },
+        inputs: { code: 'SAVE10' },
+        assertions: [{ status: '200' }, { where: { in: 'body', op: 'contains', value: 'SAVE10', side: 'response' } }],
+      });
+      const ok = await siq('repro', 'run', 'coupon');
+      expect([ok.code, ok.out]).toEqual([0, expect.stringContaining('passed')]);
+      const bad = await siq('repro', 'run', 'coupon', '--input', 'code=OTHER');
+      expect(bad.code).toBe(1);
+      expect(bad.out).toContain('fail');
+      const list = await siq('repro');
+      expect(list.out).toMatch(/coupon\s+request\s+rev 1/);
+      expect(core.tools.repros.runs().map((r) => r.inputSources.code)).toEqual(['reproduction', 'run']);
+    } finally {
+      server.close();
+    }
   }, 90_000);
 });
 

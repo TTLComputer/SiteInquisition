@@ -14,6 +14,8 @@ import {
   parseRange,
   readRuntimeInfo,
   type ExchangeSummary,
+  type Reproduction,
+  type ReproRun,
   type ScopeConfig,
 } from '@siteinquisition/core';
 import { parseMqttSpec } from './cli-spec.js';
@@ -365,6 +367,59 @@ async function confirm(question: string): Promise<boolean> {
     rl.close();
   }
 }
+
+const repro = program.command('repro').description('saved reproductions: requests, flows and conversations kept by name, with their checks and runs');
+
+const runLine = (r: ReproRun) =>
+  `${r.state.padEnd(11)} rev ${r.revision}  ${new Date(r.startedAt).toISOString()}${r.profile ? `  profile ${r.profile}` : ''}${r.error ? `  ${r.error}` : ''}`;
+
+repro
+  .command('list', { isDefault: true })
+  .description('list saved reproductions and how their last run went')
+  .action(async () => {
+    const [list, runs] = await viaCore('repro.list', {}, (s) => s.getMeta<Reproduction[]>('reproductions') ?? []).then(async (l) => [l, await viaCore('repro.runs', {}, (s) => s.getMeta<ReproRun[]>('reproductionRuns') ?? [])] as const);
+    if (!list.length) console.log('Nothing saved. Save a request from its Replay editor, or right-click one in Traffic.');
+    for (const r of list) {
+      const last = runs.filter((x) => x.reproId === r.id).at(-1);
+      console.log(`${r.name.padEnd(32)} ${r.definition.kind.padEnd(8)} rev ${String(r.revision).padEnd(4)} ${r.assertions.length} checks  ${last ? runLine(last) : paint(90, 'never run')}`);
+    }
+  });
+
+repro
+  .command('run')
+  .description('run a saved reproduction; exits 1 unless it passes')
+  .argument('<name>', 'name or id')
+  .option('--profile <name>', 'session profile to run with')
+  .option('--input <name-value...>', 'input values for this run as name=value, e.g. --input code=SAVE10')
+  .option('--insecure-upstream', 'skip certificate checks on the server', false)
+  .action(async (name: string, o: { profile?: string; input?: string[]; insecureUpstream: boolean }) => {
+    const inputs = Object.fromEntries(
+      (o.input ?? []).map((kv) => {
+        const i = kv.indexOf('=');
+        if (i <= 0) throw new Error(`--input ${kv}: use name=value`);
+        return [kv.slice(0, i), kv.slice(i + 1)];
+      }),
+    );
+    const running = readRuntimeInfo(projectDir());
+    let run: ReproRun;
+    if (running) {
+      const id = ((await callRunningCore(running, 'repro.list', {})) as Reproduction[]).find((r) => r.id === name || r.name === name)?.id;
+      if (!id) throw new Error(`no saved reproduction "${name}"`);
+      run = (await callRunningCore(running, 'repro.run', { id, inputs, profile: o.profile, ignoreTlsErrors: o.insecureUpstream })) as ReproRun;
+    } else {
+      const core = await Core.open({ projectDir: projectDir() });
+      try {
+        run = await core.tools.repros.run(name, { inputs, profile: o.profile, ignoreTlsErrors: o.insecureUpstream });
+      } finally {
+        await core.close();
+      }
+    }
+    console.log(`${run.name}: ${runLine(run)}`);
+    for (const a of run.assertions) console.log(`  ${a.passed ? paint(32, 'pass') : paint(31, 'fail')}  ${a.label}  ${paint(90, a.detail)}`);
+    for (const n of run.notes) console.log(`  ${paint(90, n)}`);
+    if (run.exchangeIds.length) console.log(`  exchanges: ${run.exchangeIds.join(' ')}`);
+    if (run.state !== 'passed') process.exitCode = 1;
+  });
 
 const lan = program.command('lan').description('which other machines may connect when the proxy runs with --lan');
 

@@ -78,7 +78,7 @@ describe.skipIf(!ready)('work areas in the renderer', () => {
   it('finds variables and login macros under Session and authentication', async () => {
     await navTo(page, 'Project settings', 'Session and authentication');
     const tabs = page.getByRole('tablist', { name: 'Session and authentication' });
-    expect(await tabs.getByRole('tab').allTextContents()).toEqual(['Cookie jar', 'Variables', 'Login macros', 'Signed tokens', 'AWS SigV4']);
+    expect(await tabs.getByRole('tab').allTextContents()).toEqual(['Cookie jar', 'Variables', 'Profiles', 'Setup and login', 'Signed tokens', 'AWS SigV4']);
     await tabs.getByRole('tab', { name: 'Variables' }).click();
     await expect.poll(() => page.getByLabel('New variable name').count()).toBe(1);
   });
@@ -283,5 +283,55 @@ describe.skipIf(!ready)('work areas in the renderer', () => {
     await page.getByRole('menuitem', { name: 'Explore endpoint' }).click();
     await expect.poll(() => selectedTab('Replay')).toContain('Open editors');
     expect((await page.getByRole('tablist', { name: 'Open editors' }).textContent())!.match(/Endpoint:/g)).toHaveLength(1);
+  });
+  it('saves a request as a reproduction, reruns it with checks and a session profile, and keeps the revision each run used', async () => {
+    await navTo(page, 'Traffic', 'Requests');
+    await page.locator('.row', { hasText: '/api/cart' }).first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Save as reproduction' }).click();
+    await expect.poll(() => page.locator('.toast').textContent()).toContain('Saved as');
+    await navTo(page, 'Replay', 'Saved');
+    const detail = page.getByTestId('repro-detail');
+    await expect.poll(() => page.getByTestId('repro-item').count()).toBe(1);
+    await detail.getByLabel('Check kind').selectOption('json');
+    await detail.getByLabel('Check JSONPath').fill('$.method');
+    await detail.getByLabel('Check value').fill('GET');
+    await detail.getByRole('button', { name: 'Add check' }).click();
+    await expect.poll(() => detail.getByTestId('repro-check').count()).toBe(1);
+    await detail.getByRole('button', { name: 'Run', exact: true }).click();
+    await expect.poll(() => detail.getByTestId('repro-run').evaluate((el) => el.getAttribute('data-state') ?? '')).toBe('passed');
+
+    // Edit it in the editor: the save is a new revision of the same reproduction.
+    await detail.getByRole('button', { name: 'Open in editor' }).click();
+    const editor = page.locator('.tab-host:not([style*="none"])').getByLabel('Raw request');
+    await expect.poll(() => editor.inputValue()).toContain('/api/cart');
+    await editor.fill((await editor.inputValue()).replace('/api/cart', '/api/cart?c={{var:code}}'));
+    await page.locator('.tab-host:not([style*="none"])').getByRole('button', { name: 'Save (rev 3)' }).click();
+    await expect.poll(() => page.locator('.toast').textContent()).toContain('revision 3');
+
+    // A session profile supplies the value, and the summary says where it came from before running.
+    await navTo(page, 'Project settings', 'Session and authentication');
+    await page.getByRole('tablist', { name: 'Session and authentication' }).getByRole('tab', { name: 'Profiles' }).click();
+    await page.getByRole('button', { name: 'Add profile' }).click();
+    await page.getByLabel('Profile name').fill('staging');
+    await page.getByLabel('Profile values').fill('code=PROFILE');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect.poll(() => h.core.tools.repros.profiles().map((p) => p.name)).toEqual(['staging']);
+    await navTo(page, 'Replay', 'Saved');
+    await detail.getByLabel('Session profile').selectOption('staging');
+    await expect.poll(() => detail.getByTestId('repro-session').textContent()).toContain('Profile staging');
+    await expect.poll(() => detail.getByTestId('repro-input').textContent()).toContain('profile');
+    await detail.getByLabel('Check kind').selectOption('body');
+    await detail.getByLabel('Check value').fill('PROFILE');
+    await detail.getByRole('button', { name: 'Add check' }).click();
+    await expect.poll(() => detail.getByTestId('repro-check').count()).toBe(2);
+    await detail.getByRole('button', { name: 'Run', exact: true }).click();
+    await expect.poll(() => detail.getByTestId('repro-run').count()).toBe(2);
+    expect(await detail.getByTestId('repro-run').first().evaluate((el) => el.getAttribute('data-state') ?? '')).toBe('passed');
+    expect(await detail.getByTestId('repro-run').nth(1).textContent()).toContain('(older)');
+    expect(h.core.tools.repros.runs().map((r) => [r.revision, r.profile ?? null])).toEqual([
+      [2, null],
+      [4, 'staging'],
+    ]);
+    await shot('saved-reproductions');
   });
 });

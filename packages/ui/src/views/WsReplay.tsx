@@ -7,6 +7,7 @@ import { Icon } from '../components/icons';
 import { asText, hexDump } from '../format';
 import { diffLines } from '../diff';
 import { breakOnMessages } from '../actions';
+import { saveReproduction } from '../workspace/save';
 import { summarizeFrame } from '@siteinquisition/codecs/protocols';
 import { Messages } from './Inspector';
 import { TokenPicker } from './TokenPicker';
@@ -292,6 +293,19 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
     }
   }, [client, handshake, steps, runOptions, tab.exchangeId, loadSends, loadLive]);
 
+  const [saved, setSaved] = useState(tab.saved);
+  const saveToLibrary = async () => {
+    try {
+      const hs = parseHandshake(handshake);
+      const script: WsScript = { url: hs.url, headers: hs.headers, steps: await Promise.all(steps.map(toWire)) };
+      const r = await saveReproduction(client, { label: `WS ${tab.label}`, definition: { kind: 'ws', script }, exchangeId: tab.exchangeId || undefined, saved });
+      setSaved({ id: r.id, revision: r.revision });
+      notify(`Saved as "${r.name}", revision ${r.revision}. Rerun it from Replay, Saved.`);
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
   const sendQuick = async () => {
     if (!shownId || !quick) return;
     try {
@@ -418,6 +432,9 @@ export function WsReplay({ tab }: { tab: ReplayTab }) {
         </span>
         <button className="btn primary" onClick={() => void run()} disabled={running || !handshake} title="Open a new connection and run the steps (Ctrl Enter)">
           <Icon name="replay" size={13} /> {running ? 'Connecting...' : 'Run'}
+        </button>
+        <button className="btn small" onClick={() => void saveToLibrary()} disabled={!handshake} title="Keep this conversation by name in Replay, Saved, to rerun later with checks">
+          {saved ? `Save (rev ${saved.revision + 1})` : 'Save'}
         </button>
         <div className="segmented" role="group" aria-label="Sends">
           <button className="seg" aria-pressed={!shownId} onClick={() => setShownId(null)}>

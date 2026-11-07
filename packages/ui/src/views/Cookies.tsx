@@ -278,16 +278,17 @@ function Jar() {
   );
 }
 
-export type SessionTab = 'jar' | 'vars' | 'macros' | 'signed' | 'aws';
+export type SessionTab = 'jar' | 'vars' | 'profiles' | 'macros' | 'signed' | 'aws';
 
 /** Project settings > Session and authentication: cookies, extracted values, sign-in and signing, in one place. */
-export function Cookies({ macros, vars, aws, tab: wanted, onTab }: { macros?: React.ReactNode; vars?: React.ReactNode; aws?: React.ReactNode; tab?: string; onTab?: (t: SessionTab) => void }) {
-  const labels: Record<SessionTab, string> = { jar: 'Cookie jar', vars: 'Variables', macros: 'Login macros', signed: 'Signed tokens', aws: 'AWS SigV4' };
+export function Cookies({ macros, vars, aws, profiles, tab: wanted, onTab }: { macros?: React.ReactNode; vars?: React.ReactNode; aws?: React.ReactNode; profiles?: React.ReactNode; tab?: string; onTab?: (t: SessionTab) => void }) {
+  const labels: Record<SessionTab, string> = { jar: 'Cookie jar', vars: 'Variables', profiles: 'Profiles', macros: 'Setup and login', signed: 'Signed tokens', aws: 'AWS SigV4' };
   const tab: SessionTab = wanted && wanted in labels ? (wanted as SessionTab) : 'jar';
   const body: Record<SessionTab, React.ReactNode> = {
     jar: <Jar />,
     macros: macros ?? <div className="empty">Login macros arrive with the power tools.</div>,
     vars: vars ?? <div className="empty">Token variables arrive with the power tools.</div>,
+    profiles: profiles ?? <div className="empty">Session profiles need the power tools.</div>,
     signed: <SignedTokens />,
     aws: aws ?? <div className="empty">AWS SigV4 signing arrives with the power tools.</div>,
   };

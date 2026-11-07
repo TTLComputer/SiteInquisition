@@ -8,6 +8,7 @@ import { diffLines } from '../diff';
 import { TokenPicker } from './TokenPicker';
 import { CertHelp } from './TlsSettings';
 import { mockFromExchange } from '../actions';
+import { saveReproduction } from '../workspace/save';
 import { DecodableText, RegionEditor, decodeInto, encodeAll } from '../components/Decoded';
 import { adjustForEdit, shiftRegions, type TextRegion } from '@siteinquisition/codecs/regionedit';
 import { boundaryOf, buildMultipart, crlf, fileToken, looksLikeCurl, parseCurl, parseMultipartBytes, type Part } from '@siteinquisition/codecs/httpmsg';
@@ -320,6 +321,23 @@ export function Replay({ tab }: { tab: ReplayTab }) {
     };
   }, [client, shownId, notify]);
 
+  const [saved, setSaved] = useState(tab.saved);
+  const saveToLibrary = async () => {
+    try {
+      const p = parseRawRequest(await encodeAll(client, { text: raw, regions }));
+      const r = await saveReproduction(client, {
+        label: `${tab.method} ${tab.label}`,
+        definition: { kind: 'request', request: { method: p.method, url: p.url, headers: p.headers, ...(p.body ? { body: p.body } : {}) } },
+        exchangeId: tab.exchangeId || undefined,
+        saved,
+      });
+      setSaved({ id: r.id, revision: r.revision });
+      notify(`Saved as "${r.name}", revision ${r.revision}. Rerun it from Replay, Saved.`);
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+
   const send = useCallback(async () => {
     let parsed;
     try {
@@ -513,6 +531,9 @@ export function Replay({ tab }: { tab: ReplayTab }) {
         </span>
         <button className="btn primary" onClick={() => void send()} disabled={sending || !raw} title="Ctrl Enter">
           <Icon name="replay" size={13} /> {sending ? 'Sending...' : preview && preview.sends > 1 ? `Send ${preview.sends}` : 'Send'}
+        </button>
+        <button className="btn small" onClick={() => void saveToLibrary()} disabled={!raw} title="Keep this request by name in Replay, Saved, to rerun later with inputs, a session profile and checks">
+          {saved ? `Save (rev ${saved.revision + 1})` : 'Save'}
         </button>
         <div className="segmented" role="group" aria-label="Sends">
           <button className="seg" aria-pressed={showOriginal} onClick={() => setShownId(null)} disabled={!tab.exchangeId}>

@@ -4,6 +4,7 @@ import type { ExchangeSummary } from '../api';
 import type { useApp } from '../state';
 import { AREAS } from './navigation';
 import { replayLabel } from './documents';
+import { saveReproduction } from './save';
 
 /**
  * One list of things you can do, so the row menu, the command search and
@@ -51,6 +52,18 @@ export const EXCHANGE_ACTIONS: ExchangeAction[] = [
       const ex = await a.client.get(r.id);
       const body = ex.reqBodySize ? await bodyText(a.client, r.id, 'request').catch(() => '') : '';
       a.sendToRace([{ label: replayLabel(r.path), raw: toRawRequest(ex.method, ex.url, ex.requestHeaders, body), replayOf: r.id }]);
+    },
+  },
+  {
+    id: 'save',
+    label: 'Save as reproduction',
+    group: 'replay',
+    when: httpOnly,
+    run: async (r, a) => {
+      const ex = await a.client.get(r.id);
+      const body = ex.reqBodySize ? await bodyText(a.client, r.id, 'request').catch(() => '') : '';
+      const saved = await saveReproduction(a.client, { label: `${r.method} ${replayLabel(r.path)}`, definition: { kind: 'request', request: { method: ex.method, url: ex.url, headers: ex.requestHeaders, ...(body ? { body } : {}) } }, exchangeId: r.id });
+      a.notify(`Saved as "${saved.name}". Rerun it from Replay, Saved.`);
     },
   },
   { id: 'stream', label: 'Open in Live connections', group: 'replay', when: (r) => (isStream(r) ? true : 'Only for WebSocket and MQTT connections'), run: (r, a) => a.openStream(r.id) },

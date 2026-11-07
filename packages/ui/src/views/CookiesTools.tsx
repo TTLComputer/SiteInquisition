@@ -78,7 +78,7 @@ export function Macros() {
         </button>
       </div>
       <div className="faint" style={{ padding: '6px 12px', fontSize: 12 }}>
-        A macro is the requests that log you in. Replays with &quot;Log in on 401/403&quot; run it when the host answers with one of its statuses, then send again with the new cookies and variables. Steps get fresh cookies from the jar; use {'{{var:...}}'} for CSRF tokens.
+        Setup is what runs before the request you care about. A <b>setup flow</b> (Replay, Flows) runs first every time when a session profile names it. A <b>login macro</b> below is the requests that log you in again: replays with &quot;Log in on 401/403&quot; run it when the host answers with one of its statuses, then send once more with the new cookies and variables. Steps get fresh cookies from the jar; use {'{{var:...}}'} for CSRF tokens.
       </div>
       {list.length === 0 && <div className="empty">No login macros. Add one, then add the login request from History as its first step.</div>}
       {list.map((m) => (

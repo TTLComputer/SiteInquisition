@@ -23,7 +23,7 @@ const statusCls = (s: string) => (/^2/.test(s) ? 's-2' : /^3/.test(s) ? 's-3' : 
  * are shown as such.
  */
 export function EndpointDocument({ endpointKey }: { endpointKey: string }) {
-  const { client, notify, select, navigate, setQuery } = useApp();
+  const { client, notify, select, navigate, setQuery, traceValue } = useApp();
   const [detail, setDetail] = useState<EndpointDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>('overview');
@@ -145,6 +145,10 @@ export function EndpointDocument({ endpointKey }: { endpointKey: string }) {
           {!observed?.params.length ? (
             <div className="empty-note">{observed ? 'No query or body fields seen.' : 'No observations.'}</div>
           ) : (
+            <>
+            <div className="faint" style={{ fontSize: 12, marginBottom: 6 }}>
+              Inferred from {observed.count} recorded {observed.count === 1 ? 'call' : 'calls'} ({fmtTime(observed.firstAt)} to {fmtTime(observed.lastAt)}); a field seen in a few calls may not always be there.
+            </div>
             <table className="data-table" aria-label="Fields">
               <thead>
                 <tr>
@@ -152,6 +156,7 @@ export function EndpointDocument({ endpointKey }: { endpointKey: string }) {
                   <th>Field</th>
                   <th>Types seen</th>
                   <th>Example</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -161,10 +166,18 @@ export function EndpointDocument({ endpointKey }: { endpointKey: string }) {
                     <td className="mono">{p.name}</td>
                     <td className="mono">{p.types.join(' | ')}</td>
                     <td className="mono wrap">{p.example}</td>
+                    <td>
+                      {p.example && p.example !== '(hidden)' && !p.example.endsWith('...') && (
+                        <button className="btn small ghost" title="Find the earlier response this value first came from" onClick={() => traceValue(p.example.replace(/^"|"$/g, ''), detail.recent[0]?.id)}>
+                          Where from
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            </>
           )}
         </section>
       )}

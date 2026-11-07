@@ -1,6 +1,7 @@
 import { bytesToString, decodeChain, detectChain, encodeChain, looksLikeText, replaceThroughChain } from '@siteinquisition/codecs';
 import { update } from '@siteinquisition/codecs/jsonpath';
 import { newId } from './ids.js';
+import { conditionHolds, normalizeMatchConditions, pathMatches, toRegExp, type MatchCondition, type PathMatch, type MatchOptions, type MatchSubject } from './match.js';
 import { globToRegExp } from './scope.js';
 import type { HeaderList } from './store.js';
 
@@ -18,10 +19,22 @@ export interface HookMessage {
 export interface RuleConditions {
   /** Host glob; empty matches every host. */
   host?: string;
+  /** One method, or several separated by commas ("GET,HEAD"). */
   method?: string;
+  /** Matches the start of the path and query string. */
   pathPrefix?: string;
+  /** The path without its query string, compared as `pathMatch` says. */
+  path?: string;
+  /**
+   * How `path` compares. "exact" (default), "glob" (`*` is one segment,
+   * `**` any number), "regex", or "template" (`/users/{id}` with each
+   * `{name}` one segment).
+   */
+  pathMatch?: PathMatch;
   /** Responses only: status code, class ("4xx") or comparison (">=400"). */
   status?: string;
+  /** Precise conditions on query parameters, headers, cookies, JSON values, GraphQL operations and bodies. All must hold. */
+  where?: MatchCondition[];
 }
 
 export interface ReplaceRule extends RuleConditions {
@@ -81,7 +94,30 @@ export function statusMatches(spec: string | undefined, status: number | undefin
   }
 }
 
-export function conditionsMatch(c: RuleConditions, msg: { method: string; url: string; status?: number }): boolean {
+/** A HookMessage as the request side of a match. */
+export const requestSubject = (msg: { method: string; url: string; headers?: HeaderList; body?: Uint8Array }): MatchSubject => ({
+  method: msg.method,
+  url: msg.url,
+  phase: 'request',
+  request: { headers: msg.headers, body: msg.body },
+});
+
+/** A response and the request it answers. */
+export const responseSubject = (req: { method: string; url: string; headers?: HeaderList; body?: Uint8Array } | undefined, res: HookMessage): MatchSubject => ({
+  method: req?.method ?? res.method,
+  url: req?.url ?? res.url,
+  status: res.status,
+  phase: 'response',
+  request: req ? { headers: req.headers, body: req.body } : undefined,
+  response: { headers: res.headers, body: res.body },
+});
+
+/**
+ * Whether a rule's conditions hold. A plain `{ method, url, status }` is
+ * accepted too; it knows no headers or bodies, so conditions on them then
+ * fail (or pass with `lenient`).
+ */
+export function conditionsMatch(c: RuleConditions, msg: MatchSubject | { method: string; url: string; status?: number; headers?: HeaderList; body?: Uint8Array }, opts: MatchOptions = {}): boolean {
   let u: URL;
   try {
     u = new URL(msg.url);
@@ -89,10 +125,36 @@ export function conditionsMatch(c: RuleConditions, msg: { method: string; url: s
     return false;
   }
   if (c.host && !globToRegExp(c.host).test(u.hostname.toLowerCase())) return false;
-  if (c.method && c.method.toUpperCase() !== msg.method.toUpperCase()) return false;
+  if (c.method) {
+    const methods = c.method.toUpperCase().split(/[\s,|]+/).filter(Boolean);
+    if (methods.length && !methods.includes(msg.method.toUpperCase())) return false;
+  }
   if (c.pathPrefix && !(u.pathname + u.search).startsWith(c.pathPrefix)) return false;
+  if (c.path && !pathMatches(c.path, c.pathMatch, u.pathname)) return false;
   if (c.status && !statusMatches(c.status, msg.status)) return false;
+  if (c.where?.length) {
+    const subject: MatchSubject = 'phase' in msg || 'request' in msg || 'response' in msg ? (msg as MatchSubject) : requestSubject(msg as HookMessage);
+    for (const w of c.where) if (!conditionHolds(w, subject, u, opts)) return false;
+  }
   return true;
+}
+
+/** Validate and tidy the shared conditions of a rule, mock or breakpoint. */
+export function normalizeConditions<T extends Omit<RuleConditions, 'status'>>(c: T): T {
+  const out = { ...c };
+  if (out.pathMatch !== undefined && !['exact', 'glob', 'regex', 'template'].includes(out.pathMatch)) throw new Error('pathMatch must be exact, glob, regex or template');
+  if (out.path !== undefined && out.path !== '') {
+    if (out.pathMatch === 'regex') toRegExp(out.path);
+    else if (!out.path.startsWith('/')) throw new Error('path must start with "/"');
+  } else {
+    delete out.path;
+    delete out.pathMatch;
+  }
+  if (!out.pathPrefix) delete out.pathPrefix;
+  const where = normalizeMatchConditions(out.where);
+  if (where) out.where = where;
+  else delete out.where;
+  return out;
 }
 
 const matcher = (r: { find?: string; regex?: boolean; matchCase?: boolean }) =>
@@ -201,7 +263,7 @@ export function normalizeReplaceRule(r: RuleInput<ReplaceRule>): ReplaceRule {
   if (r.target === 'header' && !r.header && (r.action === 'set' || r.action === 'remove')) throw new Error('header rules that set or remove need a header name');
   if (r.regex && r.find) new RegExp(r.find);
   if (r.chain && r.chain !== 'auto') r.chain.split(/\s*>\s*/).filter(Boolean).forEach((id) => decodeChainCheck(id));
-  return { ...r, id: r.id ?? newId() };
+  return { ...normalizeConditions(r), id: r.id ?? newId() };
 }
 
 const decodeChainCheck = (id: string) => {
@@ -215,5 +277,5 @@ const decodeChainCheck = (id: string) => {
 export function normalizeMock(m: RuleInput<MockRule>): MockRule {
   if (!m.name?.trim()) throw new Error('a mock needs a name');
   if (!Number.isInteger(m.status) || m.status < 100 || m.status > 999) throw new Error('mock status must be 100 to 999');
-  return { ...m, headers: m.headers ?? [], body: m.body ?? '', id: m.id ?? newId() };
+  return { ...normalizeConditions(m), headers: m.headers ?? [], body: m.body ?? '', id: m.id ?? newId() };
 }

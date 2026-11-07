@@ -109,6 +109,35 @@ describe.skipIf(!ready)('power tools in the renderer', () => {
     h.core.tools.setReplaceRules([]);
   });
 
+  it('builds precise conditions in the rule editor and applies the rule only where they hold', async () => {
+    await nav('Rules');
+    await page.getByRole('tab', { name: 'Match and replace' }).click();
+    await page.getByRole('button', { name: 'Add rule' }).click();
+    const card = page.locator('.rule-card').first();
+    await card.getByLabel('Rule name').fill('v2-only');
+    await card.getByLabel('Header').fill('X-Precise');
+    await card.getByLabel('Replace with').fill('yes');
+    await card.getByLabel('Path match').selectOption('template');
+    await card.getByLabel('Path', { exact: true }).fill('/api/items/{id}');
+    await card.getByRole('button', { name: '+ condition' }).click();
+    const row = card.getByTestId('where-row').first();
+    await row.getByLabel('Condition source').selectOption('query');
+    await row.getByLabel('Condition name').fill('v');
+    await row.getByLabel('Condition value').fill('2');
+    await shot('rules-precise');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect.poll(() => h.core.tools.replaceRules()[0]?.where ?? []).toEqual([{ in: 'query', name: 'v', value: '2' }]);
+    expect(h.core.tools.replaceRules()[0]).toMatchObject({ path: '/api/items/{id}', pathMatch: 'template' });
+    await h.send('/api/items/9?v=2');
+    await h.send('/api/items/9?v=3');
+    await h.send('/api/items/9/x?v=2');
+    const tags = (q: string) => h.core.store.search(q).flatMap((e) => (e.url.endsWith(q.slice(5)) ? e.tags : []));
+    await expect.poll(() => tags('path:/api/items/9?v=2')).toContain('rule:v2-only');
+    expect(tags('path:/api/items/9?v=3')).not.toContain('rule:v2-only');
+    expect(tags('path:/api/items/9/x?v=2')).not.toContain('rule:v2-only');
+    h.core.tools.setReplaceRules([]);
+  });
+
   it('pauses at a breakpoint, shows it in the title bar, and forwards an edit', async () => {
     h.core.tools.setBreakpoints([{ phase: 'request', pathPrefix: '/api/hold' }]);
     const status = h.send('/api/hold', 'POST', '{"qty":1}');

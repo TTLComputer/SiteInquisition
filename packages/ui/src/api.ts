@@ -102,7 +102,7 @@ export type {
 };
 
 export type { Change, Exchange, ExchangeSummary, HeaderList, JarCookie, ScopeConfig, ScopeDecision, SeenHost, StreamMessage };
-export type { ScopeRule } from '@siteinquisition/core';
+export type { ScopeRule, MatchCondition, MatchOp, RuleConditions } from '@siteinquisition/core';
 export type { ErrorCause, ErrorFinding, ParsedJwt, JwtFlag, AwsRequestInfo, KeyInfo, SessionCookie, SessionFramework, SessionStructure } from '@siteinquisition/core';
 export type { EvergreenEntry, EvergreenStatus, SignableKind } from '@siteinquisition/core';
 import type { ParsedJwt, AwsRequestInfo, KeyInfo, SessionCookie, EvergreenEntry, EvergreenStatus, SignableKind, WsScript, WsScriptStep, WsRunState } from '@siteinquisition/core';

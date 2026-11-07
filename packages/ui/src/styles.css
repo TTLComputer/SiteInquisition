@@ -668,3 +668,5 @@ textarea.region-ta::selection { background: color-mix(in srgb, var(--accent) 35%
 }
 .region-strip .mono { color: var(--script-soft); }
 .region-backdrop.composer-text { border-top: 1px solid transparent; }
+.cond-row > .label:first-child { min-width: 34px; }
+.where-row { padding-top: 0; }

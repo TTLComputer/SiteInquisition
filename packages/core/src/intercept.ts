@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { newId } from './ids.js';
-import { conditionsMatch, type HookMessage, type RuleConditions } from './rules.js';
+import { conditionsMatch, normalizeConditions, requestSubject, responseSubject, type HookMessage, type RuleConditions } from './rules.js';
 import type { ExchangeSource } from './store.js';
 
 /**
@@ -63,6 +63,15 @@ export function messageMatches(match: string | undefined, payload: Uint8Array): 
   return text.toLowerCase().includes(match.toLowerCase());
 }
 
+/** Message breakpoints only know the connection URL, so they keep the conditions that read it. */
+const urlConditions = (b: Breakpoint): RuleConditions => ({
+  host: b.host,
+  pathPrefix: b.pathPrefix,
+  path: b.path,
+  pathMatch: b.pathMatch,
+  where: b.where?.filter((w) => w.in === 'path' || w.in === 'query'),
+});
+
 const isHttpPhase = (b: Breakpoint, phase: 'request' | 'response') => b.phase === phase || b.phase === 'both';
 
 export class Intercept extends EventEmitter<{ paused: [Paused]; resolved: [string] }> {
@@ -84,14 +93,18 @@ export class Intercept extends EventEmitter<{ paused: [Paused]; resolved: [strin
   /** Pause if a breakpoint matches; resolves with what to do. `requestKey` links a request to its response. */
   /** Whether check() could pause this response, so the proxy knows to buffer it rather than stream it. */
   wouldPauseResponse(msg: { method: string; url: string; status?: number }, requestKey: string): boolean {
-    return this.pauseResponse.has(requestKey) || this.breakpoints().some((b) => b.enabled !== false && isHttpPhase(b, 'response') && conditionsMatch(b, msg));
+    // Headers and bodies are not known yet, so conditions on them count as "maybe".
+    const subject = { method: msg.method, url: msg.url, status: msg.status, phase: 'response' as const };
+    return this.pauseResponse.has(requestKey) || this.breakpoints().some((b) => b.enabled !== false && isHttpPhase(b, 'response') && conditionsMatch(b, subject, { lenient: true }));
   }
 
-  async check(phase: 'request' | 'response', msg: HookMessage, source: ExchangeSource, requestKey: string): Promise<Resolution | undefined> {
+  /** `req` is the request a response answers, so response breakpoints can match on request headers, bodies and GraphQL operations. */
+  async check(phase: 'request' | 'response', msg: HookMessage, source: ExchangeSource, requestKey: string, req?: HookMessage): Promise<Resolution | undefined> {
     const forced = phase === 'response' && this.pauseResponse.delete(requestKey);
+    const subject = phase === 'request' ? requestSubject(msg) : responseSubject(req, msg);
     const bp = forced
       ? ({ id: 'forward-pause-response', phase: 'response' } as Breakpoint)
-      : this.breakpoints().find((b) => b.enabled !== false && isHttpPhase(b, phase) && conditionsMatch(b, { method: msg.method, url: msg.url, status: msg.status }));
+      : this.breakpoints().find((b) => b.enabled !== false && isHttpPhase(b, phase) && conditionsMatch(b, subject));
     if (!bp) return undefined;
     const item: Paused = {
       id: newId(),
@@ -116,7 +129,7 @@ export class Intercept extends EventEmitter<{ paused: [Paused]; resolved: [strin
 
   /** Whether any message breakpoint covers this WebSocket URL, so the relay knows to forward message by message. */
   wantsWsMessages(url: string): boolean {
-    return this.breakpoints().some((b) => b.enabled !== false && b.phase === 'messages' && conditionsMatch({ host: b.host, pathPrefix: b.pathPrefix }, { method: 'GET', url }));
+    return this.breakpoints().some((b) => b.enabled !== false && b.phase === 'messages' && conditionsMatch(urlConditions(b), { method: 'GET', url }));
   }
 
   /** Pause a WebSocket data message if a message breakpoint matches it. */
@@ -126,7 +139,7 @@ export class Intercept extends EventEmitter<{ paused: [Paused]; resolved: [strin
         b.enabled !== false &&
         b.phase === 'messages' &&
         (!b.direction || b.direction === 'both' || b.direction === msg.direction) &&
-        conditionsMatch({ host: b.host, pathPrefix: b.pathPrefix }, { method: 'GET', url }) &&
+        conditionsMatch(urlConditions(b), { method: 'GET', url }) &&
         messageMatches(b.match, msg.payload),
     );
     if (!bp) return undefined;
@@ -175,7 +188,7 @@ export function applyEdits(msg: HookMessage, r: Resolution): void {
 export function normalizeBreakpoint(b: Omit<Breakpoint, 'id'> & { id?: string }): Breakpoint {
   if (!['request', 'response', 'both', 'messages'].includes(b.phase)) throw new Error('phase must be request, response, both or messages');
   if (b.direction !== undefined && !['client', 'server', 'both'].includes(b.direction)) throw new Error('direction must be client, server or both');
-  const out: Breakpoint = { ...b, id: b.id ?? newId() };
+  const out: Breakpoint = { ...normalizeConditions(b), id: b.id ?? newId() };
   if (b.phase !== 'messages') {
     delete out.direction;
     delete out.match;

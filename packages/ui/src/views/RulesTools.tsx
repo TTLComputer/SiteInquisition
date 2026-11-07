@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useUnsaved } from '../unsaved';
-import type { Breakpoint, MockRule, Paused, ReplaceRule } from '../api';
+import type { Breakpoint, MatchCondition, MatchOp, MockRule, Paused, ReplaceRule } from '../api';
 import { base64ToBytes, bytesToBase64 } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
@@ -33,22 +33,147 @@ function useRulesData() {
   return { data, load };
 }
 
+type PathMode = 'prefix' | 'exact' | 'glob' | 'template' | 'regex';
+
 interface Cond {
   host?: string;
   method?: string;
   pathPrefix?: string;
+  path?: string;
+  pathMatch?: Exclude<PathMode, 'prefix'>;
   status?: string | number;
+  where?: MatchCondition[];
+}
+type CondPatch = Partial<Omit<Cond, 'status'>> & { status?: string };
+
+const PATH_MODES: Array<[PathMode, string, string]> = [
+  ['prefix', 'starts with', '/api/'],
+  ['exact', 'is exactly', '/api/users'],
+  ['template', 'template', '/users/{id}/orders'],
+  ['glob', 'glob', '/api/*/items, /static/**'],
+  ['regex', 'regex', '^/v[0-9]+/'],
+];
+
+const SOURCES: Array<[MatchCondition['in'], string, string]> = [
+  ['query', 'Query param', 'name'],
+  ['header', 'Header', 'name'],
+  ['cookie', 'Cookie', 'name'],
+  ['json', 'JSON', '$.user.role'],
+  ['graphql', 'GraphQL', ''],
+  ['body', 'Body text', ''],
+  ['path', 'Path', ''],
+];
+
+const OPS: Array<[MatchOp, string]> = [
+  ['equals', '='],
+  ['contains', 'contains'],
+  ['prefix', 'starts with'],
+  ['suffix', 'ends with'],
+  ['glob', 'glob'],
+  ['regex', 'regex'],
+  ['exists', 'exists'],
+  ['absent', 'is absent'],
+  ['gt', '>'],
+  ['gte', '>='],
+  ['lt', '<'],
+  ['lte', '<='],
+];
+
+const pathMode = (r: Cond): PathMode => r.pathMatch ?? (r.path !== undefined ? 'exact' : 'prefix');
+
+/** One "and" condition: source, name, side, negation, operator, value. */
+function WhereRow({ c, set, remove, withSide }: { c: MatchCondition; set(c: MatchCondition): void; remove(): void; withSide: boolean }) {
+  const src = SOURCES.find(([id]) => id === c.in)!;
+  const op = c.op ?? 'equals';
+  const noValue = op === 'exists' || op === 'absent';
+  const sided = withSide && ['header', 'cookie', 'json', 'body'].includes(c.in);
+  return (
+    <div className="cond-row where-row" data-testid="where-row">
+      <span className="label">and</span>
+      <select className="input" value={c.in} onChange={(e) => set({ ...c, in: e.target.value as MatchCondition['in'], name: undefined })} aria-label="Condition source" style={{ flex: '0 0 auto' }}>
+        {SOURCES.map(([id, label]) => (
+          <option key={id} value={id}>
+            {label}
+          </option>
+        ))}
+      </select>
+      {sided && (
+        <select className="input" value={c.side ?? ''} onChange={(e) => set({ ...c, side: (e.target.value || undefined) as MatchCondition['side'] })} aria-label="Request or response" style={{ flex: '0 0 auto' }}>
+          <option value="">this message</option>
+          <option value="request">of the request</option>
+          <option value="response">of the response</option>
+        </select>
+      )}
+      {c.in === 'graphql' ? (
+        <select className="input" value={c.name ?? 'operation'} onChange={(e) => set({ ...c, name: e.target.value === 'operation' ? undefined : e.target.value })} aria-label="GraphQL part" style={{ flex: '0 0 auto' }}>
+          <option value="operation">operation name</option>
+          <option value="type">operation type</option>
+          <option value="field">root field</option>
+          <option value="hash">persisted query hash</option>
+        </select>
+      ) : (
+        src[2] && <input className="input mono" placeholder={src[2]} value={c.name ?? ''} onChange={(e) => set({ ...c, name: e.target.value })} aria-label="Condition name" />
+      )}
+      <label className="check" title="Match when this does not hold">
+        <input type="checkbox" checked={!!c.not} onChange={(e) => set({ ...c, not: e.target.checked || undefined })} aria-label="Not" />
+        not
+      </label>
+      <select className="input" value={op} onChange={(e) => set({ ...c, op: e.target.value as MatchOp })} aria-label="Operator" style={{ flex: '0 0 auto' }}>
+        {OPS.map(([id, label]) => (
+          <option key={id} value={id}>
+            {label}
+          </option>
+        ))}
+      </select>
+      {!noValue && <input className="input mono" placeholder={c.in === 'graphql' && !c.name ? 'GetUser' : 'value'} value={c.value ?? ''} onChange={(e) => set({ ...c, value: e.target.value })} aria-label="Condition value" />}
+      {!noValue && !['gt', 'gte', 'lt', 'lte'].includes(op) && (
+        <label className="check" title="Ignore letter case">
+          <input type="checkbox" checked={!!c.ignoreCase} onChange={(e) => set({ ...c, ignoreCase: e.target.checked || undefined })} aria-label="Ignore case" />
+          Aa
+        </label>
+      )}
+      <button className="icon-btn" aria-label="Remove condition" onClick={remove}>
+        <Icon name="close" size={12} />
+      </button>
+    </div>
+  );
 }
 
-function Conditions({ r, set, withStatus, withMethod = true }: { r: Cond; set(p: { host?: string; method?: string; pathPrefix?: string; status?: string }): void; withStatus?: boolean; withMethod?: boolean }) {
+function Conditions({ r, set, withStatus, withMethod = true, withSide = false, urlOnly = false }: { r: Cond; set(p: CondPatch): void; withStatus?: boolean; withMethod?: boolean; withSide?: boolean; urlOnly?: boolean }) {
+  const mode = pathMode(r);
+  const placeholder = PATH_MODES.find(([m]) => m === mode)![2];
+  const where = r.where ?? [];
+  const setWhere = (next: MatchCondition[]) => set({ where: next });
+  const setPath = (m: PathMode, value: string) =>
+    set(m === 'prefix' ? { pathPrefix: value, path: undefined, pathMatch: undefined } : { pathPrefix: undefined, path: value, pathMatch: m === 'exact' ? undefined : m });
   return (
-    <div className="cond-row">
-      <span className="label">When</span>
-      <input className="input mono" placeholder="host (glob, empty = any)" value={r.host ?? ''} onChange={(e) => set({ host: e.target.value })} aria-label="Host" />
-      {withMethod && <input className="input mono" placeholder="method" value={r.method ?? ''} onChange={(e) => set({ method: e.target.value.toUpperCase() })} style={{ width: 80 }} aria-label="Method" />}
-      <input className="input mono" placeholder="path prefix" value={r.pathPrefix ?? ''} onChange={(e) => set({ pathPrefix: e.target.value })} aria-label="Path prefix" />
-      {withStatus && <input className="input mono" placeholder="status (4xx, >=400)" value={String(r.status ?? '')} onChange={(e) => set({ status: e.target.value })} style={{ width: 130 }} aria-label="Status" />}
-    </div>
+    <>
+      <div className="cond-row">
+        <span className="label">When</span>
+        <input className="input mono" placeholder="host (glob, empty = any)" value={r.host ?? ''} onChange={(e) => set({ host: e.target.value })} aria-label="Host" />
+        {withMethod && <input className="input mono" placeholder="method(s)" title="One method, or several: GET,HEAD" value={r.method ?? ''} onChange={(e) => set({ method: e.target.value.toUpperCase() })} style={{ width: 90, flex: '0 0 auto' }} aria-label="Method" />}
+        <select className="input" value={mode} onChange={(e) => setPath(e.target.value as PathMode, (mode === 'prefix' ? r.pathPrefix : r.path) ?? '')} aria-label="Path match" style={{ flex: '0 0 auto' }}>
+          {PATH_MODES.map(([m, label]) => (
+            <option key={m} value={m}>
+              path {label}
+            </option>
+          ))}
+        </select>
+        <input className="input mono" placeholder={placeholder} value={(mode === 'prefix' ? r.pathPrefix : r.path) ?? ''} onChange={(e) => setPath(mode, e.target.value)} aria-label="Path" />
+        {withStatus && <input className="input mono" placeholder="status (4xx, >=400)" value={String(r.status ?? '')} onChange={(e) => set({ status: e.target.value })} style={{ width: 130, flex: '0 0 auto' }} aria-label="Status" />}
+        <button
+          className="link-btn"
+          onClick={() => setWhere([...where, { in: urlOnly ? 'query' : 'header', name: '' }])}
+          title={urlOnly ? 'Add a condition on the connection URL' : 'Add a condition on a query parameter, header, cookie, JSON value, GraphQL operation or body text'}
+        >
+          + condition
+        </button>
+      </div>
+      {where.map((c, i) => (
+        <WhereRow key={i} c={c} withSide={withSide} set={(next) => setWhere(where.map((x, j) => (j === i ? next : x)))} remove={() => setWhere(where.filter((_, j) => j !== i))} />
+      ))}
+      {urlOnly && where.some((c) => c.in !== 'query' && c.in !== 'path') && <div className="faint" style={{ padding: '0 12px 6px', fontSize: 12 }}>Message breakpoints only see the connection URL, so only path and query conditions apply.</div>}
+    </>
   );
 }
 
@@ -142,7 +267,7 @@ export function ReplaceRules() {
               <Icon name="trash" size={13} />
             </button>
           </div>
-          <Conditions r={r} set={(p) => set(r.key, p)} withStatus={r.phase === 'response'} />
+          <Conditions r={r} set={(p) => set(r.key, p)} withStatus={r.phase === 'response'} withSide={r.phase === 'response'} />
           <div className="cond-row">
             <span className="label">Do</span>
             {r.target === 'header' && (
@@ -275,7 +400,7 @@ export function Mocks() {
               <Icon name="trash" size={13} />
             </button>
           </div>
-          <Conditions r={{ host: m.host, method: m.method, pathPrefix: m.pathPrefix }} set={(p) => set(m.key, { host: p.host ?? m.host, method: p.method ?? m.method, pathPrefix: p.pathPrefix ?? m.pathPrefix })} />
+          <Conditions r={{ ...m, status: undefined }} set={({ status: _s, ...p }) => set(m.key, p)} />
           <div className="mock-split">
             <textarea className="editor" style={{ height: 90 }} spellCheck={false} value={m.headersText} onChange={(e) => set(m.key, { headersText: e.target.value })} aria-label="Mock headers" placeholder="Header: value" />
             <textarea className="editor" style={{ height: 90 }} spellCheck={false} value={m.body ?? ''} onChange={(e) => set(m.key, { body: e.target.value })} aria-label="Mock body" />
@@ -525,7 +650,7 @@ export function Breakpoints() {
               <Icon name="trash" size={13} />
             </button>
           </div>
-          <Conditions r={b} set={(p) => set(b.key, p)} withStatus={b.phase === 'response' || b.phase === 'both'} withMethod={b.phase !== 'messages'} />
+          <Conditions r={b} set={(p) => set(b.key, p)} withStatus={b.phase === 'response' || b.phase === 'both'} withMethod={b.phase !== 'messages'} withSide={b.phase === 'response' || b.phase === 'both'} urlOnly={b.phase === 'messages'} />
         </div>
       ))}
     </div>

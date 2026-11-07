@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Explore API, Endpoints** puts API endpoints first and keeps pages, WebSocket endpoints and files (scripts, styles, images, fonts) in their own sections, so static files no longer crowd the list. Clicking a row shows that endpoint's calls in Traffic.
+- **The site map is a full tree.** Every path segment opens below its parent, with counts at each level; any level filters Traffic.
+- **Explore API, WebSocket APIs** maps the APIs spoken over WebSockets: each endpoint, its protocol, and every message kind in each direction with counts, fields and an example. Also the `websocket_api` MCP tool.
+- The body editor in Replay now fills the space beside the response instead of a few lines.
 - **Four work areas instead of fourteen screens.** The navigation now follows an investigation: **Traffic** (requests, browser, timeline, live connections), **Explore API** (endpoints, resources, values, fields, API files, GraphQL, technology), **Replay** (open editors, flows, compare, auth and negative tests) and **Overrides** (everything that changes live traffic). **Project settings** (capture scope, session and authentication, proxy, certificates, storage, integrations) and **Advanced tools** (decode, race, protocol lab, script console) sit in the footer. Coverage moved out of History into Explore API, Endpoints; variables, login macros and AWS signing moved out of Cookies into Project settings, Session and authentication. Old names still resolve, so every link, shortcut and contextual action lands on the page that now owns it. Navigation never enables, disables or reorders a rule.
 - **Overrides, Active** lists every mock, match and replace rule, breakpoint and live hook in one table, with whether it is on and how often it matched, a switch for each, and Edit to its own editor.
 - Drop a Traffic row on Replay in the navigation to open it in an editor. Coming back to an area opens the page last used there.

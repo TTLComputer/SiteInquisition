@@ -1,6 +1,6 @@
 import { usePlacement } from '../components/placement';
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import type { ExchangeSummary, HostTechSummary, SiteMapHost } from '../api';
+import type { ExchangeSummary, HostTechSummary, SiteMapHost, SiteNode } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
 import { fmtMs, fmtSize, fmtTime, statusClass, statusText, toRawRequest, downloadText } from '../format';
@@ -38,15 +38,74 @@ export function withFilter(query: string, key: string, value: string | null): st
   return `${rest} ${key}:${v}`.trim();
 }
 
+/** One path segment in the site map, with its children when opened. */
+function SiteBranch({ node, depth, host, activeHost, activePath, pick, open, toggle }: {
+  node: SiteNode;
+  depth: number;
+  host: string;
+  activeHost?: string;
+  activePath?: string;
+  pick(path: string): void;
+  open: Record<string, boolean>;
+  toggle(key: string): void;
+}) {
+  const key = `${host}${node.path}`;
+  const isOpen = !!open[key];
+  const hasKids = node.children.length > 0;
+  return (
+    <>
+      <div className="tree-row" style={{ paddingLeft: 6 + depth * 12 }}>
+        {hasKids ? (
+          <button className="tree-toggle" aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${node.path}`} aria-expanded={isOpen} onClick={() => toggle(key)}>
+            <span style={{ display: 'inline-flex', transform: isOpen ? undefined : 'rotate(-90deg)' }}>
+              <Icon name="chevron" size={11} />
+            </span>
+          </button>
+        ) : (
+          <span className="tree-toggle" />
+        )}
+        <button
+          className="seg-row"
+          data-testid="site-node"
+          data-path={node.path}
+          aria-pressed={activeHost === host && activePath === node.path}
+          title={`${node.path}: ${node.count} exchanges${node.here !== node.count ? `, ${node.here} at exactly this path` : ''}. Click to show them.`}
+          onClick={() => pick(node.path)}
+        >
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {hasKids ? `${node.name}/` : node.name}
+            {node.websocket && <span className="faint"> ws</span>}
+          </span>
+          <span className="count">{node.count}</span>
+        </button>
+      </div>
+      {isOpen &&
+        node.children.map((c) => <SiteBranch key={c.path} node={c} depth={depth + 1} host={host} activeHost={activeHost} activePath={activePath} pick={pick} open={open} toggle={toggle} />)}
+      {isOpen && node.omitted ? (
+        <div className="faint" style={{ paddingLeft: 24 + depth * 12, fontSize: 11 }}>
+          {node.omitted} more not shown
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function SiteMap({ query, setQuery, version }: { query: string; setQuery(q: string): void; version: number }) {
   const { client } = useApp();
   const [hosts, setHosts] = useState<SiteMapHost[]>([]);
   const [tech, setTech] = useState<Record<string, HostTechSummary['tech']>>({});
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [trees, setTrees] = useState<Record<string, SiteNode>>({});
   useEffect(() => {
     client.siteMap().then(setHosts, () => undefined);
     client.techHosts().then((list) => setTech(Object.fromEntries(list.map((h) => [h.host, h.tech]))), () => undefined);
   }, [client, version]);
+  // Trees are loaded for opened hosts only, and again when traffic changes.
+  const openHosts = useMemo(() => hosts.filter((h) => open[h.host]).map((h) => h.host), [hosts, open]);
+  useEffect(() => {
+    for (const host of openHosts) client.siteTree(host).then((t) => setTrees((cur) => ({ ...cur, [host]: t })), () => undefined);
+  }, [client, openHosts, version]);
+  const toggle = useCallback((key: string) => setOpen((o) => ({ ...o, [key]: !o[key] })), []);
   const activeHost = /(?:^|\s)host:(\S+)/.exec(query)?.[1];
   const activePath = /(?:^|\s)path:(\S+)/.exec(query)?.[1];
   return (
@@ -80,17 +139,20 @@ function SiteMap({ query, setQuery, version }: { query: string; setQuery(q: stri
               ))}
             </div>
           )}
+          {open[h.host] && !trees[h.host] && <div className="faint" style={{ paddingLeft: 24, fontSize: 11 }}>Loading...</div>}
           {open[h.host] &&
-            h.paths.map((p) => (
-              <button
-                key={p.segment}
-                className="seg-row"
-                aria-pressed={activeHost === h.host && activePath === p.segment}
-                onClick={() => setQuery(withFilter(withFilter(query, 'host', h.host), 'path', activeHost === h.host && activePath === p.segment ? null : p.segment))}
-              >
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.segment}</span>
-                <span className="count">{p.count}</span>
-              </button>
+            trees[h.host]?.children.map((n) => (
+              <SiteBranch
+                key={n.path}
+                node={n}
+                depth={1}
+                host={h.host}
+                activeHost={activeHost}
+                activePath={activePath}
+                open={open}
+                toggle={toggle}
+                pick={(path) => setQuery(withFilter(withFilter(query, 'host', h.host), 'path', activeHost === h.host && activePath === path ? null : path))}
+              />
             ))}
         </div>
       ))}

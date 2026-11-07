@@ -162,7 +162,7 @@ describe.skipIf(!ready)('API understanding in the renderer', () => {
     const never = page.getByLabel('Documented but never called');
     await expect.poll(() => never.textContent()).toContain('/api/refunds');
     expect(await never.textContent()).not.toContain('/api/orders/{orderId}');
-    expect(await page.locator('.coverage-table').textContent()).toContain('undocumented');
+    expect(await page.getByRole('table', { name: 'API endpoints' }).textContent()).toContain('undocumented');
     await shot('coverage-docs');
     // Opening a documented endpoint fills its path parameter with a real order number from History.
     await nav('API');

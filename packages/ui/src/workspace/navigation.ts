@@ -62,6 +62,7 @@ export const AREAS: AreaDef[] = [
       { id: 'fields', label: 'Fields', hint: 'What each field and parameter means, with examples' },
       { id: 'specs', label: 'API files', hint: 'Imported OpenAPI, Swagger, Postman and HAR, compared with what was seen' },
       { id: 'graphql', label: 'GraphQL', hint: 'Schemas and operations' },
+      { id: 'websockets', label: 'WebSocket APIs', hint: 'WebSocket endpoints, the protocol each speaks and every kind of message sent and received' },
       { id: 'tech', label: 'Technology', hint: 'Frameworks, servers and services detected, with the evidence' },
     ],
   },

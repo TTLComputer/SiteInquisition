@@ -11,7 +11,7 @@ import { Core } from '@siteinquisition/core';
  */
 const WRITES = ['run_flow', 'run_reproduction', 'auth_matrix', 'negative_tests', 'run_tech_check', 'replay_request', 'resend_exchange', 'tag_exchange', 'set_notes', 'add_scope_host', 'run_script', 'replay_websocket', 'protocol_lab'];
 const READS = [
-  'search_traffic', 'get_exchange', 'site_map', 'endpoint_coverage', 'api_values', 'value_origin', 'tag_value', 'api_specs', 'list_flows', 'list_reproductions', 'contract_check',
+  'search_traffic', 'get_exchange', 'site_map', 'endpoint_coverage', 'websocket_api', 'api_values', 'value_origin', 'tag_value', 'api_specs', 'list_flows', 'list_reproductions', 'contract_check',
   'resource_lifecycle', 'field_glossary', 'diff_exchanges', 'endpoint_notes', 'graphql_operations', 'copy_as_curl', 'decode', 'list_cookies',
   'detect_technologies', 'find_errors', 'decode_jwt', 'decode_session_cookie', 'aws_request_info', 'csrf_tokens', 'get_scope', 'parse_sigv4', 'websocket_script', 'protocol_support',
 ];

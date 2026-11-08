@@ -45,7 +45,7 @@ export async function sendReplay(store: CaptureStore, req: ReplayRequest): Promi
     const lower = k.toLowerCase();
     if (HOP_BY_HOP.has(lower) || lower === 'content-length') continue;
     if (lower === 'host') hasHost = true;
-    // HTTP/2 pseudo-headers from captured h2 traffic have no HTTP/1.1 equivalent.
+    // HTTP/2 and HTTP/3 pseudo-headers have no HTTP/1.1 equivalent: the request line carries them.
     if (k.startsWith(':')) continue;
     headers.push([k, v]);
   }
@@ -115,7 +115,7 @@ const round = (n: number) => Math.round(n * 1000) / 1000;
 
 /** One request over HTTP/2, recorded like any other replay. */
 async function sendH2(store: CaptureStore, req: ReplayRequest): Promise<ExchangeSummary> {
-  const r = await runH2Plan(store, [{ method: req.method, url: req.url, headers: req.headers.filter(([k]) => k.toLowerCase() !== 'content-length' && !k.startsWith(':')), body: req.body, replayOf: req.replayOf }], {
+  const r = await runH2Plan(store, [{ method: req.method, url: req.url, headers: req.headers.filter(([k]) => k.toLowerCase() !== 'content-length'), body: req.body, replayOf: req.replayOf }], {
     connect: req.h2Method,
     ignoreTlsErrors: req.ignoreTlsErrors,
     timeoutMs: req.timeoutMs,

@@ -97,17 +97,55 @@ export const isPseudoHeader = (name: string) => name.startsWith(':');
 export const isFramedHttp = (version: string | null | undefined) => /^(?:HTTP\/)?[23](?:\.0)?$/i.test((version ?? '').trim());
 
 /**
- * A request as editable text. Pseudo-headers (:method, :path...) are left
- * out: the request line already says the same thing, and whichever protocol
- * Replay sends over builds its own from it.
+ * A request as editable text. The request line says where to connect.
+ * HTTP/2 and HTTP/3 pseudo-headers (:method, :authority...) stay in as
+ * header lines: over those protocols they are sent as written, so a test can
+ * set them apart from the URL. HTTP/1.1 has no such fields and leaves them out.
  */
-export function toRawRequest(method: string, url: string, headers: HeaderList, body: string): string {
-  return `${method} ${url} HTTP/1.1\n${headers.filter(([k]) => !isPseudoHeader(k)).map(([k, v]) => `${k}: ${v}`).join('\n')}\n\n${body}`;
+export function toRawRequest(method: string, url: string, headers: HeaderList, body: string, version?: string): string {
+  return `${method} ${url} ${httpLabel(version)}\n${headers.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\n${body}`;
+}
+
+/** The pseudo-headers a request line implies, as HTTP/2 and HTTP/3 send them. */
+export function impliedPseudo(method: string, url: string): Record<string, string> | null {
+  try {
+    const u = new URL(url);
+    return { ':method': method.toUpperCase(), ':scheme': u.protocol.replace(':', ''), ':authority': u.host, ':path': `${u.pathname}${u.search}` };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After an edit to the request line, carry it into the pseudo-headers that
+ * still said what the old line implied. One the user set to something else
+ * on purpose is left alone.
+ */
+export function syncPseudo(before: string, after: string): string {
+  const line = (t: string) => /^([A-Za-z]+)\s+(\S+)/.exec(t.slice(0, t.indexOf('\n') === -1 ? t.length : t.indexOf('\n')).trim());
+  const a = line(before);
+  const b = line(after);
+  if (!a || !b || (a[1] === b[1] && a[2] === b[2])) return after;
+  const was = impliedPseudo(a[1]!, a[2]!);
+  const now = impliedPseudo(b[1]!, b[2]!);
+  if (!was || !now) return after;
+  const end = after.search(/\r?\n\r?\n/);
+  const head = end === -1 ? after : after.slice(0, end);
+  const lines = head.split('\n');
+  for (let i = 1; i < lines.length; i++) {
+    const m = /^(:[a-z]+):\s?(.*?)(\r?)$/.exec(lines[i]!);
+    if (!m) continue;
+    const name = m[1]!;
+    if (name in was && m[2] === was[name] && now[name] !== undefined) lines[i] = `${name}: ${now[name]}${m[3]}`;
+  }
+  return lines.join('\n') + (end === -1 ? '' : after.slice(end));
 }
 
 export interface ParsedRequest {
   method: string;
   url: string;
+  /** The version written on the request line ("2" for HTTP/2), when there is one. Replay's protocol picker decides how it is sent. */
+  version?: string;
   headers: HeaderList;
   body: string;
 }
@@ -118,7 +156,7 @@ export function parseRawRequest(raw: string): ParsedRequest {
   const head = split === -1 ? text : text.slice(0, split);
   const body = split === -1 ? '' : text.slice(split + 2);
   const [requestLine = '', ...headerLines] = head.split('\n');
-  const m = /^([A-Za-z]+)\s+(\S+)(?:\s+HTTP\/[\d.]+)?\s*$/.exec(requestLine.trim());
+  const m = /^([A-Za-z]+)\s+(\S+)(?:\s+HTTP\/([\d.]+))?\s*$/i.exec(requestLine.trim());
   if (!m) throw new Error('First line must look like: METHOD https://host/path HTTP/1.1');
   let url: URL;
   try {
@@ -129,15 +167,12 @@ export function parseRawRequest(raw: string): ParsedRequest {
   const headers: HeaderList = [];
   for (const line of headerLines) {
     if (!line.trim()) continue;
-    // A pasted HTTP/2 pseudo-header (":method: GET") has its colon after the leading one.
+    // An HTTP/2 pseudo-header (":method: GET") has its name colon after the leading one.
     const i = line.indexOf(':', line.trimStart().startsWith(':') ? line.indexOf(':') + 1 : 0);
     if (i <= 0) throw new Error(`Header line is missing a colon: ${line}`);
-    const name = line.slice(0, i).trim();
-    // The request line is what counts; pseudo-headers pasted from HTTP/2 traffic would only repeat it.
-    if (isPseudoHeader(name)) continue;
-    headers.push([name, line.slice(i + 1).trim()]);
+    headers.push([line.slice(0, i).trim(), line.slice(i + 1).trim()]);
   }
-  return { method: m[1]!.toUpperCase(), url: url.href, headers, body };
+  return { method: m[1]!.toUpperCase(), url: url.href, ...(m[3] ? { version: m[3] } : {}), headers, body };
 }
 
 /** Save text as a file through the browser's download. */

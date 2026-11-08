@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from '@siteinquisition/devkit/test';
 import { findChromium, launch, type Browser, type Page } from '@siteinquisition/devkit/browser';
 import { exchangeCurl } from '@siteinquisition/core';
-import { httpLabel, isFramedHttp, parseRawRequest, toRawRequest } from '../src/format';
+import { httpLabel, isFramedHttp, parseRawRequest, syncPseudo, toRawRequest } from '../src/format';
 import { DIST, navTo, startHarness, type Harness } from './harness';
 
 describe('HTTP version labels and pseudo-headers', () => {
@@ -20,13 +20,24 @@ describe('HTTP version labels and pseudo-headers', () => {
     expect(isFramedHttp('1.1')).toBe(false);
   });
 
-  it('leaves pseudo-headers out of the raw request, and skips them when pasted back', () => {
-    const raw = toRawRequest('GET', 'https://h2.test/a.js', [[':method', 'GET'], [':authority', 'h2.test'], [':path', '/a.js'], ['accept', '*/*']], '');
-    expect(raw).toBe('GET https://h2.test/a.js HTTP/1.1\naccept: */*\n\n');
-    // Text copied from HTTP/2 traffic elsewhere still parses.
-    const parsed = parseRawRequest('GET https://h2.test/a.js HTTP/2\n:method: GET\n:path: /a.js\nsec-ch-ua-platform: "Windows"\n\n');
-    expect(parsed.headers).toEqual([['sec-ch-ua-platform', '"Windows"']]);
+  it('keeps pseudo-headers in the raw request, and parses them back', () => {
+    const raw = toRawRequest('GET', 'https://h2.test/a.js', [[':method', 'GET'], [':authority', 'h2.test'], [':path', '/a.js'], ['accept', '*/*']], '', '2.0');
+    expect(raw).toBe('GET https://h2.test/a.js HTTP/2\n:method: GET\n:authority: h2.test\n:path: /a.js\naccept: */*\n\n');
+    const parsed = parseRawRequest(raw.replace(':authority: h2.test', ':authority: other.test'));
+    expect(parsed.headers).toEqual([[':method', 'GET'], [':authority', 'other.test'], [':path', '/a.js'], ['accept', '*/*']]);
     expect(parsed.url).toBe('https://h2.test/a.js');
+    expect(parsed.version).toBe('2');
+    expect(toRawRequest('GET', 'https://h2.test/', [], '')).toBe('GET https://h2.test/ HTTP/1.1\n\n\n');
+  });
+
+  it('carries a request line edit into the pseudo-headers that still matched it', () => {
+    const before = 'GET https://h2.test/a?x=1 HTTP/2\n:method: GET\n:scheme: https\n:authority: other.test\n:path: /a?x=1\naccept: */*\n\nbody';
+    const after = syncPseudo(before, before.replace('GET https://h2.test/a?x=1', 'POST https://h2.test/b'));
+    // :authority was set apart from the URL on purpose, so it stays.
+    expect(after).toBe('POST https://h2.test/b HTTP/2\n:method: POST\n:scheme: https\n:authority: other.test\n:path: /b\naccept: */*\n\nbody');
+    // Edits elsewhere leave everything as typed.
+    const typed = before.replace(':path: /a?x=1', ':path: /typed');
+    expect(syncPseudo(before, typed)).toBe(typed);
   });
 });
 
@@ -112,16 +123,24 @@ describe.skipIf(!ready)('HTTP/2 exchanges in the renderer', () => {
     expect((await sideText(1))!.startsWith(':status: 201')).toBe(true);
   });
 
-  it('opens in Replay without the pseudo-headers, on HTTP/2', async () => {
+  it('opens in Replay with its pseudo-headers, on HTTP/2, and keeps them in step with the URL', async () => {
     await page.locator('.row', { hasText: '989.fa2243d6c6142af9.js' }).first().click();
     await page.keyboard.press('Control+r');
     const editor = page.getByLabel('Raw request').last();
     await expect.poll(() => editor.inputValue()).toContain('sec-ch-ua-platform');
     const raw = await editor.inputValue();
-    expect(raw).not.toContain(':method');
-    expect(raw).not.toContain(':path');
-    expect(() => parseRawRequest(raw)).not.toThrow();
+    expect(raw.split('\n')[0]).toMatch(/^GET https:\/\/127\.0\.0\.1:\d+\/989\.fa2243d6c6142af9\.js HTTP\/2$/);
+    expect(raw).toContain('\n:path: /989.fa2243d6c6142af9.js\n');
+    expect(parseRawRequest(raw).headers.slice(0, 4).map(([k]) => k)).toEqual([':method', ':authority', ':scheme', ':path']);
     expect(await page.getByLabel('Protocol').last().inputValue()).toBe('h2');
+    // Editing the URL updates :path.
+    await editor.fill(raw.replace('/989.fa2243d6c6142af9.js HTTP/2', '/other.js HTTP/2'));
+    await expect.poll(() => editor.inputValue()).toContain('\n:path: /other.js\n');
+    // HTTP/1.1 says it will not send them.
+    await page.getByLabel('Protocol').last().selectOption('h1');
+    await expect.poll(() => page.getByTestId('pseudo-h1-hint').count()).toBe(1);
+    await page.getByLabel('Protocol').last().selectOption('h2');
+    await shot('h2-replay');
   });
 
   it('copies as curl without pseudo-headers', async () => {

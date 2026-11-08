@@ -82,7 +82,7 @@ function PseudoNote({ version, side }: { version: string; side: 'request' | 'res
           <code>:status</code> is the status code. There is no reason phrase such as "OK".
         </>
       )}{' '}
-      They always come before the ordinary headers. Replay and copy as curl build them from the URL, so you edit the URL rather than these lines.
+      They always come before the ordinary headers. Send to Replay keeps them: edit one there to send it with a different value over HTTP/2 or HTTP/3 (editing the URL updates the ones that still match it). Copy as curl leaves them out, since curl builds its own.
     </p>
   );
 }

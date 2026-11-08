@@ -3,7 +3,7 @@ import type { AwsProfile, ExchangeDetail, ExchangeSummary, SendOptions } from '.
 import { useApp, type CodecInput, type ReplayTab } from '../state';
 import { Codecs } from './Codecs';
 import { Icon } from '../components/icons';
-import { asText, fmtMs, fmtSize, hexDump, httpLabel, parseRawRequest, prettyBody, statusClass, statusText, toRawRequest } from '../format';
+import { asText, fmtMs, fmtSize, hexDump, httpLabel, isFramedHttp, parseRawRequest, syncPseudo, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { diffLines } from '../diff';
 import { TokenPicker } from './TokenPicker';
 import { CertHelp } from './TlsSettings';
@@ -219,7 +219,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
       setAttachments(multipart.attachments);
       body = multipart.text;
     }
-    const next = toRawRequest(ex.method, ex.url, ex.requestHeaders, body === null ? binaryMarker(reqBody.length) : body);
+    const next = toRawRequest(ex.method, ex.url, ex.requestHeaders, body === null ? binaryMarker(reqBody.length) : body, isFramedHttp(ex.httpVersion) ? ex.httpVersion : undefined);
     setRaw(next);
     setRegions(body === null ? [] : shiftRegions(found, next.length - body.length));
     baseline.current = next;
@@ -236,7 +236,7 @@ export function Replay({ tab }: { tab: ReplayTab }) {
       const out = dir === 'decode' ? await client.decodeFields(parsed.body, specs) : await client.encodeFields(parsed.body, specs);
       if (!out) return notify('None of those fields are in the body, or the body is not JSON.');
       if (out.errors.length) notify(out.errors[0]!);
-      setRaw(toRawRequest(parsed.method, parsed.url, parsed.headers, out.text));
+      setRaw(toRawRequest(parsed.method, parsed.url, parsed.headers, out.text, parsed.version));
       setRegions([]);
       if (dir === 'encode') setOpts((o) => ({ ...o, fields: '' }));
     } catch (e) {
@@ -623,6 +623,11 @@ export function Replay({ tab }: { tab: ReplayTab }) {
             </select>
           </label>
         )}
+        {opts.protocol === 'h1' && /\n:[a-z]+:/.test(raw.slice(0, raw.indexOf('\n\n') === -1 ? raw.length : raw.indexOf('\n\n'))) && (
+          <span className="faint" data-testid="pseudo-h1-hint" title="Lines like :method and :authority are HTTP/2 and HTTP/3 fields. HTTP/1.1 sends the request line and Host instead.">
+            Pseudo-headers are sent only over HTTP/2 and HTTP/3
+          </span>
+        )}
         {opt('refreshCookies', 'Fresh cookies', 'Replace the Cookie header with the current cookie jar')}
         {opt('applyRules', 'Apply rules', 'Run enabled request match and replace rules')}
         {opt('loginMacro', 'Log in on 401/403', 'Run the login macro for this host and send again')}
@@ -793,8 +798,12 @@ export function Replay({ tab }: { tab: ReplayTab }) {
             regions={regions}
             save={editorUrl ? { url: editorUrl, side: 'request', bodyStart: raw.indexOf('\n\n') + 2 } : undefined}
             onChange={(d) => {
-              setRaw(d.text);
-              setRegions(d.regions);
+              // A new URL or method on the request line carries into the pseudo-headers that still matched the old one.
+              const text = syncPseudo(raw, d.text);
+              const by = text.length - d.text.length;
+              const headEnd = d.text.indexOf('\n\n');
+              setRaw(text);
+              setRegions(by && headEnd !== -1 ? d.regions.map((r) => (r.start > headEnd ? { ...r, start: r.start + by, end: r.end + by } : r)) : d.regions);
             }}
           />}
         </section>

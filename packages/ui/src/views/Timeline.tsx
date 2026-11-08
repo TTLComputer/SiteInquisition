@@ -48,40 +48,68 @@ export function Timeline() {
   const areaRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
 
-  const load = useCallback(async () => {
-    const t = Date.now();
-    const q = zoom ? `${query} since:${t - zoom}` : query;
-    try {
-      const page = await client.search(q.trim(), { limit: MAX_ROWS });
-      setRows(page);
-      setNow(t);
-      setError(null);
+  const framesRef = useRef(frames);
+  framesRef.current = frames;
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+
+  /** Messages for the connections on screen: only the ones after what is already loaded, unless starting over. */
+  const loadFrames = useCallback(
+    async (page: ExchangeSummary[], fresh: boolean) => {
       const streams = page.filter((e) => e.isWebSocket || e.scheme.startsWith('mqtt')).slice(0, MAX_STREAMS);
-      const loaded = await Promise.all(streams.map(async (e) => [e.id, await client.streamMessages(e.id).catch(() => [])] as const));
+      const have = fresh ? {} : framesRef.current;
+      const loaded = await Promise.all(
+        streams.map(async (e) => {
+          const old = have[e.id] ?? [];
+          const more = await client.streamMessages(e.id, old[old.length - 1]?.id).catch(() => []);
+          return [e.id, more.length ? [...old, ...more] : old] as const;
+        }),
+      );
       setFrames(Object.fromEntries(loaded));
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, [client, query, zoom]);
+    },
+    [client],
+  );
+
+  const load = useCallback(
+    async (fresh = false) => {
+      const t = Date.now();
+      const q = zoom ? `${query} since:${t - zoom}` : query;
+      try {
+        const page = await client.search(q.trim(), { limit: MAX_ROWS });
+        setRows(page);
+        setNow(t);
+        setError(null);
+        await loadFrames(page, fresh);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    },
+    [client, query, zoom, loadFrames],
+  );
 
   useEffect(() => {
-    void load();
+    void load(true);
   }, [load]);
 
   useEffect(() => {
     if (!live) return;
     let timer: number | undefined;
+    let frameTimer: number | undefined;
     const off = client.onChange((c) => {
-      if ((c.entity === 'exchange' || c.entity === 'stream') && timer === undefined) timer = window.setTimeout(() => ((timer = undefined), void load()), 700);
+      // A busy connection only needs its new messages; new requests need the search again.
+      if (c.kind === 'stream.message') {
+        if (frameTimer === undefined) frameTimer = window.setTimeout(() => ((frameTimer = undefined), void loadFrames(rowsRef.current, false)), 700);
+      } else if ((c.entity === 'exchange' || c.entity === 'stream') && timer === undefined) timer = window.setTimeout(() => ((timer = undefined), void load()), 700);
     });
     // Keep the right edge at "now" while live, even when nothing new arrives.
     const tick = window.setInterval(() => setNow(Date.now()), zoom && zoom <= 300_000 ? 1000 : 5000);
     return () => {
       off();
       window.clearTimeout(timer);
+      window.clearTimeout(frameTimer);
       window.clearInterval(tick);
     };
-  }, [client, live, load, zoom]);
+  }, [client, live, load, loadFrames, zoom]);
 
   useLayoutEffect(() => {
     const el = areaRef.current;

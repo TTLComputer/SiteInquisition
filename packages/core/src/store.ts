@@ -125,6 +125,22 @@ export interface Transform {
   at: number;
 }
 
+/** A path segment in a host's site tree. */
+export interface SiteNode {
+  name: string;
+  /** The path up to and including this segment, e.g. /api/orders. */
+  path: string;
+  /** Exchanges at or below this path. */
+  count: number;
+  /** Exchanges at exactly this path. */
+  here: number;
+  children: SiteNode[];
+  /** Some exchange at exactly this path is a WebSocket connection. */
+  websocket?: boolean;
+  /** Exchanges below this node not shown because the tree was cut. */
+  omitted?: number;
+}
+
 export interface Change {
   id: string;
   actor: string;
@@ -437,6 +453,13 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     if (version < 2 && !hasColumn('stream_message', 'meta')) this.db.exec('ALTER TABLE stream_message ADD COLUMN meta TEXT');
     if (version < 3 && !hasColumn('exchange', 'replay_of')) this.db.exec('ALTER TABLE exchange ADD COLUMN replay_of TEXT');
     this.db.exec('CREATE INDEX IF NOT EXISTS exchange_replay_of ON exchange(replay_of)');
+    // Filters that pick out a few rows from many (WebSockets, MQTT, replays), the site map's path grouping and
+    // finding a connection's stream would otherwise read the whole table on a large project.
+    this.db.exec(`CREATE INDEX IF NOT EXISTS exchange_ws ON exchange(is_websocket, id);
+      CREATE INDEX IF NOT EXISTS exchange_scheme ON exchange(scheme, id);
+      CREATE INDEX IF NOT EXISTS exchange_source ON exchange(source, id);
+      CREATE INDEX IF NOT EXISTS exchange_host_path ON exchange(host, path);
+      CREATE INDEX IF NOT EXISTS stream_exchange ON stream(exchange_id);`);
     if (version < 4) this.reindexText();
     this.db
       .prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
@@ -511,15 +534,13 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
 
   private recordChange(kind: string, entity: string, entityId: string, data: unknown): void {
     const change: Change = { id: newId(), actor: this.actor, at: Date.now(), kind, entity, entityId, data };
-    this.db
-      .prepare('INSERT INTO change (id, actor, at, kind, entity, entity_id, data) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    this.q('INSERT INTO change (id, actor, at, kind, entity, entity_id, data) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(change.id, change.actor, change.at, kind, entity, entityId, JSON.stringify(data));
     this.pending.push(change);
   }
 
   changesSince(afterId: string | null, limit = 500): Change[] {
-    const rows = this.db
-      .prepare('SELECT * FROM change WHERE id > ? ORDER BY id LIMIT ?')
+    const rows = this.q('SELECT * FROM change WHERE id > ? ORDER BY id LIMIT ?')
       .all(afterId ?? '', limit) as Array<{ id: string; actor: string; at: number; kind: string; entity: string; entity_id: string; data: string }>;
     return rows.map((r) => ({ id: r.id, actor: r.actor, at: r.at, kind: r.kind, entity: r.entity, entityId: r.entity_id, data: JSON.parse(r.data) }));
   }
@@ -574,9 +595,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       const body = req.body && req.body.byteLength ? this.putBlob(req.body, req.bodySize) : undefined;
       const scheme = url.protocol.replace(/:$/, '');
       const port = url.port ? Number(url.port) : defaultPort(scheme);
-      this.db
-        .prepare(
-          `INSERT INTO exchange (id, flow_id, parent_id, source, client_addr, started_at, method, url, scheme, host, port, path,
+      this.q(`INSERT INTO exchange (id, flow_id, parent_id, source, client_addr, started_at, method, url, scheme, host, port, path,
              http_version, req_headers, req_body, req_body_size, req_truncated, state, is_websocket, replay_of, tags, created_by)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
         )
@@ -606,8 +625,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
       if (req.parentId) {
         this.q("UPDATE flow SET kind = 'redirect' WHERE id = ? AND kind = 'single'").run(flowId);
       }
-      this.db
-        .prepare("INSERT INTO exchange_text (exchange_id, url, req_headers, req_body, res_headers, res_body) VALUES (?, ?, ?, ?, '', '')")
+      this.q("INSERT INTO exchange_text (exchange_id, url, req_headers, req_body, res_headers, res_body) VALUES (?, ?, ?, ?, '', '')")
         .run(id, url.href, headersText(req.headers), this.indexText(req.body, req.headers));
       const summary = this.getSummary(id)!;
       this.recordChange('exchange.request', 'exchange', id, summary);
@@ -618,9 +636,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   completeResponse(id: string, res: NewResponse): ExchangeSummary {
     return this.tx(() => {
       const body = res.body && res.body.byteLength ? this.putBlob(res.body, res.bodySize) : undefined;
-      const info = this.db
-        .prepare(
-          `UPDATE exchange SET status = ?, status_message = ?, res_headers = ?, res_body = ?, res_body_size = ?, res_truncated = ?,
+      const info = this.q(`UPDATE exchange SET status = ?, status_message = ?, res_headers = ?, res_body = ?, res_body_size = ?, res_truncated = ?,
              timings = ?, state = 'complete' WHERE id = ?`,
         )
         .run(res.status, res.statusMessage ?? null, JSON.stringify(res.headers), body?.sha ?? null, body?.size ?? 0, body?.truncated ? 1 : 0, JSON.stringify(res.timings ?? {}), id);
@@ -759,6 +775,55 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
        GROUP BY segment ORDER BY count DESC LIMIT ?`,
     );
     return hosts.map((h) => ({ ...h, paths: seg.all(h.host, segmentsPerHost) as unknown as Array<{ segment: string; count: number }> }));
+  }
+
+  /**
+   * One host's paths as a tree: each node is a path segment with how many
+   * exchanges are at or below it. Query strings are left out. Deep or wide
+   * trees are cut (`maxNodes`), and a cut node says how many it left out.
+   */
+  siteTree(host: string, maxNodes = 3000): SiteNode {
+    const rows = this.q(
+      `SELECT CASE WHEN instr(path, '?') > 0 THEN substr(path, 1, instr(path, '?') - 1) ELSE path END AS p, COUNT(*) AS n, MAX(is_websocket) AS ws
+       FROM exchange WHERE host = ? GROUP BY p ORDER BY n DESC LIMIT 20000`,
+    ).all(host) as unknown as Array<{ p: string; n: number; ws: number }>;
+    const root: SiteNode = { name: host, path: '/', count: 0, here: 0, children: [] };
+    let nodes = 0;
+    for (const r of rows) {
+      root.count += r.n;
+      const segs = r.p.split('/').filter(Boolean);
+      if (!segs.length) {
+        root.here += r.n;
+        continue;
+      }
+      let cur = root;
+      let path = '';
+      for (const [i, seg] of segs.entries()) {
+        path += `/${seg}`;
+        let next = cur.children.find((c) => c.name === seg);
+        if (!next) {
+          if (nodes >= maxNodes) {
+            cur.omitted = (cur.omitted ?? 0) + r.n;
+            break;
+          }
+          nodes++;
+          next = { name: seg, path, count: 0, here: 0, children: [] };
+          cur.children.push(next);
+        }
+        next.count += r.n;
+        if (i === segs.length - 1) {
+          next.here += r.n;
+          if (r.ws) next.websocket = true;
+        }
+        cur = next;
+      }
+    }
+    const sort = (n: SiteNode) => {
+      n.children.sort((a, b) => (b.children.length > 0 ? 1 : 0) - (a.children.length > 0 ? 1 : 0) || a.name.localeCompare(b.name));
+      n.children.forEach(sort);
+    };
+    sort(root);
+    return root;
   }
 
   /** Every distinct host with recorded traffic. */
@@ -991,8 +1056,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   addStreamMessage(msg: Omit<StreamMessage, 'id' | 'size'>): StreamMessage {
     const full: StreamMessage = { ...msg, id: newId(), size: msg.payload.byteLength };
     this.tx(() => {
-      this.db
-        .prepare('INSERT INTO stream_message (id, stream_id, direction, opcode, at, size, payload, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      this.q('INSERT INTO stream_message (id, stream_id, direction, opcode, at, size, payload, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         .run(full.id, full.streamId, full.direction, full.opcode, full.at, full.size, full.payload, full.meta ? JSON.stringify(full.meta) : null);
       const { payload: _payload, ...rest } = full;
       this.recordChange('stream.message', 'stream', full.streamId, rest);
@@ -1007,12 +1071,21 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
     });
   }
 
-  /** Responses that set cookies, oldest first, for building the cookie jar. */
-  setCookieResponses(limit = 50_000): Array<{ id: string; url: string; host: string; path: string; startedAt: number; headers: HeaderList }> {
-    const rows = this.q(
-      `SELECT id, url, host, path, started_at, res_headers FROM exchange
-       WHERE res_headers IS NOT NULL AND instr(lower(res_headers), '"set-cookie"') > 0 ORDER BY id LIMIT ?`,
-    ).all(limit) as unknown as Array<{ id: string; url: string; host: string; path: string; started_at: number; res_headers: string }>;
+  /** Responses that set cookies, oldest first, for building the cookie jar: a page after `after`, or the given exchanges. */
+  setCookieResponses(limit = 50_000, opts: { after?: string; ids?: string[] } = {}): Array<{ id: string; url: string; host: string; path: string; startedAt: number; headers: HeaderList }> {
+    const cols = 'SELECT id, url, host, path, started_at, res_headers FROM exchange';
+    const sets = "res_headers IS NOT NULL AND instr(lower(res_headers), '\"set-cookie\"') > 0";
+    type Row = { id: string; url: string; host: string; path: string; started_at: number; res_headers: string };
+    const rows: Row[] = [];
+    if (opts.ids) {
+      for (let i = 0; i < opts.ids.length; i += 500) {
+        const part = opts.ids.slice(i, i + 500);
+        rows.push(...(this.db.prepare(`${cols} WHERE id IN (${part.map(() => '?').join(', ')}) AND ${sets}`).all(...part) as unknown as Row[]));
+      }
+      rows.sort((a, b) => (a.id < b.id ? -1 : 1));
+    } else {
+      rows.push(...(this.q(`${cols} WHERE id > ? AND ${sets} ORDER BY id LIMIT ?`).all(opts.after ?? '', limit) as unknown as Row[]));
+    }
     return rows.map((r) => ({ id: r.id, url: r.url, host: r.host, path: r.path, startedAt: r.started_at, headers: JSON.parse(r.res_headers) as HeaderList }));
   }
 
@@ -1024,8 +1097,7 @@ export class CaptureStore extends EventEmitter<{ change: [Change] }> {
   }
 
   getStreamMessages(streamId: string, opts: { after?: string; limit?: number } = {}): StreamMessage[] {
-    const rows = this.db
-      .prepare('SELECT * FROM stream_message WHERE stream_id = ? AND id > ? ORDER BY id LIMIT ?')
+    const rows = this.q('SELECT * FROM stream_message WHERE stream_id = ? AND id > ? ORDER BY id LIMIT ?')
       .all(streamId, opts.after ?? '', opts.limit ?? 1000) as Array<{ id: string; stream_id: string; direction: 'client' | 'server'; opcode: string; at: number; size: number; payload: Uint8Array; meta: string | null }>;
     return rows.map((r) => ({
       id: r.id,

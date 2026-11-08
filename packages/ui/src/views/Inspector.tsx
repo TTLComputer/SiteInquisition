@@ -126,22 +126,37 @@ function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrac
 
 export function Messages({ exchangeId, protocol }: { exchangeId: string; protocol: string }) {
   const { client, sendToCodecs, openStream } = useApp();
-  const [msgs, setMsgs] = useState<WireStreamMessage[]>([]);
+  const [msgs, setMsgs] = useState<WireStreamMessage[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const load = useCallback(() => client.streamMessages(exchangeId).then(setMsgs, () => undefined), [client, exchangeId]);
   useEffect(() => {
-    void load();
+    // Load once, then fetch only messages newer than the last one, and only when this connection changed.
+    let live = true;
+    let last: string | undefined;
+    let streamId: string | undefined;
     let t: number | undefined;
+    setMsgs(null);
+    const more = async () => {
+      const got = await client.streamMessages(exchangeId, last).catch(() => [] as WireStreamMessage[]);
+      if (!live) return;
+      if (got.length) {
+        last = got[got.length - 1]!.id;
+        streamId = got[0]!.streamId;
+      }
+      setMsgs((cur) => (got.length || !cur ? [...(cur ?? []), ...got] : cur));
+    };
+    void more();
     const off = client.onChange((c) => {
-      if (c.entity === 'stream' && t === undefined) t = window.setTimeout(() => ((t = undefined), void load()), 400);
+      if (c.entity !== 'stream' || (streamId && c.entityId !== streamId) || t !== undefined) return;
+      t = window.setTimeout(() => ((t = undefined), void more()), 250);
     });
     return () => {
+      live = false;
       off();
       window.clearTimeout(t);
     };
-  }, [client, load]);
+  }, [client, exchangeId]);
   const isMqtt = protocol.startsWith('mqtt');
-  const sel = msgs.find((m) => m.id === selected);
+  const sel = msgs?.find((m) => m.id === selected);
   const selBytes = sel ? base64ToBytes(sel.base64) : null;
   const selText = !isMqtt && selBytes ? asText(selBytes) : null;
   const selProto = selText ? detectProtocol(selText) : null;
@@ -156,7 +171,9 @@ export function Messages({ exchangeId, protocol }: { exchangeId: string; protoco
   return (
     <div className="two-col">
       <section style={{ flex: '2 1 480px', overflow: 'auto' }}>
-        {msgs.length === 0 ? (
+        {msgs === null ? (
+          <div className="empty">Loading messages...</div>
+        ) : msgs.length === 0 ? (
           <div className="empty">No messages recorded on this connection yet.</div>
         ) : (
           <table className="msg-table">

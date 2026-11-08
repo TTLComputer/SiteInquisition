@@ -3,7 +3,7 @@ import type { AwsProfile, ExchangeDetail, ExchangeSummary, SendOptions } from '.
 import { useApp, type CodecInput, type ReplayTab } from '../state';
 import { Codecs } from './Codecs';
 import { Icon } from '../components/icons';
-import { asText, fmtMs, fmtSize, hexDump, parseRawRequest, prettyBody, statusClass, statusText, toRawRequest } from '../format';
+import { asText, fmtMs, fmtSize, hexDump, httpLabel, parseRawRequest, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { diffLines } from '../diff';
 import { TokenPicker } from './TokenPicker';
 import { CertHelp } from './TlsSettings';
@@ -84,7 +84,7 @@ function ResponsePane({ shown, original, compare }: { shown: Shown | null; origi
   const text = asText(body);
   const bodyText = text === null ? hexDump(body) : prettyBody(text, ex.responseHeaders);
   const head = [
-    ex.status !== null ? `HTTP/${ex.httpVersion} ${ex.status} ${ex.statusMessage ?? ''}` : `(${ex.state}${ex.error ? `: ${ex.error}` : ''})`,
+    ex.status !== null ? `${httpLabel(ex.httpVersion)} ${ex.status} ${ex.statusMessage ?? ''}`.trimEnd() : `(${ex.state}${ex.error ? `: ${ex.error}` : ''})`,
     ...(ex.responseHeaders ?? []).map(([k, v]) => `${k}: ${v}`),
   ].join('\n');
   if (compare && original && original.ex.id !== ex.id) {

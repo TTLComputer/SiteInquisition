@@ -3,7 +3,7 @@ import type { ContractResult, ExchangeDetail, HeaderList, SearchColumn, SearchTe
 import { base64ToBytes } from '../api';
 import { useApp } from '../state';
 import { Icon } from '../components/icons';
-import { asText, fmtMs, fmtSize, fmtTime, hexDump, prettyBody, statusClass, statusText, toRawRequest } from '../format';
+import { asText, fmtMs, fmtSize, fmtTime, hexDump, httpLabel, isFramedHttp, isPseudoHeader, prettyBody, statusClass, statusText, toRawRequest } from '../format';
 import { breakOn, breakOnMessages, mockFromExchange } from '../actions';
 import { ErrorBanner, TechPanel } from './Tech';
 import { CertHelp } from './TlsSettings';
@@ -22,19 +22,24 @@ type BodyMode = 'pretty' | 'raw' | 'hex';
 type FieldView = Decoded | null;
 
 /** Request or status line and headers, with header names coloured and search terms marked. */
-function headPlain(full: string, hl?: Hl) {
+function headPlain(full: string, hl?: Hl, lineLines = 1) {
   return (t: string, offset: number): ReactNode => {
     const parts: ReactNode[] = [];
     let at = offset;
     for (const piece of t.split(/(?<=\n)/)) {
       const lineStart = at === 0 || full[at - 1] === '\n';
-      const pat = at === 0 || full.lastIndexOf('\n', at - 1) === -1 ? (hl?.line ?? null) : (hl?.headers ?? null);
-      const colon = piece.indexOf(': ');
+      // Which line of the head this piece is on: the first lineLines lines are the request or status line (or HTTP/2's pseudo-headers).
+      const lineNo = full.slice(0, at).split('\n').length - 1;
+      const pat = lineNo < lineLines ? (hl?.line ?? null) : (hl?.headers ?? null);
+      const pseudo = piece.startsWith(':');
+      const colon = piece.indexOf(': ', pseudo ? 1 : 0);
       if (pat && ((pat.lastIndex = 0), pat.test(piece))) parts.push(<Highlight key={at} text={piece} pattern={pat} />);
-      else if (lineStart && at > 0 && colon > 0)
+      else if (lineStart && colon > 0 && (at > 0 || pseudo))
         parts.push(
           <Fragment key={at}>
-            <span className="hk">{piece.slice(0, colon)}</span>
+            <span className={pseudo ? 'hk pseudo' : 'hk'} title={pseudo ? PSEUDO_TITLE : undefined}>
+              {piece.slice(0, colon)}
+            </span>
             {piece.slice(colon)}
           </Fragment>,
         );
@@ -43,6 +48,43 @@ function headPlain(full: string, hl?: Hl) {
     }
     return parts;
   };
+}
+
+const PSEUDO_TITLE = 'Pseudo-header: an HTTP/2 or HTTP/3 protocol field. It carries what HTTP/1.1 puts in the request or status line.';
+
+/**
+ * The head of one side as text. HTTP/1.1 gets its request or status line.
+ * HTTP/2 and HTTP/3 have no such line: the method, scheme, host, path and
+ * status travel as pseudo-headers, so those come first instead, followed by
+ * the ordinary headers. Pseudo-headers the capture did not keep (Replay
+ * sends store only the ordinary ones) are filled in from the request.
+ */
+export function headText(o: { first: string; headers: HeaderList | null; framed: boolean; pseudo?: HeaderList }): { text: string; lineLines: number } {
+  const headers = o.headers ?? [];
+  const lines = (h: HeaderList) => h.map(([k, v]) => `${k}: ${v}`);
+  if (!o.framed) return { text: [o.first, ...lines(headers)].join('\n'), lineLines: 1 };
+  const captured = headers.filter(([k]) => isPseudoHeader(k));
+  const pseudo = captured.length ? captured : (o.pseudo ?? []);
+  if (!pseudo.length) return { text: [o.first, ...lines(headers.filter(([k]) => !isPseudoHeader(k)))].join('\n'), lineLines: 1 };
+  return { text: lines([...pseudo, ...headers.filter(([k]) => !isPseudoHeader(k))]).join('\n'), lineLines: pseudo.length };
+}
+
+function PseudoNote({ version, side }: { version: string; side: 'request' | 'response' }) {
+  return (
+    <p className="pseudo-note" data-testid="pseudo-note">
+      {version} has no {side === 'request' ? 'request line' : 'status line'}. The lines that start with a colon are <b>pseudo-headers</b>, protocol fields that carry what HTTP/1.1 puts on that line:{' '}
+      {side === 'request' ? (
+        <>
+          <code>:method</code> (GET, POST...), <code>:scheme</code> (https), <code>:authority</code> (the host, like Host in HTTP/1.1) and <code>:path</code> (path and query).
+        </>
+      ) : (
+        <>
+          <code>:status</code> is the status code. There is no reason phrase such as "OK".
+        </>
+      )}{' '}
+      They always come before the ordinary headers. Replay and copy as curl build them from the URL, so you edit the URL rather than these lines.
+    </p>
+  );
 }
 
 function BodyView({ bytes, headers, mode, truncated, fields, hl, viewKey, save, label }: { bytes: Uint8Array | null; headers: HeaderList | null; mode: BodyMode; truncated: boolean; fields?: FieldView; hl?: RegExp | null; viewKey: string; save: SaveContext; label: string }) {
@@ -67,15 +109,31 @@ function BodyView({ bytes, headers, mode, truncated, fields, hl, viewKey, save, 
   );
 }
 
-function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrace, fields, hl, viewKey, url }: { title: string; first: string; headers: HeaderList | null; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void; onTrace?(text: string): void; fields?: FieldView; hl?: Hl; viewKey: string; url: string }) {
+function Side({ title, first, headers, pseudo, version, bytes, truncated, extra, onDecode, onTrace, fields, hl, viewKey, url }: { title: string; first: string; headers: HeaderList | null; pseudo?: HeaderList; version: string; bytes: Uint8Array | null; truncated: boolean; extra?: React.ReactNode; onDecode?(text: string): void; onTrace?(text: string): void; fields?: FieldView; hl?: Hl; viewKey: string; url: string }) {
   const [mode, setMode] = useState<BodyMode>('pretty');
+  const [explain, setExplain] = useState(false);
   const side = title === 'Request' ? 'request' : 'response';
-  const head = useMemo(() => [first, ...(headers ?? []).map(([k, v]) => `${k}: ${v}`)].join('\n'), [first, headers]);
-  const plain = useMemo(() => headPlain(head, hl), [head, hl]);
+  const framed = isFramedHttp(version);
+  const label = httpLabel(version);
+  const pseudoKey = pseudo?.map(([k, v]) => `${k}: ${v}`).join('\n') ?? '';
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- pseudo is rebuilt each render; its text is the real dependency
+  const { text: head, lineLines } = useMemo(() => headText({ first, headers, framed, pseudo }), [first, headers, framed, pseudoKey]);
+  const showsPseudo = framed && head.startsWith(':');
+  const plain = useMemo(() => headPlain(head, hl, lineLines), [head, hl, lineLines]);
   return (
     <section>
       <div className="sec-head">
         <b style={{ color: 'var(--text)' }}>{title}</b>
+        {framed && (
+          <span className="badge" data-testid={`${side}-protocol`} title={`Sent over ${label}`}>
+            {label}
+          </span>
+        )}
+        {showsPseudo && (
+          <button className="btn small" aria-expanded={explain} aria-label={`What is :${side === 'request' ? 'method' : 'status'}?`} onClick={() => setExplain(!explain)} title="What are the lines that start with a colon?">
+            ?
+          </button>
+        )}
         {extra}
         {fields && fields.regions.length > 0 && (
           <span className="badge" title={`Decoded with saved field codecs: ${[...new Set(fields.regions.map((r) => regionLabel(r)))].join('; ')}`}>
@@ -115,6 +173,7 @@ function Side({ title, first, headers, bytes, truncated, extra, onDecode, onTrac
           ))}
         </div>
       </div>
+      {showsPseudo && explain && <PseudoNote version={label} side={side} />}
       <pre className="raw">
         <DecodableText text={head} viewKey={`${viewKey}:head`} plain={plain} label={`${title} headers`} />
         {'\n\n'}
@@ -367,7 +426,7 @@ function Timings({ ex }: { ex: ExchangeDetail }) {
         <dt>Client</dt>
         <dd>{ex.clientAddr ?? ''}</dd>
         <dt>HTTP version</dt>
-        <dd>{ex.httpVersion}</dd>
+        <dd>{httpLabel(ex.httpVersion)}</dd>
         <dt>Recorded by</dt>
         <dd>{ex.createdBy}</dd>
         {ex.error && (
@@ -598,11 +657,24 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
   if (!ex) return <div className="inspector" style={style} aria-busy="true" />;
 
   const tabs: Array<[Tab, string]> = [['exchange', 'Request and response']];
+  let requestPseudo: HeaderList | undefined;
+  try {
+    const u = new URL(ex.url);
+    requestPseudo = [
+      [':method', ex.method],
+      [':scheme', u.protocol.replace(':', '')],
+      [':authority', u.host],
+      [':path', `${u.pathname}${u.search}`],
+    ];
+  } catch {
+    requestPseudo = undefined;
+  }
+  const responsePseudo: HeaderList | undefined = ex.status !== null ? [[':status', String(ex.status)]] : undefined;
   if (ex.stream) tabs.push(['messages', ex.stream.protocol.startsWith('mqtt') ? 'MQTT packets' : 'WebSocket messages']);
   tabs.push(['changes', 'What changed it'], ['tech', 'Tech and CSRF'], ['timings', 'Timings'], ['notes', 'Notes and tags']);
 
   const responseLine =
-    ex.status !== null ? `HTTP/${ex.httpVersion} ${ex.status} ${ex.statusMessage ?? ''}` : ex.state === 'pending' ? '(waiting for response)' : ex.error ? `(${ex.state}: ${ex.error})` : `(${ex.state})`;
+    ex.status !== null ? `${httpLabel(ex.httpVersion)} ${ex.status} ${ex.statusMessage ?? ''}`.trimEnd() : ex.state === 'pending' ? '(waiting for response)' : ex.error ? `(${ex.state}: ${ex.error})` : `(${ex.state})`;
 
   return (
     <div className="inspector" style={style} aria-label="Inspector">
@@ -695,8 +767,10 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
           <div className="two-col" ref={exchangeRef}>
             <Side
               title="Request"
-              first={`${ex.method} ${ex.path} HTTP/${ex.httpVersion}`}
+              first={`${ex.method} ${ex.path} ${httpLabel(ex.httpVersion)}`}
               headers={ex.requestHeaders}
+              pseudo={requestPseudo}
+              version={ex.httpVersion}
               bytes={reqBody}
               truncated={ex.requestBodyTruncated}
               extra={
@@ -720,6 +794,8 @@ export function Inspector({ id, height, onClose }: { id: string; height: number 
               title="Response"
               first={responseLine}
               headers={ex.responseHeaders}
+              pseudo={responsePseudo}
+              version={ex.httpVersion}
               bytes={resBody}
               truncated={ex.responseBodyTruncated}
               fields={resFields}

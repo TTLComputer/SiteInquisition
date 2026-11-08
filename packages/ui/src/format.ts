@@ -77,8 +77,32 @@ export const header = (headers: HeaderList | null | undefined, name: string) =>
   headers?.find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1];
 
 /** The editable raw form used by the replay editor: an absolute-URL request line, headers, blank line, body. */
+/**
+ * The protocol as people write it: HTTP/1.1, HTTP/2, HTTP/3. Node reports
+ * HTTP/2 as "2.0", which is not a real version string, so that becomes
+ * HTTP/2. Labels that already name a protocol (MQTT/5.0) pass through.
+ */
+export function httpLabel(version: string | null | undefined): string {
+  const v = (version ?? '').trim();
+  if (!v) return 'HTTP/1.1';
+  if (/^[A-Za-z]+\//.test(v)) return v.replace(/^HTTP\/([23])(?:\.0)?$/i, 'HTTP/$1');
+  if (/^[23](?:\.0)?$/.test(v)) return `HTTP/${v[0]}`;
+  return `HTTP/${v}`;
+}
+
+/** HTTP/2 and HTTP/3 carry the method, scheme, host and path as pseudo-headers, whose names start with a colon. */
+export const isPseudoHeader = (name: string) => name.startsWith(':');
+
+/** True for exchanges that went over HTTP/2 or HTTP/3. */
+export const isFramedHttp = (version: string | null | undefined) => /^(?:HTTP\/)?[23](?:\.0)?$/i.test((version ?? '').trim());
+
+/**
+ * A request as editable text. Pseudo-headers (:method, :path...) are left
+ * out: the request line already says the same thing, and whichever protocol
+ * Replay sends over builds its own from it.
+ */
 export function toRawRequest(method: string, url: string, headers: HeaderList, body: string): string {
-  return `${method} ${url} HTTP/1.1\n${headers.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\n${body}`;
+  return `${method} ${url} HTTP/1.1\n${headers.filter(([k]) => !isPseudoHeader(k)).map(([k, v]) => `${k}: ${v}`).join('\n')}\n\n${body}`;
 }
 
 export interface ParsedRequest {
@@ -105,9 +129,13 @@ export function parseRawRequest(raw: string): ParsedRequest {
   const headers: HeaderList = [];
   for (const line of headerLines) {
     if (!line.trim()) continue;
-    const i = line.indexOf(':');
+    // A pasted HTTP/2 pseudo-header (":method: GET") has its colon after the leading one.
+    const i = line.indexOf(':', line.trimStart().startsWith(':') ? line.indexOf(':') + 1 : 0);
     if (i <= 0) throw new Error(`Header line is missing a colon: ${line}`);
-    headers.push([line.slice(0, i).trim(), line.slice(i + 1).trim()]);
+    const name = line.slice(0, i).trim();
+    // The request line is what counts; pseudo-headers pasted from HTTP/2 traffic would only repeat it.
+    if (isPseudoHeader(name)) continue;
+    headers.push([name, line.slice(i + 1).trim()]);
   }
   return { method: m[1]!.toUpperCase(), url: url.href, headers, body };
 }

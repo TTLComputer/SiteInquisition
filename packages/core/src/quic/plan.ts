@@ -299,7 +299,7 @@ async function runOnce(store: CaptureStore, rows: H3PlanRequest[], opts: H3PlanO
     const headers: HeaderList = row.priority ? [...row.headers.filter(([k]) => k.toLowerCase() !== 'priority'), ['priority', row.priority]] : row.headers;
     const fields = requestFields(row.method, url, headers);
     const body = row.body ?? new Uint8Array();
-    const ex = store.addRequest({ source: 'replay', startedAt: Date.now(), method: row.method.toUpperCase(), url: url.href, httpVersion: '3', headers: fields.filter(([k]) => !k.startsWith(':')), body, replayOf: row.replayOf ?? null, flowId, tags: [tag, ...(early ? ['0-rtt'] : []), ...(connCount > 1 ? [`conn:${ci + 1}`] : [])] });
+    const ex = store.addRequest({ source: 'replay', startedAt: Date.now(), method: row.method.toUpperCase(), url: url.href, httpVersion: '3', headers: fields, body, replayOf: row.replayOf ?? null, flowId, tags: [tag, ...(early ? ['0-rtt'] : []), ...(connCount > 1 ? [`conn:${ci + 1}`] : [])] });
     exchanges.set(ex.id, index);
     const result: H3RowResult = { index, label: row.label ?? `${row.method} ${url.pathname}`, exchangeId: ex.id, connection: ci, streamId: null, status: null, bodyBytes: 0, early, timings: {}, completedOrder: null };
     results.push(result);

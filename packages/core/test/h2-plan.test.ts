@@ -10,6 +10,7 @@ import { H2Connection } from '../src/h2/connection.js';
 import { runH2Plan } from '../src/h2/plan.js';
 import { protocolLadder } from '../src/h2/connect.js';
 import { runRace } from '../src/race.js';
+import { sendReplay } from '../src/replay.js';
 import { createServer as createHttp1Server } from 'node:http';
 import { generateCA } from '../src/x509.js';
 
@@ -32,7 +33,7 @@ function handler(stream: import('node:http2').ServerHttp2Stream, headers: import
     if (path === '/refuse') return stream.close(0x7);
     stream.respond({ ':status': 200, 'content-type': 'application/json' }, { waitForTrailers: true });
     stream.on('wantTrailers', () => stream.sendTrailers({ 'grpc-status': '0' }));
-    stream.end(JSON.stringify({ path, bytes: Buffer.concat(chunks).length }));
+    stream.end(JSON.stringify({ path, bytes: Buffer.concat(chunks).length, authority: headers[':authority'], method: headers[':method'] }));
   });
 }
 
@@ -93,6 +94,25 @@ afterAll(async () => {
 });
 
 describe('HTTP/2 protocol lab', () => {
+  it('sends pseudo-headers from the header list as written, apart from the URL', async () => {
+    const sent = await sendReplay(core.store, {
+      method: 'GET',
+      url: `http://localhost:${plainPort}/from-url`,
+      headers: [[':method', 'GET'], [':scheme', 'http'], [':authority', 'other.test'], [':path', '/from-pseudo?x=1'], ['accept', '*/*']],
+      protocol: 'h2',
+      h2Method: 'prior-knowledge',
+    });
+    const ex = core.store.getExchange(sent.id)!;
+    const echo = JSON.parse(Buffer.from(core.store.getBody(sent.id, 'response')!).toString());
+    expect(echo).toMatchObject({ path: '/from-pseudo?x=1', authority: 'other.test', method: 'GET' });
+    // The record shows the fields that went out.
+    expect(ex.httpVersion).toBe('2');
+    expect(ex.requestHeaders.slice(0, 4)).toEqual([[':method', 'GET'], [':scheme', 'http'], [':authority', 'other.test'], [':path', '/from-pseudo?x=1']]);
+    // Without any, they come from the URL.
+    const plain = await sendReplay(core.store, { method: 'GET', url: `http://localhost:${plainPort}/from-url`, headers: [], protocol: 'h2', h2Method: 'prior-knowledge' });
+    expect(JSON.parse(Buffer.from(core.store.getBody(plain.id, 'response')!).toString())).toMatchObject({ path: '/from-url', authority: `localhost:${plainPort}` });
+  });
+
   it('runs a plan over prior knowledge, recording each stream with trailers', async () => {
     const res = await runH2Plan(core.store, [
       { method: 'GET', url: `http://localhost:${plainPort}/a`, headers: [] },

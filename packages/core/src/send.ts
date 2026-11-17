@@ -410,7 +410,8 @@ export class Sender {
       if (!location) break;
       const next = new URL(location, current.url).href;
       const keepBody = current.status === 307 || current.status === 308;
-      const headers = r.headers.filter(([k]) => !['host', 'content-length', 'cookie', ...(keepBody ? [] : ['content-type'])].includes(k.toLowerCase()));
+      // Pseudo-headers name the first request's path and host, so a redirect builds its own from the new URL.
+      const headers = r.headers.filter(([k]) => !k.startsWith(':') && !['host', 'content-length', 'cookie', ...(keepBody ? [] : ['content-type'])].includes(k.toLowerCase()));
       const cookie = this.cookieHeader(next);
       if (cookie) headers.push(['Cookie', cookie]);
       current = await sendReplay(this.d.store, {

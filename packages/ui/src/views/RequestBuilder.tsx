@@ -66,7 +66,8 @@ export function splitRaw(raw: string): RawParts | null {
   const headers: HeaderPair[] = [];
   for (const l of lines) {
     if (!l.trim()) continue;
-    const i = l.indexOf(':');
+    // An HTTP/2 pseudo-header (":authority: x") has its name colon after the leading one.
+    const i = l.indexOf(':', l.trimStart().startsWith(':') ? l.indexOf(':') + 1 : 0);
     headers.push(i <= 0 ? [l.trim(), ''] : [l.slice(0, i).trim(), l.slice(i + 1).trim()]);
   }
   return { method: m[1]!, url: m[2]!, version: m[3] ?? 'HTTP/1.1', headers, body };

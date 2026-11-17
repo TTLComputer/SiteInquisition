@@ -291,7 +291,7 @@ async function raceViaPlan(store: CaptureStore, requests: RaceRequest[], opts: R
     const common = { ignoreTlsErrors: opts.ignoreTlsErrors, timeoutMs: opts.timeoutMs };
     const plan =
       protocol === 'h2'
-        ? await runH2Plan(store, rows.map((r) => ({ ...r, headers: r.headers.filter(([k]) => !k.startsWith(':') && k.toLowerCase() !== 'content-length') })), { ...common, gate: 'single-packet' })
+        ? await runH2Plan(store, rows.map((r) => ({ ...r, headers: r.headers.filter(([k]) => k.toLowerCase() !== 'content-length') })), { ...common, gate: 'single-packet' })
         : await runH3Plan(store, rows, { ...common, gate: 'single-datagram' });
     const p = plan.runs[0]!;
     for (const r of p.rows) store.tagExchange(r.exchangeId, [...(store.getSummary(r.exchangeId)?.tags ?? []), `race:${id}`]);

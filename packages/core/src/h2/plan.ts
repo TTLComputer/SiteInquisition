@@ -125,11 +125,18 @@ const now = () => performance.now();
 const round = (n: number | undefined) => (n === undefined ? undefined : Math.round(n * 1000) / 1000);
 const cap = (n: number | undefined) => Math.max(0, Math.min(n ?? 0, 1000));
 
-/** Request pseudo-headers and headers for HTTP/2 from a captured or edited header list. */
+/**
+ * Request pseudo-headers and headers for HTTP/2 from a captured or edited
+ * header list. Pseudo-headers in the list (":authority: other.test") are
+ * sent exactly as given, in their order, in place of the ones the URL
+ * implies, so a test can send a mismatched :authority, an odd :path, or leave
+ * one out. Only when the list has none are they built from the method and URL.
+ */
 export function h2RequestFields(method: string, url: URL, headers: HeaderList, scheme = url.protocol.replace(':', '')): Field[] {
   const drop = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'host', 'http2-settings']);
+  const given = headers.filter(([k]) => k.startsWith(':')).map(([k, v]): Field => [k.toLowerCase(), v]);
   const host = headers.find(([k]) => k.toLowerCase() === 'host')?.[1] ?? url.host;
-  const out: Field[] = [[':method', method.toUpperCase()], [':scheme', scheme], [':authority', host], [':path', url.pathname + url.search]];
+  const out: Field[] = given.length ? given : [[':method', method.toUpperCase()], [':scheme', scheme], [':authority', host], [':path', url.pathname + url.search]];
   for (const [k, v] of headers) {
     const l = k.toLowerCase();
     if (drop.has(l) || l.startsWith(':')) continue;
@@ -292,7 +299,7 @@ async function runOnce(store: CaptureStore, rows: H2PlanRequest[], opts: H2PlanO
     const ex =
       index === 0 && upgradeEx
         ? upgradeEx
-        : store.addRequest({ source: 'replay', startedAt: Date.now(), method: row.method.toUpperCase(), url: url.href, httpVersion: '2', headers: fields.filter(([k]) => !k.startsWith(':')), body, replayOf: row.replayOf ?? null, flowId, tags: [tag] });
+        : store.addRequest({ source: 'replay', startedAt: Date.now(), method: row.method.toUpperCase(), url: url.href, httpVersion: '2', headers: fields, body, replayOf: row.replayOf ?? null, flowId, tags: [tag] });
     const result: H3RowResult = { index, label: row.label ?? `${row.method} ${url.pathname}`, exchangeId: ex.id, connection: 0, streamId: null, status: null, bodyBytes: 0, early: false, timings: {}, completedOrder: null };
     results.push(result);
     if (index === 0 && c.upgradeStream) {

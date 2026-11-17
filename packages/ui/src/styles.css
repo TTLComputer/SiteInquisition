@@ -293,6 +293,9 @@ kbd {
 .sec-head { display: flex; gap: 8px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); font-size: 12px; color: var(--text-muted); }
 pre.raw { margin: 0; padding: 10px 12px; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
 pre.raw .hk { color: var(--accent); }
+pre.raw .hk.pseudo { color: var(--text-faint); font-style: italic; }
+.pseudo-note { margin: 0 0 6px; padding: 6px 8px; font-size: 12px; line-height: 1.45; color: var(--text-muted); background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 4px; }
+.pseudo-note code { font-family: var(--font-mono); font-size: 11px; }
 .kv { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 4px 12px; padding: 10px 12px; font-size: 12px; }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; font-family: var(--font-mono); word-break: break-all; }
@@ -584,7 +587,7 @@ textarea.editor.composer-text { min-height: 90px; height: 110px; width: 100%; bo
 .origin-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
 .values-table td { vertical-align: top; }
 .samples { display: flex; flex-wrap: wrap; gap: 4px; max-width: 420px; }
-.sample { font: inherit; font-family: var(--mono, monospace); font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+.sample { font: inherit; font-family: inherit; font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
 .sample:hover { border-color: var(--accent); }
 .spec-card { padding-bottom: 6px; }
 .menu-form { display: flex; gap: 6px; padding: 6px 8px; }

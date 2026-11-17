@@ -152,9 +152,10 @@ program
         return;
       }
       const text = (b: Uint8Array) => (b.byteLength ? Buffer.from(b).toString('utf8') : '');
-      const proto = (v: string) => (/^[A-Z]+\//.test(v) ? v : `HTTP/${v}`);
+      const proto = (v: string) => (/^[A-Z]+\//.test(v) ? v : /^[23](?:\.0)?$/.test(v) ? `HTTP/${v[0]}` : `HTTP/${v}`);
       console.log(`${ex.method} ${ex.url} ${proto(ex.httpVersion)}`);
-      for (const [k, v] of ex.requestHeaders) console.log(`${k}: ${v}`);
+      // HTTP/2 and HTTP/3 pseudo-headers (:method, :path...) would only repeat the line above.
+      for (const [k, v] of ex.requestHeaders) if (!k.startsWith(':')) console.log(`${k}: ${v}`);
       if (req.byteLength) console.log(`\n${text(req)}`);
       console.log('');
       if (ex.status !== null) {

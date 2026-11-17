@@ -54,16 +54,23 @@ export interface H3FetchResult {
   stream: H3Stream;
 }
 
-/** Request fields for a URL: pseudo-headers first, connection-specific headers dropped. */
+/**
+ * Request fields for a URL: pseudo-headers first, connection-specific headers
+ * dropped. Pseudo-headers in the list are sent exactly as given, in place of
+ * the ones the URL implies; only when there are none are they built.
+ */
 export function requestFields(method: string, url: URL, headers: Array<[string, string]>): Field[] {
   const drop = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'host', 'te', 'http2-settings']);
+  const given = headers.filter(([k]) => k.startsWith(':')).map(([k, v]): Field => [k.toLowerCase(), v]);
   const host = headers.find(([k]) => k.toLowerCase() === 'host')?.[1] ?? url.host;
-  const out: Field[] = [
-    [':method', method.toUpperCase()],
-    [':scheme', 'https'],
-    [':authority', host],
-    [':path', url.pathname + url.search],
-  ];
+  const out: Field[] = given.length
+    ? given
+    : [
+        [':method', method.toUpperCase()],
+        [':scheme', 'https'],
+        [':authority', host],
+        [':path', url.pathname + url.search],
+      ];
   for (const [k, v] of headers) {
     const l = k.toLowerCase();
     if (drop.has(l) || l.startsWith(':')) continue;
